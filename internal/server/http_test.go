@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wucm667/sideplane/internal/store"
 	"github.com/wucm667/sideplane/pkg/protocol"
 )
 
@@ -123,6 +125,102 @@ func TestHeartbeatRequiresNodeID(t *testing.T) {
 	assertStatus(t, rec, http.StatusBadRequest)
 }
 
+func TestNodesApplyFreshnessPolicy(t *testing.T) {
+	now := time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)
+	nodeStore := store.NewMemoryNodeStore()
+	heartbeats := map[string]time.Time{
+		"node-fresh":   now.Add(-time.Minute),
+		"node-stale":   now.Add(-3 * time.Minute),
+		"node-offline": now.Add(-11 * time.Minute),
+	}
+	for nodeID, observedAt := range heartbeats {
+		_, err := nodeStore.RecordHeartbeat(context.Background(), protocol.HeartbeatRequest{
+			NodeID:   nodeID,
+			Hostname: nodeID,
+		}, observedAt)
+		if err != nil {
+			t.Fatalf("record heartbeat for %s: %v", nodeID, err)
+		}
+	}
+
+	handler, err := NewHandlerWithStoreAndFreshnessPolicy(nodeStore, FreshnessPolicy{
+		StaleAfter:   2 * time.Minute,
+		OfflineAfter: 10 * time.Minute,
+		Now: func() time.Time {
+			return now
+		},
+	})
+	if err != nil {
+		t.Fatalf("build handler: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/nodes", nil)
+
+	handler.ServeHTTP(rec, req)
+
+	assertStatus(t, rec, http.StatusOK)
+
+	var nodes []protocol.NodeStatus
+	if err := json.NewDecoder(rec.Body).Decode(&nodes); err != nil {
+		t.Fatalf("decode nodes response: %v", err)
+	}
+
+	got := make(map[string]protocol.NodeState)
+	for _, node := range nodes {
+		got[node.NodeID] = node.State
+	}
+	want := map[string]protocol.NodeState{
+		"node-fresh":   protocol.NodeStateFresh,
+		"node-stale":   protocol.NodeStateStale,
+		"node-offline": protocol.NodeStateOffline,
+	}
+	for nodeID, wantState := range want {
+		if got[nodeID] != wantState {
+			t.Fatalf("node %s state = %q, want %q", nodeID, got[nodeID], wantState)
+		}
+	}
+}
+
+func TestNodesTreatZeroHeartbeatAsOffline(t *testing.T) {
+	handler, err := NewHandlerWithStoreAndFreshnessPolicy(staticNodeStore{
+		nodes: []protocol.NodeStatus{
+			{
+				NodeID:          "node-zero",
+				State:           protocol.NodeStateFresh,
+				LastHeartbeatAt: time.Time{},
+			},
+		},
+	}, FreshnessPolicy{
+		StaleAfter:   2 * time.Minute,
+		OfflineAfter: 10 * time.Minute,
+		Now: func() time.Time {
+			return time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)
+		},
+	})
+	if err != nil {
+		t.Fatalf("build handler: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/nodes", nil)
+
+	handler.ServeHTTP(rec, req)
+
+	assertStatus(t, rec, http.StatusOK)
+
+	var nodes []protocol.NodeStatus
+	if err := json.NewDecoder(rec.Body).Decode(&nodes); err != nil {
+		t.Fatalf("decode nodes response: %v", err)
+	}
+	if len(nodes) != 1 {
+		t.Fatalf("nodes length = %d, want 1", len(nodes))
+	}
+	if nodes[0].State != protocol.NodeStateOffline {
+		t.Fatalf("node state = %q, want offline", nodes[0].State)
+	}
+}
+
 func TestStatusEndpointsRejectNonGET(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/healthz", nil)
@@ -182,4 +280,17 @@ func assertJSONStatus(t *testing.T, rec *httptest.ResponseRecorder, want string)
 	if body.Status != want {
 		t.Fatalf("status body = %q, want %q", body.Status, want)
 	}
+}
+
+type staticNodeStore struct {
+	nodes []protocol.NodeStatus
+}
+
+func (s staticNodeStore) RecordHeartbeat(context.Context, protocol.HeartbeatRequest, time.Time) (protocol.NodeStatus, error) {
+	return protocol.NodeStatus{}, nil
+}
+
+func (s staticNodeStore) ListNodes(context.Context) ([]protocol.NodeStatus, error) {
+	nodes := append([]protocol.NodeStatus(nil), s.nodes...)
+	return nodes, nil
 }

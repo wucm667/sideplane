@@ -17,7 +17,26 @@ func NewHandler() http.Handler {
 
 // NewHandlerWithStore returns a Sideplane server HTTP handler backed by store.
 func NewHandlerWithStore(nodeStore store.NodeStore) http.Handler {
-	handler := &handler{store: nodeStore}
+	handler, err := NewHandlerWithStoreAndFreshnessPolicy(nodeStore, DefaultFreshnessPolicy())
+	if err != nil {
+		panic(err)
+	}
+	return handler
+}
+
+// NewHandlerWithStoreAndFreshnessPolicy returns a Sideplane server HTTP handler backed by store.
+func NewHandlerWithStoreAndFreshnessPolicy(nodeStore store.NodeStore, freshness FreshnessPolicy) (http.Handler, error) {
+	if freshness.Now == nil {
+		freshness.Now = utcNow
+	}
+	if err := freshness.Validate(); err != nil {
+		return nil, err
+	}
+
+	handler := &handler{
+		store:     nodeStore,
+		freshness: freshness,
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", jsonStatusHandler("ok"))
@@ -25,11 +44,12 @@ func NewHandlerWithStore(nodeStore store.NodeStore) http.Handler {
 	mux.HandleFunc("/metrics", metricsHandler)
 	mux.HandleFunc("/api/heartbeat", handler.heartbeat)
 	mux.HandleFunc("/api/nodes", handler.nodes)
-	return mux
+	return mux, nil
 }
 
 type handler struct {
-	store store.NodeStore
+	store     store.NodeStore
+	freshness FreshnessPolicy
 }
 
 func jsonStatusHandler(status string) http.HandlerFunc {
@@ -106,8 +126,15 @@ func (h *handler) nodes(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "list nodes", http.StatusInternalServerError)
 		return
 	}
+	h.applyFreshness(nodes)
 
 	writeJSON(w, http.StatusOK, nodes)
+}
+
+func (h *handler) applyFreshness(nodes []protocol.NodeStatus) {
+	for i := range nodes {
+		nodes[i].State = h.freshness.StateFor(nodes[i].LastHeartbeatAt)
+	}
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {

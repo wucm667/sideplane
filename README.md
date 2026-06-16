@@ -206,11 +206,26 @@ another address and `--db` to choose a different SQLite database path:
 go run ./cmd/sideplane-server --addr :9090 --db ./dev-sideplane.db
 ```
 
+Node freshness is computed by the server when `GET /api/nodes` is listed. The
+store keeps the latest heartbeat-derived status, while the API response applies
+the current freshness policy. By default, nodes become `stale` after `2m` and
+`offline` after `10m` without a heartbeat:
+
+```bash
+go run ./cmd/sideplane-server --stale-after 2m --offline-after 10m
+```
+
+`--offline-after` must be greater than `--stale-after`; otherwise the server
+exits during startup.
+
 Available endpoints:
 
 - `GET /healthz` returns `{"status":"ok"}`
 - `GET /readyz` returns `{"status":"ready"}`
 - `GET /metrics` returns a placeholder Prometheus-compatible endpoint
+- `POST /api/heartbeat` records the latest heartbeat-derived node status
+- `GET /api/nodes` lists nodes with freshness-adjusted `fresh`, `stale`, or
+  `offline` state
 
 Expected first steps:
 
