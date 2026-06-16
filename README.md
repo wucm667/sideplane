@@ -205,5 +205,4 @@ Expected first steps:
 
 ## License
 
-License has not been selected yet.
-
+Sideplane is licensed under the [Apache License 2.0](./LICENSE).

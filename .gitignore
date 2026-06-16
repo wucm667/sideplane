@@ -1,3 +1,105 @@
+### Local AI agent guidance
 AGENTS.md
 CLAUDE.md
 
+### Environment and local secrets
+.env
+.env.*
+!.env.example
+*.local
+*.secret
+*.secrets
+
+### OS files
+.DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db
+Desktop.ini
+
+### Editors and IDEs
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+.idea/
+*.iml
+*.iws
+*.ipr
+
+### Logs
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+### Go
+bin/
+dist/
+build/
+coverage.out
+*.test
+*.prof
+*.pprof
+
+### Go workspace/local tool state
+go.work
+go.work.sum
+
+### Node / frontend
+node_modules/
+web/node_modules/
+.npm/
+.pnpm-store/
+.yarn/
+!.yarn/patches/
+!.yarn/plugins/
+!.yarn/releases/
+!.yarn/sdks/
+!.yarn/versions/
+
+### Vite / frontend build output
+web/dist/
+web/build/
+web/.vite/
+web/coverage/
+
+### TypeScript
+*.tsbuildinfo
+
+### SQLite and local runtime data
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite3-*
+data/
+tmp/
+var/
+
+### Sideplane local runtime state
+.sideplane/
+sideplane-data/
+sideplane.db
+sideplane.db-*
+
+### Docker and compose local overrides
+docker-compose.override.yml
+compose.override.yml
+
+### Certificates and keys
+*.pem
+*.key
+*.crt
+*.csr
+*.p12
+*.pfx
+
+### Archives and packages
+*.tar
+*.tar.gz
+*.tgz
+*.zip
