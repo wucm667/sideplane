@@ -192,16 +192,31 @@ sideplane/
 
 ## Development
 
-Implementation has not started yet.
+Run the development server:
+
+```bash
+go run ./cmd/sideplane-server
+```
+
+The server listens on `:8080` by default. Use `--addr` to choose another address:
+
+```bash
+go run ./cmd/sideplane-server --addr :9090
+```
+
+Available endpoints:
+
+- `GET /healthz` returns `{"status":"ok"}`
+- `GET /readyz` returns `{"status":"ready"}`
+- `GET /metrics` returns a placeholder Prometheus-compatible endpoint
 
 Expected first steps:
 
-1. Initialize the Go module and command skeletons.
-2. Add SQLite store and migrations.
-3. Define protocol structs and API routes.
-4. Implement enrollment token flow.
-5. Implement sidecar heartbeat.
-6. Add Hermes and OpenClaw adapter interfaces.
+1. Add SQLite store and migrations.
+2. Define protocol structs and API routes.
+3. Implement enrollment token flow.
+4. Implement sidecar heartbeat.
+5. Add Hermes and OpenClaw adapter interfaces.
 
 ## License
 
