@@ -198,10 +198,12 @@ Run the development server:
 go run ./cmd/sideplane-server
 ```
 
-The server listens on `:8080` by default. Use `--addr` to choose another address:
+The server listens on `:8080` by default, opens `sideplane.db` in the current
+directory, and applies SQLite migrations on startup. Use `--addr` to choose
+another address and `--db` to choose a different SQLite database path:
 
 ```bash
-go run ./cmd/sideplane-server --addr :9090
+go run ./cmd/sideplane-server --addr :9090 --db ./dev-sideplane.db
 ```
 
 Available endpoints:
@@ -212,11 +214,11 @@ Available endpoints:
 
 Expected first steps:
 
-1. Add SQLite store and migrations.
-2. Define protocol structs and API routes.
-3. Implement enrollment token flow.
-4. Implement sidecar heartbeat.
-5. Add Hermes and OpenClaw adapter interfaces.
+1. Expand protocol structs and API routes.
+2. Implement enrollment token flow.
+3. Extend sidecar heartbeat status with Hermes and OpenClaw discovery.
+4. Add Hermes and OpenClaw adapter interfaces.
+5. Implement config diff and safe apply planning.
 
 ## License
 

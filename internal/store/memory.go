@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"sort"
 	"sync"
 	"time"
@@ -21,8 +22,10 @@ func NewMemoryNodeStore() *MemoryNodeStore {
 	}
 }
 
+var _ NodeStore = (*MemoryNodeStore)(nil)
+
 // RecordHeartbeat stores the latest heartbeat-derived status for a node.
-func (s *MemoryNodeStore) RecordHeartbeat(req protocol.HeartbeatRequest, observedAt time.Time) protocol.NodeStatus {
+func (s *MemoryNodeStore) RecordHeartbeat(_ context.Context, req protocol.HeartbeatRequest, observedAt time.Time) (protocol.NodeStatus, error) {
 	node := protocol.NodeStatus{
 		NodeID:          req.NodeID,
 		Hostname:        req.Hostname,
@@ -38,11 +41,11 @@ func (s *MemoryNodeStore) RecordHeartbeat(req protocol.HeartbeatRequest, observe
 	defer s.mu.Unlock()
 	s.nodes[req.NodeID] = node
 
-	return node
+	return node, nil
 }
 
 // ListNodes returns a stable snapshot of known nodes.
-func (s *MemoryNodeStore) ListNodes() []protocol.NodeStatus {
+func (s *MemoryNodeStore) ListNodes(_ context.Context) ([]protocol.NodeStatus, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -56,5 +59,5 @@ func (s *MemoryNodeStore) ListNodes() []protocol.NodeStatus {
 		return nodes[i].NodeID < nodes[j].NodeID
 	})
 
-	return nodes
+	return nodes, nil
 }

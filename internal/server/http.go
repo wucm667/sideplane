@@ -10,19 +10,14 @@ import (
 	"github.com/wucm667/sideplane/pkg/protocol"
 )
 
-type nodeStore interface {
-	RecordHeartbeat(protocol.HeartbeatRequest, time.Time) protocol.NodeStatus
-	ListNodes() []protocol.NodeStatus
-}
-
 // NewHandler returns the Sideplane server HTTP handler.
 func NewHandler() http.Handler {
 	return NewHandlerWithStore(store.NewMemoryNodeStore())
 }
 
 // NewHandlerWithStore returns a Sideplane server HTTP handler backed by store.
-func NewHandlerWithStore(store nodeStore) http.Handler {
-	handler := &handler{store: store}
+func NewHandlerWithStore(nodeStore store.NodeStore) http.Handler {
+	handler := &handler{store: nodeStore}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", jsonStatusHandler("ok"))
@@ -34,7 +29,7 @@ func NewHandlerWithStore(store nodeStore) http.Handler {
 }
 
 type handler struct {
-	store nodeStore
+	store store.NodeStore
 }
 
 func jsonStatusHandler(status string) http.HandlerFunc {
@@ -86,7 +81,11 @@ func (h *handler) heartbeat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := time.Now().UTC()
-	node := h.store.RecordHeartbeat(req, now)
+	node, err := h.store.RecordHeartbeat(r.Context(), req, now)
+	if err != nil {
+		http.Error(w, "record heartbeat", http.StatusInternalServerError)
+		return
+	}
 
 	writeJSON(w, http.StatusOK, protocol.HeartbeatResponse{
 		Accepted:   true,
@@ -102,7 +101,13 @@ func (h *handler) nodes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, h.store.ListNodes())
+	nodes, err := h.store.ListNodes(r.Context())
+	if err != nil {
+		http.Error(w, "list nodes", http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, nodes)
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {
