@@ -328,6 +328,10 @@ For a read-only real-machine sidecar test using systemd, see
 [docs/read-only-sidecar-deployment.md](docs/read-only-sidecar-deployment.md)
 and [docs/real-machine-readonly-smoke-test.md](docs/real-machine-readonly-smoke-test.md).
 
+For the signed configuration apply pipeline (dry-run by default, live apply
+gated behind `--allow-live-apply`), see
+[docs/config-apply-pipeline.md](docs/config-apply-pipeline.md).
+
 In the web UI, each node shows recent jobs and a `Deep Probe` button. The button
 creates a `deep_probe` job through `POST /api/nodes/{nodeId}/jobs`; the sidecar
 claims it on the next poll and reports runtime status back through the job result

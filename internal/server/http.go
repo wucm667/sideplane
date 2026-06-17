@@ -89,12 +89,13 @@ func NewHandlerWithConfig(cfg HandlerConfig) (http.Handler, error) {
 		freshness:    freshness,
 		operatorAuth: auth.NewOperatorToken(cfg.OperatorToken),
 		signingKey:   keyPair,
+		metrics:      NewMetrics(),
 	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", jsonStatusHandler("ok"))
 	mux.HandleFunc("/readyz", jsonStatusHandler("ready"))
-	mux.HandleFunc("/metrics", metricsHandler)
+	mux.HandleFunc("/metrics", handler.metricsEndpoint)
 	mux.HandleFunc("/api/audit", handler.auditEvents)
 	mux.HandleFunc("/api/signing-key", handler.publicSigningKey)
 	mux.HandleFunc("/api/config/desired", handler.desiredConfig)
@@ -114,6 +115,7 @@ type handler struct {
 	freshness    FreshnessPolicy
 	operatorAuth auth.OperatorToken
 	signingKey   spcrypto.KeyPair
+	metrics      *Metrics
 }
 
 func jsonStatusHandler(status string) http.HandlerFunc {
@@ -131,7 +133,7 @@ func jsonStatusHandler(status string) http.HandlerFunc {
 	}
 }
 
-func metricsHandler(w http.ResponseWriter, r *http.Request) {
+func (h *handler) metricsEndpoint(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", http.MethodGet)
 		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
@@ -139,7 +141,7 @@ func metricsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
-	_, _ = w.Write([]byte("# Sideplane metrics placeholder\n"))
+	h.metrics.WriteProm(w)
 }
 
 func (h *handler) createEnrollmentToken(w http.ResponseWriter, r *http.Request) {
@@ -395,6 +397,7 @@ func (h *handler) createNodeJob(w http.ResponseWriter, r *http.Request, nodeID s
 		http.Error(w, "create job", http.StatusInternalServerError)
 		return
 	}
+	h.metrics.IncJobCreated(string(req.Type))
 	h.audit(r.Context(), protocol.AuditEvent{
 		Actor:      audit.ActorOperator,
 		Action:     audit.ActionJobCreate,
@@ -520,6 +523,7 @@ func (h *handler) createConfigApplyJob(w http.ResponseWriter, r *http.Request, n
 		http.Error(w, "create job", http.StatusInternalServerError)
 		return
 	}
+	h.metrics.IncJobCreated(string(protocol.JobTypeConfigApply))
 	h.audit(r.Context(), protocol.AuditEvent{
 		Actor:      audit.ActorOperator,
 		Action:     audit.ActionConfigApply,
@@ -660,6 +664,12 @@ func (h *handler) submitJobResult(w http.ResponseWriter, r *http.Request) {
 	action := audit.ActionJobComplete
 	if req.Status == protocol.JobStatusFailed {
 		action = audit.ActionJobFail
+		h.metrics.IncJobFailed(string(job.Type))
+	} else {
+		h.metrics.IncJobCompleted(string(job.Type))
+	}
+	if job.Type == protocol.JobTypeConfigApply && configApplyRolledBack(req.ResultJSON) {
+		h.metrics.IncConfigApplyRolledBack()
 	}
 	h.audit(r.Context(), protocol.AuditEvent{
 		Actor:      audit.ActorSidecar,
@@ -670,6 +680,24 @@ func (h *handler) submitJobResult(w http.ResponseWriter, r *http.Request) {
 	})
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "accepted"})
+}
+
+// configApplyRolledBack reports whether a config apply result recorded a
+// completed rollback step. It tolerates missing or malformed result payloads.
+func configApplyRolledBack(resultJSON string) bool {
+	if strings.TrimSpace(resultJSON) == "" {
+		return false
+	}
+	var result protocol.ConfigApplyResult
+	if err := json.Unmarshal([]byte(resultJSON), &result); err != nil {
+		return false
+	}
+	for _, step := range result.Steps {
+		if step.Name == "rolled_back" && step.Status == "completed" {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *handler) auditEvents(w http.ResponseWriter, r *http.Request) {

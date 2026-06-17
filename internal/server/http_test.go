@@ -625,7 +625,7 @@ func TestReadyz(t *testing.T) {
 	assertJSONStatus(t, rec, "ready")
 }
 
-func TestMetricsPlaceholder(t *testing.T) {
+func TestMetricsExposesCounters(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
 
@@ -635,8 +635,33 @@ func TestMetricsPlaceholder(t *testing.T) {
 	if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/plain") {
 		t.Fatalf("Content-Type = %q, want text/plain", got)
 	}
-	if got := rec.Body.String(); !strings.Contains(got, "Sideplane metrics placeholder") {
-		t.Fatalf("metrics body = %q, want placeholder text", got)
+	body := rec.Body.String()
+	for _, want := range []string{
+		"sideplane_jobs_created_total",
+		"sideplane_jobs_completed_total",
+		"sideplane_jobs_failed_total",
+		"sideplane_config_apply_rolled_back_total",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("metrics body missing %q\n%s", want, body)
+		}
+	}
+}
+
+func TestMetricsCountsConfigApplyCreation(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	enrollTestNode(t, nodeStore, "node-apply")
+	seedDesiredAndProbe(t, nodeStore, "node-apply", "/etc/hermes/config.json")
+	handler := NewHandlerWithStore(nodeStore)
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/nodes/node-apply/config-apply", strings.NewReader(`{}`)))
+	assertStatus(t, rec, http.StatusCreated)
+
+	metricsRec := httptest.NewRecorder()
+	handler.ServeHTTP(metricsRec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if got := metricsRec.Body.String(); !strings.Contains(got, `sideplane_jobs_created_total{type="config_apply"} 1`) {
+		t.Errorf("expected config_apply creation counter, got:\n%s", got)
 	}
 }
 
