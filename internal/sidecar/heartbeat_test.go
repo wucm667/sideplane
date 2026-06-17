@@ -22,6 +22,9 @@ func TestHeartbeatClientPostsHeartbeat(t *testing.T) {
 		if r.URL.Path != "/api/heartbeat" {
 			t.Fatalf("path = %q, want /api/heartbeat", r.URL.Path)
 		}
+		if got := r.Header.Get("Authorization"); got != "Bearer test-credential" {
+			t.Fatalf("Authorization = %q, want Bearer token", got)
+		}
 		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
 			t.Fatalf("decode heartbeat request: %v", err)
 		}
@@ -44,6 +47,7 @@ func TestHeartbeatClientPostsHeartbeat(t *testing.T) {
 	client, err := NewHeartbeatClient(HeartbeatClientConfig{
 		ServerURL:      server.URL,
 		NodeID:         "node-1",
+		NodeCredential: "test-credential",
 		Hostname:       "worker-a",
 		SidecarVersion: "test-version",
 		Now:            func() time.Time { return now },
@@ -76,9 +80,10 @@ func TestHeartbeatClientPostsHeartbeat(t *testing.T) {
 
 func TestHeartbeatClientDefaultsNodeIDToHostname(t *testing.T) {
 	client, err := NewHeartbeatClient(HeartbeatClientConfig{
-		ServerURL: "http://example.test",
-		Hostname:  "worker-a",
-		Now:       func() time.Time { return time.Unix(0, 0) },
+		ServerURL:      "http://example.test",
+		NodeCredential: "test-credential",
+		Hostname:       "worker-a",
+		Now:            func() time.Time { return time.Unix(0, 0) },
 	})
 	if err != nil {
 		t.Fatalf("new heartbeat client: %v", err)
@@ -107,9 +112,10 @@ func TestRunHeartbeatLoopSendsPeriodically(t *testing.T) {
 	defer server.Close()
 
 	client, err := NewHeartbeatClient(HeartbeatClientConfig{
-		ServerURL: server.URL,
-		NodeID:    "node-1",
-		Hostname:  "worker-a",
+		ServerURL:      server.URL,
+		NodeID:         "node-1",
+		NodeCredential: "test-credential",
+		Hostname:       "worker-a",
 	})
 	if err != nil {
 		t.Fatalf("new heartbeat client: %v", err)

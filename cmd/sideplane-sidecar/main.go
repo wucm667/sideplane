@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -31,6 +32,8 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 
 	serverURL := flags.String("server", "", "Sideplane server URL")
 	nodeID := flags.String("node-id", "", "node ID to report in heartbeats")
+	nodeCredential := flags.String("node-credential", "", "node credential for testing or temporary runs")
+	statePath := flags.String("state", "", "sidecar state file path")
 	heartbeatInterval := flags.Duration("heartbeat-interval", 30*time.Second, "heartbeat interval")
 	showVersion := flags.Bool("version", false, "print version and exit")
 	if err := flags.Parse(args); err != nil {
@@ -42,15 +45,21 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 0
 	}
 
-	if *serverURL == "" {
-		fmt.Fprintln(stdout, "sideplane-sidecar skeleton")
-		return 0
+	runtimeConfig, err := resolveRuntimeConfig(*serverURL, *nodeID, *nodeCredential, *statePath)
+	if err != nil {
+		fmt.Fprintf(stderr, "load sidecar state: %v\n", err)
+		return 1
+	}
+	if runtimeConfig.NodeCredential == "" {
+		fmt.Fprintln(stderr, "node credential is required; run sideplane-sidecar enroll first")
+		return 1
 	}
 
 	logger := slog.New(slog.NewTextHandler(stderr, nil))
 	client, err := sidecar.NewHeartbeatClient(sidecar.HeartbeatClientConfig{
-		ServerURL:      *serverURL,
-		NodeID:         *nodeID,
+		ServerURL:      runtimeConfig.ServerURL,
+		NodeID:         runtimeConfig.NodeID,
+		NodeCredential: runtimeConfig.NodeCredential,
 		SidecarVersion: version,
 	})
 	if err != nil {
@@ -61,7 +70,13 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	logger.Info("starting sidecar heartbeat", "server", *serverURL, "interval", heartbeatInterval.String())
+	logger.Info(
+		"starting sidecar heartbeat",
+		"server", runtimeConfig.ServerURL,
+		"node_id", runtimeConfig.NodeID,
+		"state", runtimeConfig.StatePath,
+		"interval", heartbeatInterval.String(),
+	)
 	err = sidecar.RunHeartbeatLoop(ctx, client, *heartbeatInterval, func(resp *protocol.HeartbeatResponse, err error) {
 		if err != nil {
 			logger.Warn("heartbeat failed", "error", err)
@@ -74,6 +89,51 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+type runtimeConfig struct {
+	ServerURL      string
+	NodeID         string
+	NodeCredential string
+	StatePath      string
+}
+
+func resolveRuntimeConfig(serverURLFlag string, nodeIDFlag string, nodeCredentialFlag string, statePathFlag string) (runtimeConfig, error) {
+	cfg := runtimeConfig{}
+
+	statePath := strings.TrimSpace(statePathFlag)
+	if statePath == "" {
+		defaultPath, err := sidecar.DefaultStatePath()
+		if err != nil {
+			return cfg, fmt.Errorf("resolve default state path: %w", err)
+		}
+		statePath = defaultPath
+	}
+	cfg.StatePath = statePath
+
+	if _, err := os.Stat(statePath); err == nil {
+		state, err := sidecar.ReadState(statePath)
+		if err != nil {
+			return cfg, err
+		}
+		cfg.ServerURL = strings.TrimSpace(state.ServerURL)
+		cfg.NodeID = strings.TrimSpace(state.NodeID)
+		cfg.NodeCredential = strings.TrimSpace(state.NodeCredential)
+	} else if !os.IsNotExist(err) {
+		return cfg, fmt.Errorf("stat sidecar state: %w", err)
+	}
+
+	if value := strings.TrimSpace(serverURLFlag); value != "" {
+		cfg.ServerURL = value
+	}
+	if value := strings.TrimSpace(nodeIDFlag); value != "" {
+		cfg.NodeID = value
+	}
+	if cfg.NodeCredential == "" {
+		cfg.NodeCredential = strings.TrimSpace(nodeCredentialFlag)
+	}
+
+	return cfg, nil
 }
 
 func runEnroll(args []string, stdout io.Writer, stderr io.Writer) int {

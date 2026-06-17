@@ -20,6 +20,7 @@ import (
 type HeartbeatClientConfig struct {
 	ServerURL      string
 	NodeID         string
+	NodeCredential string
 	Hostname       string
 	SidecarVersion string
 	HTTPClient     *http.Client
@@ -30,6 +31,7 @@ type HeartbeatClientConfig struct {
 type HeartbeatClient struct {
 	endpoint       string
 	nodeID         string
+	nodeCredential string
 	hostname       string
 	sidecarVersion string
 	httpClient     *http.Client
@@ -40,6 +42,9 @@ type HeartbeatClient struct {
 func NewHeartbeatClient(cfg HeartbeatClientConfig) (*HeartbeatClient, error) {
 	if strings.TrimSpace(cfg.ServerURL) == "" {
 		return nil, errors.New("server URL is required")
+	}
+	if strings.TrimSpace(cfg.NodeCredential) == "" {
+		return nil, errors.New("node credential is required")
 	}
 
 	serverURL := strings.TrimSpace(cfg.ServerURL)
@@ -86,6 +91,7 @@ func NewHeartbeatClient(cfg HeartbeatClientConfig) (*HeartbeatClient, error) {
 	return &HeartbeatClient{
 		endpoint:       endpoint,
 		nodeID:         nodeID,
+		nodeCredential: strings.TrimSpace(cfg.NodeCredential),
 		hostname:       hostname,
 		sidecarVersion: cfg.SidecarVersion,
 		httpClient:     httpClient,
@@ -117,6 +123,7 @@ func (c *HeartbeatClient) SendHeartbeat(ctx context.Context) (*protocol.Heartbea
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", "Bearer "+c.nodeCredential)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

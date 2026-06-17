@@ -142,6 +142,27 @@ func DefaultStatePath() (string, error) {
 	return filepath.Join(home, ".sideplane", "sidecar.json"), nil
 }
 
+// ReadState loads sidecar state from disk.
+func ReadState(path string) (SidecarState, error) {
+	if strings.TrimSpace(path) == "" {
+		return SidecarState{}, errors.New("state path is required")
+	}
+
+	f, err := os.Open(path)
+	if err != nil {
+		return SidecarState{}, fmt.Errorf("open sidecar state: %w", err)
+	}
+	defer f.Close()
+
+	var state SidecarState
+	decoder := json.NewDecoder(f)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&state); err != nil {
+		return SidecarState{}, fmt.Errorf("decode sidecar state JSON: %w", err)
+	}
+	return state, nil
+}
+
 // WriteState persists sidecar state with owner-only permissions.
 func WriteState(path string, state SidecarState) error {
 	if strings.TrimSpace(path) == "" {

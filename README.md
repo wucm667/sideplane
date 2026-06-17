@@ -224,8 +224,9 @@ Available endpoints:
 - `GET /readyz` returns `{"status":"ready"}`
 - `GET /metrics` returns a placeholder Prometheus-compatible endpoint
 - `POST /api/enrollment-tokens` creates a one-time sidecar enrollment token
-- `POST /api/heartbeat` records the latest heartbeat-derived node status
 - `POST /api/enroll` exchanges an enrollment token for a node credential
+- `POST /api/heartbeat` records the latest heartbeat-derived node status and
+  requires `Authorization: Bearer <nodeCredential>`
 - `GET /api/nodes` lists nodes with freshness-adjusted `fresh`, `stale`, or
   `offline` state
 
@@ -258,15 +259,27 @@ go run ./cmd/sideplane-sidecar enroll \
   --state ./sidecar-state.json
 ```
 
-The sidecar heartbeat path does not yet authenticate with the stored credential;
-that is the next development step.
+After enrollment, start the sidecar heartbeat loop from the saved state:
+
+```bash
+go run ./cmd/sideplane-sidecar
+```
+
+For a custom state path, pass the same `--state` value used during enrollment:
+
+```bash
+go run ./cmd/sideplane-sidecar --state ./sidecar-state.json
+```
+
+The runtime `--server` and `--node-id` flags override values loaded from state.
+The node credential is read from state first; `--node-credential` is available
+for tests and temporary runs when no state credential exists.
 
 Expected next steps:
 
-1. Add node credential authentication to sidecar heartbeat.
-2. Extend sidecar heartbeat status with Hermes and OpenClaw discovery.
-3. Add Hermes and OpenClaw adapter interfaces.
-4. Implement config diff and safe apply planning.
+1. Extend sidecar heartbeat status with Hermes and OpenClaw discovery.
+2. Add Hermes and OpenClaw adapter interfaces.
+3. Implement config diff and safe apply planning.
 
 ## License
 

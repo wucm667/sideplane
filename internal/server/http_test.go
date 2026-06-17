@@ -50,6 +50,9 @@ func TestMetricsPlaceholder(t *testing.T) {
 }
 
 func TestHeartbeatRecordsNode(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	credential := enrollTestNode(t, nodeStore, "node-1")
+
 	body := protocol.HeartbeatRequest{
 		NodeID:         "node-1",
 		Hostname:       "worker-a",
@@ -72,9 +75,10 @@ func TestHeartbeatRecordsNode(t *testing.T) {
 		t.Fatalf("encode heartbeat: %v", err)
 	}
 
-	handler := NewHandler()
+	handler := NewHandlerWithStore(nodeStore)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/heartbeat", &buf)
+	req.Header.Set("Authorization", "Bearer "+credential)
 
 	handler.ServeHTTP(rec, req)
 
@@ -114,6 +118,42 @@ func TestHeartbeatRecordsNode(t *testing.T) {
 	if nodes[0].Runtimes[0].Type != "hermes" {
 		t.Fatalf("runtime type = %q, want hermes", nodes[0].Runtimes[0].Type)
 	}
+}
+
+func TestHeartbeatRequiresAuthorization(t *testing.T) {
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/heartbeat", strings.NewReader(`{"nodeId":"node-1"}`))
+
+	NewHandler().ServeHTTP(rec, req)
+
+	assertStatus(t, rec, http.StatusUnauthorized)
+}
+
+func TestHeartbeatRejectsWrongCredential(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	enrollTestNode(t, nodeStore, "node-1")
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/heartbeat", strings.NewReader(`{"nodeId":"node-1"}`))
+	req.Header.Set("Authorization", "Bearer wrong-credential")
+
+	NewHandlerWithStore(nodeStore).ServeHTTP(rec, req)
+
+	assertStatus(t, rec, http.StatusUnauthorized)
+}
+
+func TestHeartbeatRejectsCredentialNodeMismatch(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	nodeACredential := enrollTestNode(t, nodeStore, "node-a")
+	enrollTestNode(t, nodeStore, "node-b")
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/heartbeat", strings.NewReader(`{"nodeId":"node-b"}`))
+	req.Header.Set("Authorization", "Bearer "+nodeACredential)
+
+	NewHandlerWithStore(nodeStore).ServeHTTP(rec, req)
+
+	assertStatus(t, rec, http.StatusUnauthorized)
 }
 
 func TestEnrollmentAPIsCreateTokenAndEnrollNode(t *testing.T) {
@@ -329,6 +369,27 @@ func assertJSONStatus(t *testing.T, rec *httptest.ResponseRecorder, want string)
 	if body.Status != want {
 		t.Fatalf("status body = %q, want %q", body.Status, want)
 	}
+}
+
+func enrollTestNode(t *testing.T, nodeStore store.Store, nodeID string) string {
+	t.Helper()
+
+	now := time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)
+	tokenResp, err := nodeStore.CreateEnrollmentToken(context.Background(), now.Add(time.Hour), now)
+	if err != nil {
+		t.Fatalf("create enrollment token: %v", err)
+	}
+	enrollResp, err := nodeStore.EnrollNode(context.Background(), protocol.EnrollNodeRequest{
+		Token:  tokenResp.Token,
+		NodeID: nodeID,
+	}, now.Add(time.Second))
+	if err != nil {
+		t.Fatalf("enroll test node %q: %v", nodeID, err)
+	}
+	if enrollResp.NodeCredential == "" {
+		t.Fatalf("node credential is empty")
+	}
+	return enrollResp.NodeCredential
 }
 
 type staticNodeStore struct {

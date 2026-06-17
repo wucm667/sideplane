@@ -175,8 +175,25 @@ func (h *handler) heartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if strings.TrimSpace(req.NodeID) == "" {
+	req.NodeID = strings.TrimSpace(req.NodeID)
+	if req.NodeID == "" {
 		http.Error(w, "nodeId is required", http.StatusBadRequest)
+		return
+	}
+
+	credential, ok := bearerCredential(r.Header.Get("Authorization"))
+	if !ok {
+		http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
+		return
+	}
+
+	ok, err := h.store.VerifyNodeCredential(r.Context(), req.NodeID, credential)
+	if err != nil {
+		http.Error(w, "verify node credential", http.StatusInternalServerError)
+		return
+	}
+	if !ok {
+		http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
 		return
 	}
 
@@ -215,6 +232,21 @@ func (h *handler) applyFreshness(nodes []protocol.NodeStatus) {
 	for i := range nodes {
 		nodes[i].State = h.freshness.StateFor(nodes[i].LastHeartbeatAt)
 	}
+}
+
+func bearerCredential(authorization string) (string, bool) {
+	fields := strings.Fields(authorization)
+	if len(fields) != 2 {
+		return "", false
+	}
+	if !strings.EqualFold(fields[0], "Bearer") {
+		return "", false
+	}
+	credential := strings.TrimSpace(fields[1])
+	if credential == "" {
+		return "", false
+	}
+	return credential, true
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {
