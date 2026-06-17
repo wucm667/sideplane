@@ -10,12 +10,14 @@ import (
 )
 
 type fakeAdapter struct {
-	name      string
-	typ       string
-	detected  bool
-	detectErr error
-	status    protocol.RuntimeStatus
-	statusErr error
+	name        string
+	typ         string
+	detected    bool
+	detectErr   error
+	status      protocol.RuntimeStatus
+	statusErr   error
+	snapshots   []protocol.RuntimeConfigSnapshot
+	snapshotErr error
 }
 
 func (f *fakeAdapter) Name() string { return f.name }
@@ -25,6 +27,9 @@ func (f *fakeAdapter) Detect(_ context.Context) (bool, error) {
 }
 func (f *fakeAdapter) Status(_ context.Context) (protocol.RuntimeStatus, error) {
 	return f.status, f.statusErr
+}
+func (f *fakeAdapter) ConfigSnapshots(_ context.Context) ([]protocol.RuntimeConfigSnapshot, error) {
+	return append([]protocol.RuntimeConfigSnapshot(nil), f.snapshots...), f.snapshotErr
 }
 
 func TestRegistryCollectsMultipleRuntimes(t *testing.T) {
@@ -101,4 +106,40 @@ func TestRegistrySurfacesDetectError(t *testing.T) {
 func TestRegistryImplementsRuntimeCollector(t *testing.T) {
 	// Compile-time check that Registry can be used as a RuntimeCollector.
 	var _ adapters.RuntimeCollector = (*Registry)(nil)
+}
+
+func TestRegistryCollectsConfigSnapshots(t *testing.T) {
+	reg := New(
+		&fakeAdapter{name: "hermes", typ: "hermes", detected: true, snapshots: []protocol.RuntimeConfigSnapshot{{RuntimeName: "hermes", RuntimeType: "hermes"}}},
+		&fakeAdapter{name: "openclaw", typ: "openclaw", detected: false, snapshots: []protocol.RuntimeConfigSnapshot{{RuntimeName: "openclaw", RuntimeType: "openclaw"}}},
+	)
+
+	snapshots := reg.CollectConfigSnapshots(context.Background())
+	if len(snapshots) != 1 {
+		t.Fatalf("len(snapshots) = %d, want 1", len(snapshots))
+	}
+	if snapshots[0].RuntimeName != "hermes" {
+		t.Fatalf("snapshots[0].RuntimeName = %q, want hermes", snapshots[0].RuntimeName)
+	}
+}
+
+func TestRegistrySurfacesConfigSnapshotError(t *testing.T) {
+	reg := New(
+		&fakeAdapter{name: "hermes", typ: "hermes", detected: true, snapshotErr: errors.New("snapshot failed")},
+	)
+
+	snapshots := reg.CollectConfigSnapshots(context.Background())
+	if len(snapshots) != 1 {
+		t.Fatalf("len(snapshots) = %d, want 1", len(snapshots))
+	}
+	if snapshots[0].RuntimeName != "hermes" {
+		t.Fatalf("snapshot name = %q, want hermes", snapshots[0].RuntimeName)
+	}
+	if len(snapshots[0].Warnings) != 1 || snapshots[0].Warnings[0] != "snapshot failed" {
+		t.Fatalf("warnings = %#v, want snapshot failed", snapshots[0].Warnings)
+	}
+}
+
+func TestRegistryImplementsConfigSnapshotCollector(t *testing.T) {
+	var _ adapters.ConfigSnapshotCollector = (*Registry)(nil)
 }

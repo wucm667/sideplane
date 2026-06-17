@@ -44,3 +44,26 @@ func (r *Registry) CollectStatuses(ctx context.Context) []protocol.RuntimeStatus
 	}
 	return out
 }
+
+// CollectConfigSnapshots runs Detect+ConfigSnapshots on each registered adapter
+// and returns read-only, redacted snapshots. Missing runtimes are omitted.
+func (r *Registry) CollectConfigSnapshots(ctx context.Context) []protocol.RuntimeConfigSnapshot {
+	var out []protocol.RuntimeConfigSnapshot
+	for _, a := range r.adapters {
+		present, err := a.Detect(ctx)
+		if err != nil {
+			out = append(out, adapters.ConfigSnapshotFromError(a.Name(), a.Type(), err))
+			continue
+		}
+		if !present {
+			continue
+		}
+		snapshots, err := a.ConfigSnapshots(ctx)
+		if err != nil {
+			out = append(out, adapters.ConfigSnapshotFromError(a.Name(), a.Type(), err))
+			continue
+		}
+		out = append(out, snapshots...)
+	}
+	return out
+}

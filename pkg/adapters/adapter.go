@@ -23,6 +23,10 @@ type RuntimeAdapter interface {
 	// Status returns the current runtime status.
 	// The adapter should not execute dangerous commands or mutate configuration.
 	Status(ctx context.Context) (protocol.RuntimeStatus, error)
+
+	// ConfigSnapshots returns read-only, redacted runtime configuration snapshots.
+	// The adapter must not mutate runtime configuration.
+	ConfigSnapshots(ctx context.Context) ([]protocol.RuntimeConfigSnapshot, error)
 }
 
 // StatusFromError builds a RuntimeStatus that surfaces an adapter error without
@@ -41,8 +45,27 @@ func StatusFromError(name, typ string, err error) protocol.RuntimeStatus {
 	}
 }
 
+// ConfigSnapshotFromError builds a read-only snapshot that surfaces adapter errors
+// as warnings without exposing secret values.
+func ConfigSnapshotFromError(name, typ string, err error) protocol.RuntimeConfigSnapshot {
+	msg := ""
+	if err != nil {
+		msg = err.Error()
+	}
+	return protocol.RuntimeConfigSnapshot{
+		RuntimeName: name,
+		RuntimeType: typ,
+		Warnings:    []string{msg},
+	}
+}
+
 // RuntimeCollector is the minimal interface needed by the heartbeat client to
 // gather runtime statuses for a heartbeat.
 type RuntimeCollector interface {
 	CollectStatuses(ctx context.Context) []protocol.RuntimeStatus
+}
+
+// ConfigSnapshotCollector gathers read-only runtime config snapshots.
+type ConfigSnapshotCollector interface {
+	CollectConfigSnapshots(ctx context.Context) []protocol.RuntimeConfigSnapshot
 }

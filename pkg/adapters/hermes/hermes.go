@@ -62,3 +62,23 @@ func (a *Adapter) Status(ctx context.Context) (protocol.RuntimeStatus, error) {
 		State: "present",
 	}, nil
 }
+
+// ConfigSnapshots returns read-only Hermes config snapshots.
+// Full config discovery is intentionally deferred until real install paths are verified.
+func (a *Adapter) ConfigSnapshots(ctx context.Context) ([]protocol.RuntimeConfigSnapshot, error) {
+	present, err := a.Detect(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if !present {
+		return nil, nil
+	}
+	return []protocol.RuntimeConfigSnapshot{
+		{
+			RuntimeName: AdapterName,
+			RuntimeType: AdapterType,
+			Source:      "adapter",
+			Warnings:    []string{"config snapshot discovery not implemented"},
+		},
+	}, nil
+}
