@@ -324,6 +324,9 @@ for tests and temporary runs when no state credential exists.
 
 The sidecar heartbeat now includes lightweight runtime discovery. During each heartbeat, the sidecar checks whether `hermes` and `openclaw` commands are available on the local `PATH`. Detected runtimes are reported in the heartbeat payload; missing runtimes are silently omitted. This is intentionally lightweight—no configuration is read, no dangerous commands are executed, and discovery failures do not break the heartbeat.
 
+For a read-only real-machine sidecar test using systemd, see
+[docs/read-only-sidecar-deployment.md](docs/read-only-sidecar-deployment.md).
+
 In the web UI, each node shows recent jobs and a `Deep Probe` button. The button
 creates a `deep_probe` job through `POST /api/nodes/{nodeId}/jobs`; the sidecar
 claims it on the next poll and reports runtime status back through the job result
