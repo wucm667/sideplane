@@ -57,3 +57,16 @@ export interface Job {
   claimExpiresAt?: string
   finishedAt?: string
 }
+
+export interface AuditEvent {
+  id: string
+  actor: string
+  action: string
+  targetNode?: string
+  detail?: string
+  createdAt: string
+}
+
+export interface ListAuditEventsResponse {
+  events: AuditEvent[]
+}
