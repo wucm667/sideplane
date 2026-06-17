@@ -13,6 +13,9 @@ import (
 	"time"
 
 	"github.com/wucm667/sideplane/internal/sidecar"
+	"github.com/wucm667/sideplane/pkg/adapters/hermes"
+	"github.com/wucm667/sideplane/pkg/adapters/openclaw"
+	"github.com/wucm667/sideplane/pkg/adapters/registry"
 	"github.com/wucm667/sideplane/pkg/protocol"
 )
 
@@ -56,11 +59,15 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 
 	logger := slog.New(slog.NewTextHandler(stderr, nil))
+
+	reg := registry.New(hermes.NewAdapter(), openclaw.NewAdapter())
+
 	client, err := sidecar.NewHeartbeatClient(sidecar.HeartbeatClientConfig{
 		ServerURL:      runtimeConfig.ServerURL,
 		NodeID:         runtimeConfig.NodeID,
 		NodeCredential: runtimeConfig.NodeCredential,
 		SidecarVersion: version,
+		Collector:      reg,
 	})
 	if err != nil {
 		logger.Error("configure heartbeat client", "error", err)

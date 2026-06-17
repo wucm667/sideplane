@@ -275,11 +275,13 @@ The runtime `--server` and `--node-id` flags override values loaded from state.
 The node credential is read from state first; `--node-credential` is available
 for tests and temporary runs when no state credential exists.
 
+The sidecar heartbeat now includes lightweight runtime discovery. During each heartbeat, the sidecar checks whether `hermes` and `openclaw` commands are available on the local `PATH`. Detected runtimes are reported in the heartbeat payload; missing runtimes are silently omitted. This is intentionally lightweight—no configuration is read, no dangerous commands are executed, and discovery failures do not break the heartbeat.
+
 Expected next steps:
 
-1. Extend sidecar heartbeat status with Hermes and OpenClaw discovery.
-2. Add Hermes and OpenClaw adapter interfaces.
-3. Implement config diff and safe apply planning.
+1. Extend runtime adapters to read current model and provider configuration.
+2. Implement config diff and safe apply planning.
+3. Add rollback and health-check integration after config changes.
 
 ## License
 

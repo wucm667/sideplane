@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wucm667/sideplane/pkg/adapters"
 	"github.com/wucm667/sideplane/pkg/protocol"
 )
 
@@ -25,6 +26,7 @@ type HeartbeatClientConfig struct {
 	SidecarVersion string
 	HTTPClient     *http.Client
 	Now            func() time.Time
+	Collector      adapters.RuntimeCollector
 }
 
 // HeartbeatClient sends periodic node status heartbeats to a Sideplane server.
@@ -36,6 +38,7 @@ type HeartbeatClient struct {
 	sidecarVersion string
 	httpClient     *http.Client
 	now            func() time.Time
+	collector      adapters.RuntimeCollector
 }
 
 // NewHeartbeatClient builds a heartbeat client for a Sideplane server.
@@ -96,24 +99,29 @@ func NewHeartbeatClient(cfg HeartbeatClientConfig) (*HeartbeatClient, error) {
 		sidecarVersion: cfg.SidecarVersion,
 		httpClient:     httpClient,
 		now:            now,
+		collector:      cfg.Collector,
 	}, nil
 }
 
 // BuildHeartbeat creates the current heartbeat payload.
-func (c *HeartbeatClient) BuildHeartbeat() protocol.HeartbeatRequest {
-	return protocol.HeartbeatRequest{
+func (c *HeartbeatClient) BuildHeartbeat(ctx context.Context) protocol.HeartbeatRequest {
+	req := protocol.HeartbeatRequest{
 		NodeID:         c.nodeID,
 		Hostname:       c.hostname,
 		SidecarVersion: c.sidecarVersion,
 		SentAt:         c.now().UTC(),
 		Runtimes:       []protocol.RuntimeStatus{},
 	}
+	if c.collector != nil {
+		req.Runtimes = c.collector.CollectStatuses(ctx)
+	}
+	return req
 }
 
 // SendHeartbeat POSTs a heartbeat to the configured server.
 func (c *HeartbeatClient) SendHeartbeat(ctx context.Context) (*protocol.HeartbeatResponse, error) {
 	var body bytes.Buffer
-	if err := json.NewEncoder(&body).Encode(c.BuildHeartbeat()); err != nil {
+	if err := json.NewEncoder(&body).Encode(c.BuildHeartbeat(ctx)); err != nil {
 		return nil, fmt.Errorf("encode heartbeat: %w", err)
 	}
 
