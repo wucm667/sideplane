@@ -294,6 +294,16 @@ func (h *handler) createNodeJob(w http.ResponseWriter, r *http.Request, nodeID s
 		return
 	}
 
+	exists, err := h.store.NodeExists(r.Context(), nodeID)
+	if err != nil {
+		http.Error(w, "lookup node", http.StatusInternalServerError)
+		return
+	}
+	if !exists {
+		http.Error(w, "node not found", http.StatusNotFound)
+		return
+	}
+
 	job, err := h.store.CreateJob(r.Context(), req, nodeID, time.Now().UTC())
 	if err != nil {
 		http.Error(w, "create job", http.StatusInternalServerError)

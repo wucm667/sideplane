@@ -23,6 +23,7 @@ var (
 type NodeStore interface {
 	RecordHeartbeat(ctx context.Context, req protocol.HeartbeatRequest, observedAt time.Time) (protocol.NodeStatus, error)
 	ListNodes(ctx context.Context) ([]protocol.NodeStatus, error)
+	NodeExists(ctx context.Context, nodeID string) (bool, error)
 }
 
 // EnrollmentStore persists one-time enrollment tokens and node credentials.

@@ -249,6 +249,27 @@ ORDER BY node_id, runtime_index
 	return nodes, nil
 }
 
+// NodeExists reports whether a node is known to the store.
+func (s *SQLiteNodeStore) NodeExists(ctx context.Context, nodeID string) (bool, error) {
+	if s == nil || s.db == nil {
+		return false, errors.New("sqlite node store is closed")
+	}
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" {
+		return false, nil
+	}
+
+	var exists int
+	err := s.db.QueryRowContext(ctx, `SELECT 1 FROM nodes WHERE node_id = ?`, nodeID).Scan(&exists)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("query node existence: %w", err)
+	}
+	return true, nil
+}
+
 // CreateEnrollmentToken creates a one-time enrollment token and stores only its hash.
 func (s *SQLiteNodeStore) CreateEnrollmentToken(ctx context.Context, expiresAt time.Time, now time.Time) (protocol.CreateEnrollmentTokenResponse, error) {
 	if s == nil || s.db == nil {

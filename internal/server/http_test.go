@@ -41,6 +41,41 @@ func TestCreateJobAPI(t *testing.T) {
 	}
 }
 
+func TestCreateJobAPIRejectsMalformedJSON(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	enrollTestNode(t, nodeStore, "node-jobs")
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/nodes/node-jobs/jobs", strings.NewReader(`{"type":`))
+
+	NewHandlerWithStore(nodeStore).ServeHTTP(rec, req)
+
+	assertStatus(t, rec, http.StatusBadRequest)
+}
+
+func TestCreateJobAPIRejectsUnsupportedType(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	enrollTestNode(t, nodeStore, "node-jobs")
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/nodes/node-jobs/jobs", strings.NewReader(`{"type":"bad"}`))
+
+	NewHandlerWithStore(nodeStore).ServeHTTP(rec, req)
+
+	assertStatus(t, rec, http.StatusBadRequest)
+}
+
+func TestCreateJobAPIRejectsUnknownNode(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/nodes/missing-node/jobs", strings.NewReader(`{"type":"deep_probe"}`))
+
+	NewHandlerWithStore(nodeStore).ServeHTTP(rec, req)
+
+	assertStatus(t, rec, http.StatusNotFound)
+}
+
 func TestListNodeJobsAPI(t *testing.T) {
 	nodeStore := store.NewMemoryNodeStore()
 	enrollTestNode(t, nodeStore, "node-jobs")
@@ -611,6 +646,10 @@ func (s staticNodeStore) RecordHeartbeat(context.Context, protocol.HeartbeatRequ
 func (s staticNodeStore) ListNodes(context.Context) ([]protocol.NodeStatus, error) {
 	nodes := append([]protocol.NodeStatus(nil), s.nodes...)
 	return nodes, nil
+}
+
+func (s staticNodeStore) NodeExists(context.Context, string) (bool, error) {
+	return false, nil
 }
 
 func (s staticNodeStore) CreateEnrollmentToken(context.Context, time.Time, time.Time) (protocol.CreateEnrollmentTokenResponse, error) {

@@ -75,6 +75,19 @@ func (s *MemoryNodeStore) ListNodes(_ context.Context) ([]protocol.NodeStatus, e
 	return nodes, nil
 }
 
+// NodeExists reports whether a node is known to the store.
+func (s *MemoryNodeStore) NodeExists(_ context.Context, nodeID string) (bool, error) {
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" {
+		return false, nil
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	_, ok := s.nodes[nodeID]
+	return ok, nil
+}
+
 // CreateEnrollmentToken creates a one-time enrollment token and stores only its hash.
 func (s *MemoryNodeStore) CreateEnrollmentToken(_ context.Context, expiresAt time.Time, now time.Time) (protocol.CreateEnrollmentTokenResponse, error) {
 	if expiresAt.IsZero() {
