@@ -237,7 +237,7 @@ func (h *handler) applyFreshness(nodes []protocol.NodeStatus) {
 	}
 }
 
-// nodeJobsRouter handles POST /api/nodes/{nodeId}/jobs
+// nodeJobsRouter handles GET and POST /api/nodes/{nodeId}/jobs
 func (h *handler) nodeJobsRouter(w http.ResponseWriter, r *http.Request) {
 	// Parse path: /api/nodes/{nodeId}/jobs
 	path := strings.TrimPrefix(r.URL.Path, "/api/nodes/")
@@ -252,12 +252,28 @@ func (h *handler) nodeJobsRouter(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if r.Method != http.MethodPost {
-		w.Header().Set("Allow", http.MethodPost)
+	switch r.Method {
+	case http.MethodGet:
+		h.listNodeJobs(w, r, nodeID)
+	case http.MethodPost:
+		h.createNodeJob(w, r, nodeID)
+	default:
+		w.Header().Set("Allow", http.MethodGet+", "+http.MethodPost)
 		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
+	}
+}
+
+func (h *handler) listNodeJobs(w http.ResponseWriter, r *http.Request, nodeID string) {
+	jobs, err := h.store.ListNodeJobs(r.Context(), nodeID)
+	if err != nil {
+		http.Error(w, "list node jobs", http.StatusInternalServerError)
 		return
 	}
 
+	writeJSON(w, http.StatusOK, jobs)
+}
+
+func (h *handler) createNodeJob(w http.ResponseWriter, r *http.Request, nodeID string) {
 	// TODO(auth): require operator authentication before creating jobs
 	defer r.Body.Close()
 

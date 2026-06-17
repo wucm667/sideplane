@@ -3,7 +3,9 @@ package sidecar
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,6 +13,81 @@ import (
 	"github.com/wucm667/sideplane/internal/store"
 	"github.com/wucm667/sideplane/pkg/protocol"
 )
+
+func TestJobPollerAcceptsServerURLWithoutScheme(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/sidecar/jobs/next" {
+			t.Fatalf("path = %q, want jobs next endpoint", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer api.Close()
+
+	serverURL := strings.TrimPrefix(api.URL, "http://")
+	poller, err := NewJobPoller(JobPollerConfig{
+		ServerURL:      serverURL,
+		NodeID:         "node-no-scheme",
+		NodeCredential: "credential",
+		HTTPClient:     api.Client(),
+	})
+	if err != nil {
+		t.Fatalf("new job poller: %v", err)
+	}
+
+	if err := poller.PollAndExecute(context.Background()); err != nil {
+		t.Fatalf("poll and execute: %v", err)
+	}
+}
+
+func TestRunJobPollerPollsImmediately(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	nodeStore := store.NewMemoryNodeStore()
+	credential := enrollTestNode(t, nodeStore, "node-immediate")
+	job, err := nodeStore.CreateJob(ctx, protocol.CreateJobRequest{Type: protocol.JobTypeDeepProbe}, "node-immediate", time.Now().UTC())
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	api := httptest.NewServer(server.NewHandlerWithStore(nodeStore))
+	defer api.Close()
+
+	poller, err := NewJobPoller(JobPollerConfig{
+		ServerURL:      api.URL,
+		NodeID:         "node-immediate",
+		NodeCredential: credential,
+		Collector:      fakeRuntimeCollector{},
+		HTTPClient:     api.Client(),
+	})
+	if err != nil {
+		t.Fatalf("new job poller: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- RunJobPoller(ctx, poller, time.Hour)
+	}()
+
+	deadline := time.After(time.Second)
+	for {
+		got, err := nodeStore.GetJob(context.Background(), job.ID)
+		if err != nil {
+			t.Fatalf("get job: %v", err)
+		}
+		if got.Status == protocol.JobStatusCompleted {
+			cancel()
+			<-done
+			return
+		}
+
+		select {
+		case <-deadline:
+			t.Fatalf("job status = %q, want completed before first interval", got.Status)
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
 
 func TestJobPollerCompletesDeepProbe(t *testing.T) {
 	ctx := context.Background()

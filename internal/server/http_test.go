@@ -41,6 +41,43 @@ func TestCreateJobAPI(t *testing.T) {
 	}
 }
 
+func TestListNodeJobsAPI(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	enrollTestNode(t, nodeStore, "node-jobs")
+	enrollTestNode(t, nodeStore, "other-node")
+
+	now := time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)
+	older, err := nodeStore.CreateJob(context.Background(), protocol.CreateJobRequest{Type: protocol.JobTypeDeepProbe}, "node-jobs", now)
+	if err != nil {
+		t.Fatalf("create older job: %v", err)
+	}
+	newer, err := nodeStore.CreateJob(context.Background(), protocol.CreateJobRequest{Type: protocol.JobTypeDeepProbe}, "node-jobs", now.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("create newer job: %v", err)
+	}
+	if _, err := nodeStore.CreateJob(context.Background(), protocol.CreateJobRequest{Type: protocol.JobTypeDeepProbe}, "other-node", now.Add(2*time.Minute)); err != nil {
+		t.Fatalf("create other job: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/nodes/node-jobs/jobs", nil)
+
+	NewHandlerWithStore(nodeStore).ServeHTTP(rec, req)
+
+	assertStatus(t, rec, http.StatusOK)
+
+	var jobs []protocol.Job
+	if err := json.NewDecoder(rec.Body).Decode(&jobs); err != nil {
+		t.Fatalf("decode jobs response: %v", err)
+	}
+	if len(jobs) != 2 {
+		t.Fatalf("jobs length = %d, want 2", len(jobs))
+	}
+	if jobs[0].ID != newer.ID || jobs[1].ID != older.ID {
+		t.Fatalf("jobs order = [%q, %q], want [%q, %q]", jobs[0].ID, jobs[1].ID, newer.ID, older.ID)
+	}
+}
+
 func TestSidecarClaimsOnlyOwnNodeJobs(t *testing.T) {
 	nodeStore := store.NewMemoryNodeStore()
 	nodeACredential := enrollTestNode(t, nodeStore, "node-a")

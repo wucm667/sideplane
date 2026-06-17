@@ -261,6 +261,8 @@ Available endpoints:
   requires `Authorization: Bearer <nodeCredential>`
 - `GET /api/nodes` lists nodes with freshness-adjusted `fresh`, `stale`, or
   `offline` state
+- `GET /api/nodes/{nodeId}/jobs` lists that node's jobs by newest `createdAt`
+  first
 - `POST /api/nodes/{nodeId}/jobs` creates a `deep_probe` job for a node
 - `GET /api/sidecar/jobs/next?nodeId=...` lets an enrolled sidecar claim its
   next pending job and requires `Authorization: Bearer <nodeCredential>`
@@ -302,8 +304,9 @@ After enrollment, start the sidecar heartbeat and job polling loops from the sav
 go run ./cmd/sideplane-sidecar
 ```
 
-Both loops default to a `30s` interval. Use `--heartbeat-interval` and
-`--job-poll-interval` to tune development runs:
+Both loops default to a `30s` interval. The job poller now checks for work once
+immediately on startup, then continues at `--job-poll-interval`. Use
+`--heartbeat-interval` and `--job-poll-interval` to tune development runs:
 
 ```bash
 go run ./cmd/sideplane-sidecar --heartbeat-interval 15s --job-poll-interval 10s
@@ -320,6 +323,12 @@ The node credential is read from state first; `--node-credential` is available
 for tests and temporary runs when no state credential exists.
 
 The sidecar heartbeat now includes lightweight runtime discovery. During each heartbeat, the sidecar checks whether `hermes` and `openclaw` commands are available on the local `PATH`. Detected runtimes are reported in the heartbeat payload; missing runtimes are silently omitted. This is intentionally lightweight—no configuration is read, no dangerous commands are executed, and discovery failures do not break the heartbeat.
+
+In the web UI, each node shows recent jobs and a `Deep Probe` button. The button
+creates a `deep_probe` job through `POST /api/nodes/{nodeId}/jobs`; the sidecar
+claims it on the next poll and reports runtime status back through the job result
+path. The UI intentionally does not expose configuration changes, restart, or
+rollback controls yet.
 
 Expected next steps:
 

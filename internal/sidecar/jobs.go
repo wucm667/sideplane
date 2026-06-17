@@ -49,7 +49,10 @@ func NewJobPoller(cfg JobPollerConfig) (*JobPoller, error) {
 		return nil, fmt.Errorf("node credential is required")
 	}
 
-	serverURL := strings.TrimRight(cfg.ServerURL, "/")
+	serverURL, err := normalizeServerURL(cfg.ServerURL)
+	if err != nil {
+		return nil, err
+	}
 	endpoint := serverURL + "/api/sidecar/jobs/next"
 
 	httpClient := cfg.HTTPClient
@@ -71,6 +74,26 @@ func NewJobPoller(cfg JobPollerConfig) (*JobPoller, error) {
 		collector:      cfg.Collector,
 		logger:         logger,
 	}, nil
+}
+
+func normalizeServerURL(rawURL string) (string, error) {
+	serverURL := strings.TrimSpace(rawURL)
+	if !strings.Contains(serverURL, "://") {
+		serverURL = "http://" + serverURL
+	}
+
+	parsed, err := url.Parse(serverURL)
+	if err != nil {
+		return "", fmt.Errorf("parse server URL: %w", err)
+	}
+	if parsed.Scheme == "" || parsed.Host == "" {
+		return "", fmt.Errorf("server URL must include a host")
+	}
+
+	parsed.Path = strings.TrimRight(parsed.Path, "/")
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	return parsed.String(), nil
 }
 
 // PollAndExecute polls for the next job and executes it if found.
@@ -225,6 +248,10 @@ func RunJobPoller(ctx context.Context, poller *JobPoller, interval time.Duration
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+
+	if err := poller.PollAndExecute(ctx); err != nil {
+		poller.logger.Error("job poll failed", "error", err)
+	}
 
 	for {
 		select {
