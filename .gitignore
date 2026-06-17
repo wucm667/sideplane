@@ -66,6 +66,7 @@ web/dist/
 web/build/
 web/.vite/
 web/coverage/
+web/prototype/
 
 ### TypeScript
 *.tsbuildinfo
