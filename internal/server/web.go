@@ -57,7 +57,9 @@ func NewWebHandler(webDir string, api http.Handler) (http.Handler, error) {
 }
 
 // serveWebAsset serves a static asset from root, falling back to index.html
-// for unknown paths so client-side SPA routing works.
+// for unknown SPA routes. Paths that look like static assets (have a file
+// extension) return 404 when the file is missing, so broken asset references
+// are not silently masked by the SPA shell.
 func serveWebAsset(w http.ResponseWriter, r *http.Request, root string, fileServer http.Handler) {
 	requestPath := filepath.Clean("/" + r.URL.Path)
 	cleanRoot := filepath.Clean(root)
@@ -77,10 +79,25 @@ func serveWebAsset(w http.ResponseWriter, r *http.Request, root string, fileServ
 		return
 	}
 
-	// Unknown file or directory request: fall back to index.html for SPA
-	// routing. If index.html does not exist, surface a 404 rather than a
-	// directory listing.
+	// If the request path has a file extension (e.g. /assets/missing.js,
+	// /favicon.ico), it is a static asset reference rather than an SPA
+	// route. Return 404 so broken asset links are visible.
+	if hasFileExtension(requestPath) {
+		http.NotFound(w, r)
+		return
+	}
+
+	// Unknown route without a file extension: fall back to index.html for
+	// SPA routing. If index.html does not exist, surface a 404 rather than
+	// a directory listing.
 	serveIndex(w, r, cleanRoot)
+}
+
+// hasFileExtension reports whether the last path segment has a file
+// extension. Go's filepath.Ext treats leading-dot names like ".hidden" as
+// having no extension, which matches the desired SPA fallback behavior.
+func hasFileExtension(path string) bool {
+	return filepath.Ext(filepath.Base(path)) != ""
 }
 
 func serveIndex(w http.ResponseWriter, r *http.Request, root string) {

@@ -126,6 +126,50 @@ func TestWebServesRealAsset(t *testing.T) {
 	}
 }
 
+func TestWebMissingStaticAssetReturns404(t *testing.T) {
+	handler := newWebFixtureHandler(t)
+
+	// Paths that look like static assets (have a file extension) must
+	// return 404 when the file does not exist, instead of falling back to
+	// index.html.
+	missingAssets := []string{
+		"/assets/missing.js",
+		"/assets/styles/missing.css",
+		"/foo/missing.css",
+	}
+	for _, path := range missingAssets {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+
+		handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("path %s status = %d, want %d", path, rec.Code, http.StatusNotFound)
+		}
+	}
+}
+
+func TestWebMissingFaviconReturns404(t *testing.T) {
+	// Use a fixture directory without favicon.ico to verify that a missing
+	// file with an extension returns 404 rather than the SPA shell.
+	dir := t.TempDir()
+	mustWriteFile(t, filepath.Join(dir, "index.html"), "<!doctype html><html><body>SPA root</body></html>")
+
+	handler, err := NewWebHandler(dir, NewHandler())
+	if err != nil {
+		t.Fatalf("NewWebHandler: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/favicon.ico", nil)
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+}
+
 func TestWebReturns404WhenIndexMissing(t *testing.T) {
 	dir := t.TempDir()
 	// A directory with assets but no index.html.
