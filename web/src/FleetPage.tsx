@@ -4,6 +4,8 @@ import type { Job, JobStatus, NodeState, NodeStatus } from './types.ts'
 const NODE_REFRESH_MS = 10_000
 const ACTIVE_JOB_REFRESH_MS = 2_000
 const ACTIVE_JOB_STATUSES: JobStatus[] = ['pending', 'claimed']
+const MAX_RESULT_CHARS = 1_600
+const SECRET_LIKE_KEY = /(?:secret|token|password|api[_-]?key|credential|authorization)/i
 
 function stateBadgeClasses(state: NodeState): string {
   switch (state) {
@@ -44,6 +46,56 @@ function formatDate(iso: string | undefined): string {
 
 function hasActiveJobs(jobs: Job[]): boolean {
   return jobs.some((job) => ACTIVE_JOB_STATUSES.includes(job.status))
+}
+
+function redactSecretLikeValues(value: unknown, key = ''): unknown {
+  if (SECRET_LIKE_KEY.test(key)) return '[redacted]'
+  if (Array.isArray(value)) {
+    return value.map((item) => redactSecretLikeValues(item))
+  }
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value).map(([childKey, childValue]) => [
+        childKey,
+        redactSecretLikeValues(childValue, childKey),
+      ]),
+    )
+  }
+  return value
+}
+
+function truncateResult(text: string): string {
+  if (text.length <= MAX_RESULT_CHARS) return text
+  return `${text.slice(0, MAX_RESULT_CHARS)}\n... truncated`
+}
+
+function formatJobResult(resultJson: string | undefined): string {
+  if (!resultJson?.trim()) return ''
+
+  try {
+    const parsed = JSON.parse(resultJson) as unknown
+    return truncateResult(JSON.stringify(redactSecretLikeValues(parsed), null, 2))
+  } catch {
+    return truncateResult(resultJson)
+  }
+}
+
+function jobResultDetails(job: Job) {
+  if (job.status !== 'completed' && job.status !== 'failed') return '-'
+
+  const result = formatJobResult(job.resultJson)
+  if (!result) return '-'
+
+  return (
+    <details className="max-w-[22rem]">
+      <summary className="cursor-pointer select-none text-xs font-medium text-gray-700 hover:text-gray-900">
+        View
+      </summary>
+      <pre className="mt-2 max-h-40 overflow-auto rounded border border-gray-200 bg-gray-50 p-2 font-mono text-[11px] leading-4 text-gray-800">
+        {result}
+      </pre>
+    </details>
+  )
 }
 
 export default function FleetPage() {
@@ -385,23 +437,25 @@ export default function FleetPage() {
                         <th className="py-2 pr-3 font-medium">Created</th>
                         <th className="py-2 pr-3 font-medium">Claimed</th>
                         <th className="py-2 pr-3 font-medium">Finished</th>
+                        <th className="py-2 pr-3 font-medium">Result</th>
                         <th className="py-2 font-medium">Error</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-100">
                       {jobs.map((job) => (
                         <tr key={job.id}>
-                          <td className="py-2 pr-3 font-mono text-gray-900">{job.id}</td>
-                          <td className="py-2 pr-3 font-mono text-gray-900">{job.type}</td>
-                          <td className="py-2 pr-3">
+                          <td className="py-2 pr-3 align-top font-mono text-gray-900">{job.id}</td>
+                          <td className="py-2 pr-3 align-top font-mono text-gray-900">{job.type}</td>
+                          <td className="py-2 pr-3 align-top">
                             <span className={`inline-flex rounded border px-2 py-0.5 font-medium ${jobBadgeClasses(job.status)}`}>
                               {job.status}
                             </span>
                           </td>
-                          <td className="py-2 pr-3 text-gray-700">{formatDate(job.createdAt)}</td>
-                          <td className="py-2 pr-3 text-gray-700">{formatDate(job.claimedAt)}</td>
-                          <td className="py-2 pr-3 text-gray-700">{formatDate(job.finishedAt)}</td>
-                          <td className="py-2 text-gray-700">{job.error || '—'}</td>
+                          <td className="py-2 pr-3 align-top text-gray-700">{formatDate(job.createdAt)}</td>
+                          <td className="py-2 pr-3 align-top text-gray-700">{formatDate(job.claimedAt)}</td>
+                          <td className="py-2 pr-3 align-top text-gray-700">{formatDate(job.finishedAt)}</td>
+                          <td className="py-2 pr-3 align-top text-gray-700">{jobResultDetails(job)}</td>
+                          <td className="py-2 align-top text-gray-700">{job.error || '—'}</td>
                         </tr>
                       ))}
                     </tbody>
