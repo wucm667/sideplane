@@ -6,6 +6,8 @@ Sideplane at this stage can enroll a sidecar, receive heartbeats, run deep probe
 
 Use a disposable or low-risk node first. Do not start with a production machine that runs critical agent workloads.
 
+After deployment, run the [real-machine read-only smoke test](real-machine-readonly-smoke-test.md).
+
 ## Server
 
 Build the server, sidecar, CLI, and web assets:
