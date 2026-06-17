@@ -1,0 +1,8 @@
+{
+  "runtime": {
+    "provider": "openai",
+    "model": "gpt-5.2"
+  },
+  "baseURL": "https://api.example.test/v1",
+  "apiKey": "example-secret-do-not-use"
+}

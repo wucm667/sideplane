@@ -1,0 +1,2 @@
+{"level":"info","msg":"initializing chat agent","model":"anthropic/claude-sonnet-4.5"}
+{"level":"info","msg":"agent initialized","provider":"anthropic","token":"example-secret-do-not-use"}
