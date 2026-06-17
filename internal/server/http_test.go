@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/wucm667/sideplane/internal/store"
+	spcrypto "github.com/wucm667/sideplane/pkg/crypto"
 	"github.com/wucm667/sideplane/pkg/protocol"
 )
 
@@ -522,6 +524,69 @@ func TestMetricsPlaceholder(t *testing.T) {
 	}
 }
 
+func TestPublicSigningKeyAPI(t *testing.T) {
+	keyPair, err := spcrypto.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("generate keypair: %v", err)
+	}
+	handler, err := NewHandlerWithConfig(HandlerConfig{
+		Store:          store.NewMemoryNodeStore(),
+		Freshness:      DefaultFreshnessPolicy(),
+		SigningKeyPair: keyPair,
+	})
+	if err != nil {
+		t.Fatalf("build handler: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/signing-key", nil)
+	handler.ServeHTTP(rec, req)
+
+	assertStatus(t, rec, http.StatusOK)
+	var resp protocol.PublicSigningKeyResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode signing key response: %v", err)
+	}
+	if resp.Algorithm != "ed25519" {
+		t.Fatalf("algorithm = %q, want ed25519", resp.Algorithm)
+	}
+	if resp.PublicKey != spcrypto.PublicKeyString(keyPair.PublicKey) {
+		t.Fatalf("public key response mismatch")
+	}
+	payload, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatalf("marshal response: %v", err)
+	}
+	if strings.Contains(string(payload), "private") {
+		t.Fatalf("signing key response mentions private key: %s", payload)
+	}
+}
+
+func TestHandlerLoadsPersistedSigningKey(t *testing.T) {
+	keyPath := filepath.Join(t.TempDir(), "signing-key.json")
+	first, err := NewHandlerWithConfig(HandlerConfig{
+		Store:          store.NewMemoryNodeStore(),
+		Freshness:      DefaultFreshnessPolicy(),
+		SigningKeyPath: keyPath,
+	})
+	if err != nil {
+		t.Fatalf("build first handler: %v", err)
+	}
+	second, err := NewHandlerWithConfig(HandlerConfig{
+		Store:          store.NewMemoryNodeStore(),
+		Freshness:      DefaultFreshnessPolicy(),
+		SigningKeyPath: keyPath,
+	})
+	if err != nil {
+		t.Fatalf("build second handler: %v", err)
+	}
+	firstKey := readSigningKeyForTest(t, first)
+	secondKey := readSigningKeyForTest(t, second)
+	if firstKey != secondKey {
+		t.Fatalf("persisted public key changed")
+	}
+}
+
 func TestHeartbeatRecordsNode(t *testing.T) {
 	nodeStore := store.NewMemoryNodeStore()
 	credential := enrollTestNode(t, nodeStore, "node-1")
@@ -842,6 +907,19 @@ func assertJSONStatus(t *testing.T, rec *httptest.ResponseRecorder, want string)
 	if body.Status != want {
 		t.Fatalf("status body = %q, want %q", body.Status, want)
 	}
+}
+
+func readSigningKeyForTest(t *testing.T, handler http.Handler) string {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/signing-key", nil)
+	handler.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusOK)
+	var resp protocol.PublicSigningKeyResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode signing key response: %v", err)
+	}
+	return resp.PublicKey
 }
 
 func enrollTestNode(t *testing.T, nodeStore store.Store, nodeID string) string {

@@ -32,6 +32,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	staleAfter := flags.Duration("stale-after", server.DefaultStaleAfter, "duration after last heartbeat before a node is stale")
 	offlineAfter := flags.Duration("offline-after", server.DefaultOfflineAfter, "duration after last heartbeat before a node is offline")
 	operatorTokenFlag := flags.String("operator-token", "", "bearer token required for mutating operator API requests; can also be set with SIDEPLANE_OPERATOR_TOKEN")
+	signingKeyPath := flags.String("signing-key", "", "path to server config-plan signing key; can also be set with SIDEPLANE_SIGNING_KEY")
 	showVersion := flags.Bool("version", false, "print version and exit")
 	if err := flags.Parse(args); err != nil {
 		return 2
@@ -59,6 +60,10 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	if operatorToken == "" {
 		logger.Warn("operator token not configured; mutating operator endpoints are unauthenticated")
 	}
+	keyPath := strings.TrimSpace(*signingKeyPath)
+	if keyPath == "" {
+		keyPath = strings.TrimSpace(os.Getenv("SIDEPLANE_SIGNING_KEY"))
+	}
 
 	nodeStore, err := store.OpenSQLiteNodeStore(context.Background(), *dbPath)
 	if err != nil {
@@ -67,7 +72,12 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 	defer nodeStore.Close()
 
-	handler, err := server.NewHandlerWithStoreAndFreshnessPolicyAndOperatorToken(nodeStore, freshness, operatorToken)
+	handler, err := server.NewHandlerWithConfig(server.HandlerConfig{
+		Store:          nodeStore,
+		Freshness:      freshness,
+		OperatorToken:  operatorToken,
+		SigningKeyPath: keyPath,
+	})
 	if err != nil {
 		logger.Error("configure freshness policy", "error", err)
 		return 1

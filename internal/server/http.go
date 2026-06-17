@@ -12,6 +12,7 @@ import (
 	"github.com/wucm667/sideplane/internal/audit"
 	"github.com/wucm667/sideplane/internal/auth"
 	"github.com/wucm667/sideplane/internal/store"
+	spcrypto "github.com/wucm667/sideplane/pkg/crypto"
 	"github.com/wucm667/sideplane/pkg/protocol"
 )
 
@@ -39,17 +40,50 @@ func NewHandlerWithStoreAndFreshnessPolicy(nodeStore store.Store, freshness Fres
 // NewHandlerWithStoreAndFreshnessPolicyAndOperatorToken returns a server HTTP
 // handler with optional bearer-token auth for mutating operator endpoints.
 func NewHandlerWithStoreAndFreshnessPolicyAndOperatorToken(nodeStore store.Store, freshness FreshnessPolicy, operatorToken string) (http.Handler, error) {
+	return NewHandlerWithConfig(HandlerConfig{
+		Store:         nodeStore,
+		Freshness:     freshness,
+		OperatorToken: operatorToken,
+	})
+}
+
+// HandlerConfig configures the Sideplane server HTTP handler.
+type HandlerConfig struct {
+	Store             store.Store
+	Freshness         FreshnessPolicy
+	OperatorToken     string
+	SigningKeyPath    string
+	SigningKeyPair    spcrypto.KeyPair
+	DisableSigningKey bool
+}
+
+// NewHandlerWithConfig returns a server HTTP handler with explicit dependencies.
+func NewHandlerWithConfig(cfg HandlerConfig) (http.Handler, error) {
+	freshness := cfg.Freshness
 	if freshness.Now == nil {
 		freshness.Now = utcNow
 	}
 	if err := freshness.Validate(); err != nil {
 		return nil, err
 	}
+	if cfg.Store == nil {
+		return nil, errors.New("store is required")
+	}
+
+	keyPair := cfg.SigningKeyPair
+	if !cfg.DisableSigningKey && len(keyPair.PublicKey) == 0 {
+		loaded, err := spcrypto.LoadOrCreateKeyPair(cfg.SigningKeyPath)
+		if err != nil {
+			return nil, err
+		}
+		keyPair = loaded
+	}
 
 	handler := &handler{
-		store:        nodeStore,
+		store:        cfg.Store,
 		freshness:    freshness,
-		operatorAuth: auth.NewOperatorToken(operatorToken),
+		operatorAuth: auth.NewOperatorToken(cfg.OperatorToken),
+		signingKey:   keyPair,
 	}
 
 	mux := http.NewServeMux()
@@ -57,6 +91,7 @@ func NewHandlerWithStoreAndFreshnessPolicyAndOperatorToken(nodeStore store.Store
 	mux.HandleFunc("/readyz", jsonStatusHandler("ready"))
 	mux.HandleFunc("/metrics", metricsHandler)
 	mux.HandleFunc("/api/audit", handler.auditEvents)
+	mux.HandleFunc("/api/signing-key", handler.publicSigningKey)
 	mux.HandleFunc("/api/enrollment-tokens", handler.createEnrollmentToken)
 	mux.HandleFunc("/api/enroll", handler.enrollNode)
 	mux.HandleFunc("/api/heartbeat", handler.heartbeat)
@@ -71,6 +106,7 @@ type handler struct {
 	store        store.Store
 	freshness    FreshnessPolicy
 	operatorAuth auth.OperatorToken
+	signingKey   spcrypto.KeyPair
 }
 
 func jsonStatusHandler(status string) http.HandlerFunc {
@@ -497,6 +533,22 @@ func (h *handler) auditEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, protocol.ListAuditEventsResponse{Events: events})
+}
+
+func (h *handler) publicSigningKey(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
+		return
+	}
+	if len(h.signingKey.PublicKey) == 0 {
+		http.Error(w, "signing key unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	writeJSON(w, http.StatusOK, protocol.PublicSigningKeyResponse{
+		Algorithm: "ed25519",
+		PublicKey: spcrypto.PublicKeyString(h.signingKey.PublicKey),
+	})
 }
 
 func (h *handler) audit(ctx context.Context, event protocol.AuditEvent) {
