@@ -1,5 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Job, JobStatus, NodeState, NodeStatus } from './types.ts'
+
+const NODE_REFRESH_MS = 10_000
+const ACTIVE_JOB_REFRESH_MS = 2_000
+const ACTIVE_JOB_STATUSES: JobStatus[] = ['pending', 'claimed']
 
 function stateBadgeClasses(state: NodeState): string {
   switch (state) {
@@ -39,6 +43,10 @@ function formatDate(iso: string | undefined): string {
   }
 }
 
+function hasActiveJobs(jobs: Job[]): boolean {
+  return jobs.some((job) => ACTIVE_JOB_STATUSES.includes(job.status))
+}
+
 export default function FleetPage() {
   const [nodes, setNodes] = useState<NodeStatus[] | null>(null)
   const [jobsByNode, setJobsByNode] = useState<Record<string, Job[]>>({})
@@ -46,16 +54,29 @@ export default function FleetPage() {
   const [jobsErrorByNode, setJobsErrorByNode] = useState<Record<string, string>>({})
   const [creatingByNode, setCreatingByNode] = useState<Record<string, boolean>>({})
   const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const mountedRef = useRef(false)
 
-  async function loadNodeJobs(nodeId: string) {
-    setJobsLoadingByNode((current) => ({ ...current, [nodeId]: true }))
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+    }
+  }, [])
+
+  const loadNodeJobs = useCallback(async (nodeId: string, showLoading = true) => {
+    if (!mountedRef.current) return
+    if (showLoading) {
+      setJobsLoadingByNode((current) => ({ ...current, [nodeId]: true }))
+    }
     try {
       const res = await fetch(`/api/nodes/${encodeURIComponent(nodeId)}/jobs`)
       if (!res.ok) {
         throw new Error(`HTTP ${res.status}: ${res.statusText}`)
       }
       const data: Job[] = await res.json()
+      if (!mountedRef.current) return
       setJobsByNode((current) => ({ ...current, [nodeId]: data }))
       setJobsErrorByNode((current) => {
         const next = { ...current }
@@ -63,16 +84,56 @@ export default function FleetPage() {
         return next
       })
     } catch (e) {
+      if (!mountedRef.current) return
       setJobsErrorByNode((current) => ({
         ...current,
         [nodeId]: e instanceof Error ? e.message : 'Unknown error',
       }))
     } finally {
-      setJobsLoadingByNode((current) => ({ ...current, [nodeId]: false }))
+      if (mountedRef.current && showLoading) {
+        setJobsLoadingByNode((current) => ({ ...current, [nodeId]: false }))
+      }
     }
-  }
+  }, [])
 
-  async function createDeepProbe(nodeId: string) {
+  const loadNodes = useCallback(async () => {
+    const res = await fetch('/api/nodes')
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status}: ${res.statusText}`)
+    }
+    const data: NodeStatus[] = await res.json()
+    if (!mountedRef.current) return null
+    setNodes(data)
+    setError(null)
+    return data
+  }, [])
+
+  const refreshFleet = useCallback(async (showRefreshing = true) => {
+    if (!mountedRef.current) return
+    if (showRefreshing) {
+      setRefreshing(true)
+    }
+    try {
+      const data = await loadNodes()
+      if (data) {
+        await Promise.all(data.map((node) => loadNodeJobs(node.nodeId, showRefreshing)))
+      }
+    } catch (e) {
+      if (mountedRef.current) {
+        setError(e instanceof Error ? e.message : 'Unknown error')
+      }
+    } finally {
+      if (mountedRef.current) {
+        setLoading(false)
+        if (showRefreshing) {
+          setRefreshing(false)
+        }
+      }
+    }
+  }, [loadNodeJobs, loadNodes])
+
+  const createDeepProbe = useCallback(async (nodeId: string) => {
+    if (!mountedRef.current) return
     setCreatingByNode((current) => ({ ...current, [nodeId]: true }))
     try {
       const res = await fetch(`/api/nodes/${encodeURIComponent(nodeId)}/jobs`, {
@@ -83,44 +144,55 @@ export default function FleetPage() {
       if (!res.ok) {
         throw new Error(`HTTP ${res.status}: ${res.statusText}`)
       }
-      await loadNodeJobs(nodeId)
+      const job: Job = await res.json()
+      if (!mountedRef.current) return
+      setJobsByNode((current) => ({
+        ...current,
+        [nodeId]: [job, ...(current[nodeId] ?? []).filter((item) => item.id !== job.id)],
+      }))
+      setJobsErrorByNode((current) => {
+        const next = { ...current }
+        delete next[nodeId]
+        return next
+      })
+      await loadNodeJobs(nodeId, false)
     } catch (e) {
+      if (!mountedRef.current) return
       setJobsErrorByNode((current) => ({
         ...current,
         [nodeId]: e instanceof Error ? e.message : 'Unknown error',
       }))
     } finally {
-      setCreatingByNode((current) => ({ ...current, [nodeId]: false }))
-    }
-  }
-
-  useEffect(() => {
-    let cancelled = false
-    async function load() {
-      try {
-        const res = await fetch('/api/nodes')
-        if (!res.ok) {
-          throw new Error(`HTTP ${res.status}: ${res.statusText}`)
-        }
-        const data: NodeStatus[] = await res.json()
-        if (!cancelled) {
-          setNodes(data)
-          setError(null)
-          await Promise.all(data.map((node) => loadNodeJobs(node.nodeId)))
-        }
-      } catch (e) {
-        if (!cancelled) {
-          setError(e instanceof Error ? e.message : 'Unknown error')
-        }
-      } finally {
-        if (!cancelled) {
-          setLoading(false)
-        }
+      if (mountedRef.current) {
+        setCreatingByNode((current) => ({ ...current, [nodeId]: false }))
       }
     }
-    load()
-    return () => { cancelled = true }
-  }, [])
+  }, [loadNodeJobs])
+
+  useEffect(() => {
+    refreshFleet(false)
+  }, [refreshFleet])
+
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      refreshFleet(false)
+    }, NODE_REFRESH_MS)
+    return () => window.clearInterval(interval)
+  }, [refreshFleet])
+
+  useEffect(() => {
+    const nodeIdsWithActiveJobs = Object.entries(jobsByNode)
+      .filter(([, jobs]) => hasActiveJobs(jobs))
+      .map(([nodeId]) => nodeId)
+
+    if (nodeIdsWithActiveJobs.length === 0) return
+
+    const interval = window.setInterval(() => {
+      void Promise.all(nodeIdsWithActiveJobs.map((nodeId) => loadNodeJobs(nodeId, false)))
+    }, ACTIVE_JOB_REFRESH_MS)
+
+    return () => window.clearInterval(interval)
+  }, [jobsByNode, loadNodeJobs])
 
   if (loading) {
     return <div className="text-sm text-gray-500">Loading…</div>
@@ -136,14 +208,36 @@ export default function FleetPage() {
 
   if (!nodes || nodes.length === 0) {
     return (
-      <div className="rounded border border-gray-200 bg-white px-4 py-8 text-center text-sm text-gray-500">
-        No nodes registered yet.
+      <div className="space-y-4">
+        <div className="flex justify-end">
+          <button
+            type="button"
+            className="rounded border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
+            disabled={refreshing}
+            onClick={() => refreshFleet()}
+          >
+            {refreshing ? 'Refreshing…' : 'Refresh'}
+          </button>
+        </div>
+        <div className="rounded border border-gray-200 bg-white px-4 py-8 text-center text-sm text-gray-500">
+          No nodes registered yet.
+        </div>
       </div>
     )
   }
 
   return (
     <div className="space-y-4">
+      <div className="flex justify-end">
+        <button
+          type="button"
+          className="rounded border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
+          disabled={refreshing}
+          onClick={() => refreshFleet()}
+        >
+          {refreshing ? 'Refreshing…' : 'Refresh'}
+        </button>
+      </div>
       {nodes.map((node) => {
         const jobs = jobsByNode[node.nodeId] ?? []
         const jobsLoading = jobsLoadingByNode[node.nodeId]
