@@ -21,6 +21,8 @@ type JobPollerConfig struct {
 	ServerURL       string
 	NodeID          string
 	NodeCredential  string
+	PublicKey       string
+	ApplyWorkDir    string
 	HTTPClient      *http.Client
 	Collector       adapters.RuntimeCollector
 	ConfigCollector adapters.ConfigSnapshotCollector
@@ -33,6 +35,8 @@ type JobPoller struct {
 	endpoint        string
 	nodeID          string
 	nodeCredential  string
+	publicKey       string
+	applyWorkDir    string
 	httpClient      *http.Client
 	collector       adapters.RuntimeCollector
 	configCollector adapters.ConfigSnapshotCollector
@@ -78,6 +82,8 @@ func NewJobPoller(cfg JobPollerConfig) (*JobPoller, error) {
 		endpoint:        endpoint,
 		nodeID:          cfg.NodeID,
 		nodeCredential:  cfg.NodeCredential,
+		publicKey:       strings.TrimSpace(cfg.PublicKey),
+		applyWorkDir:    strings.TrimSpace(cfg.ApplyWorkDir),
 		httpClient:      httpClient,
 		collector:       cfg.Collector,
 		configCollector: configCollector,
@@ -176,6 +182,8 @@ func (p *JobPoller) executeJob(ctx context.Context, job *protocol.Job) protocol.
 	switch job.Type {
 	case protocol.JobTypeDeepProbe:
 		return p.executeDeepProbe(ctx, job)
+	case protocol.JobTypeConfigApply:
+		return p.executeConfigApply(ctx, job)
 	default:
 		return protocol.JobResultRequest{
 			Status: protocol.JobStatusFailed,

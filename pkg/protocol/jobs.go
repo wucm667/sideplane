@@ -8,6 +8,8 @@ type JobType string
 const (
 	// JobTypeDeepProbe requests a deep runtime status probe.
 	JobTypeDeepProbe JobType = "deep_probe"
+	// JobTypeConfigApply requests a signed configuration apply.
+	JobTypeConfigApply JobType = "config_apply"
 )
 
 // JobStatus is the lifecycle state of a job.
@@ -56,4 +58,20 @@ type JobResultRequest struct {
 type DeepProbeResult struct {
 	Runtimes        []RuntimeStatus         `json:"runtimes"`
 	ConfigSnapshots []RuntimeConfigSnapshot `json:"configSnapshots"`
+}
+
+// ConfigApplyStep is one reported step in the config apply pipeline.
+type ConfigApplyStep struct {
+	Name   string `json:"name"`
+	Status string `json:"status"`
+	Detail string `json:"detail,omitempty"`
+}
+
+// ConfigApplyResult is the dry-run/live config apply result payload.
+type ConfigApplyResult struct {
+	PlanID     string            `json:"planId"`
+	DryRun     bool              `json:"dryRun"`
+	BackupPath string            `json:"backupPath,omitempty"`
+	TempPath   string            `json:"tempPath,omitempty"`
+	Steps      []ConfigApplyStep `json:"steps"`
 }

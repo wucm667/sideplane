@@ -41,6 +41,8 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	jobPollInterval := flags.Duration("job-poll-interval", 30*time.Second, "job poll interval")
 	hermesConfigPaths := flags.String("hermes-config-paths", "", "path-list of read-only Hermes config files to inspect; can also be set with SIDEPLANE_HERMES_CONFIG_PATHS")
 	hermesDockerContainer := flags.String("hermes-docker-container", "", "optional read-only Docker container name for Hermes status/log inspection; can also be set with SIDEPLANE_HERMES_DOCKER_CONTAINER")
+	serverPublicKey := flags.String("server-public-key", "", "base64 ed25519 server public key for signed config plans")
+	applyWorkDir := flags.String("apply-work-dir", "", "sidecar-controlled work directory for config apply dry runs")
 	showVersion := flags.Bool("version", false, "print version and exit")
 	if err := flags.Parse(args); err != nil {
 		return 2
@@ -88,6 +90,8 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		ServerURL:      runtimeConfig.ServerURL,
 		NodeID:         runtimeConfig.NodeID,
 		NodeCredential: runtimeConfig.NodeCredential,
+		PublicKey:      *serverPublicKey,
+		ApplyWorkDir:   *applyWorkDir,
 		Collector:      reg,
 		Logger:         logger,
 	})
