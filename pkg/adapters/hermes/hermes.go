@@ -15,11 +15,15 @@ const AdapterName = "hermes"
 const AdapterType = "hermes"
 
 // Adapter is a lightweight runtime adapter for Hermes Agent.
-type Adapter struct{}
+type Adapter struct {
+	lookup func(string) (string, error)
+}
 
 // NewAdapter returns a Hermes Agent runtime adapter.
 func NewAdapter() *Adapter {
-	return &Adapter{}
+	return &Adapter{
+		lookup: exec.LookPath,
+	}
 }
 
 // Name returns the adapter name.
@@ -35,7 +39,7 @@ func (a *Adapter) Type() string {
 // Detect reports whether the hermes command is available in PATH.
 // If the command is not found, it returns (false, nil) without an error.
 func (a *Adapter) Detect(_ context.Context) (bool, error) {
-	_, err := exec.LookPath("hermes")
+	_, err := a.lookup("hermes")
 	if err != nil {
 		return false, nil
 	}

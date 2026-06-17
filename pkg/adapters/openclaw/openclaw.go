@@ -15,11 +15,15 @@ const AdapterName = "openclaw"
 const AdapterType = "openclaw"
 
 // Adapter is a lightweight runtime adapter for OpenClaw.
-type Adapter struct{}
+type Adapter struct {
+	lookup func(string) (string, error)
+}
 
 // NewAdapter returns an OpenClaw runtime adapter.
 func NewAdapter() *Adapter {
-	return &Adapter{}
+	return &Adapter{
+		lookup: exec.LookPath,
+	}
 }
 
 // Name returns the adapter name.
@@ -35,7 +39,7 @@ func (a *Adapter) Type() string {
 // Detect reports whether the openclaw command is available in PATH.
 // If the command is not found, it returns (false, nil) without an error.
 func (a *Adapter) Detect(_ context.Context) (bool, error) {
-	_, err := exec.LookPath("openclaw")
+	_, err := a.lookup("openclaw")
 	if err != nil {
 		return false, nil
 	}
