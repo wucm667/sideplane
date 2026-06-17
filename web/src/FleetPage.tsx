@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { Job, JobStatus, NodeState, NodeStatus, RuntimeStatus } from './types.ts'
+import type { DeepProbeResult, Job, JobStatus, NodeState, NodeStatus, RuntimeConfigSnapshot, RuntimeStatus } from './types.ts'
 
 const NODE_REFRESH_MS = 10_000
 const ACTIVE_JOB_REFRESH_MS = 2_000
 const ACTIVE_JOB_STATUSES: JobStatus[] = ['pending', 'claimed']
 const OPERATOR_TOKEN_STORAGE_KEY = 'sideplane.operatorToken'
 const THEME_STORAGE_KEY = 'sideplane.theme'
+const SECRET_LIKE_KEY = /(?:secret|token|password|api[_-]?key|credential|authorization)/i
 
 type View = 'fleet' | 'node' | 'activity' | 'enrollment'
 type Theme = 'light' | 'dark'
@@ -101,6 +102,34 @@ function runtimeLabel(runtime: RuntimeStatus): string {
   if (runtime.provider && runtime.model) return `${runtime.provider}/${runtime.model}`
   if (runtime.model) return runtime.model
   return runtime.name || runtime.type || 'runtime'
+}
+
+function parseDeepProbeResult(resultJson: string | undefined): DeepProbeResult | null {
+  if (!resultJson?.trim()) return null
+
+  try {
+    const parsed = JSON.parse(resultJson) as DeepProbeResult
+    if (!parsed || typeof parsed !== 'object') return null
+    return parsed
+  } catch {
+    return null
+  }
+}
+
+function latestConfigSnapshots(jobs: Job[]): RuntimeConfigSnapshot[] {
+  for (const job of jobs) {
+    if (job.type !== 'deep_probe' || job.status !== 'completed') continue
+    const snapshots = parseDeepProbeResult(job.resultJson)?.configSnapshots ?? []
+    if (snapshots.length > 0) return snapshots
+  }
+  return []
+}
+
+function redactedEntries(snapshot: RuntimeConfigSnapshot): Array<[string, string]> {
+  return Object.entries(snapshot.redactedValues ?? {})
+    .map(([key, value]) => [key, SECRET_LIKE_KEY.test(key) ? '[redacted]' : value] as [string, string])
+    .filter(([key]) => !SECRET_LIKE_KEY.test(key))
+    .slice(0, 8)
 }
 
 function groupRows(nodes: NodeStatus[]) {
@@ -354,7 +383,7 @@ export default function FleetPage() {
             />
           )}
           {view === 'node' && selectedNode && (
-            <NodePlaceholder
+            <NodeDetailView
               creating={Boolean(creatingByNode[selectedNode.nodeId])}
               jobs={jobsByNode[selectedNode.nodeId] ?? []}
               jobsError={jobsErrorByNode[selectedNode.nodeId]}
@@ -631,7 +660,7 @@ function TableMessage({ message }: { message: string }) {
   return <div className="px-5 py-10 text-center text-sm text-[var(--sp-muted)]">{message}</div>
 }
 
-function NodePlaceholder({
+function NodeDetailView({
   creating,
   jobs,
   jobsError,
@@ -649,6 +678,9 @@ function NodePlaceholder({
   onDeepProbe: () => void
 }) {
   const activeProbe = hasActiveDeepProbe(jobs)
+  const snapshots = latestConfigSnapshots(jobs)
+  const primarySnapshot = snapshots[0]
+
   return (
     <div className="mx-auto max-w-5xl px-4 py-6 sm:px-6 lg:px-9 lg:py-8">
       <button type="button" className="mb-5 rounded-lg px-2 py-1 text-sm font-medium text-[var(--sp-muted)] hover:bg-[var(--sp-surface-2)] hover:text-[var(--sp-text)]" onClick={onBack}>
@@ -665,36 +697,157 @@ function NodePlaceholder({
           </div>
           <div className="mt-2 font-mono text-sm text-[var(--sp-muted)]">{node.hostname || '-'} · sidecar {node.sidecarVersion || 'dev'}</div>
         </div>
-        <button
-          type="button"
-          className="h-9 rounded-lg border border-[var(--sp-border-strong)] bg-[var(--sp-surface)] px-3 text-sm font-medium hover:bg-[var(--sp-surface-2)] disabled:cursor-not-allowed disabled:opacity-60"
-          disabled={creating || activeProbe}
-          onClick={onDeepProbe}
-        >
-          {creating ? 'Creating…' : activeProbe ? 'Probe active' : 'Deep probe'}
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            className="h-9 rounded-lg border border-[var(--sp-border-strong)] bg-[var(--sp-surface)] px-3 text-sm font-medium hover:bg-[var(--sp-surface-2)] disabled:cursor-not-allowed disabled:opacity-60"
+            disabled={creating || activeProbe}
+            onClick={onDeepProbe}
+          >
+            {creating ? 'Creating…' : activeProbe ? 'Probe active' : 'Deep probe'}
+          </button>
+          <DisabledAction label="Restart" />
+          <DisabledAction label="Rollback" />
+          <DisabledAction label="Edit config" primary />
+        </div>
       </div>
 
-      <div className="rounded-xl border border-[var(--sp-border)] bg-[var(--sp-surface)] p-5">
-        <div className="text-sm font-semibold">Node detail placeholder</div>
-        <div className="mt-2 text-sm text-[var(--sp-muted)]">
-          The full node detail view lands in the next task. Deep probe remains available here so existing read-only operations continue working.
+      <div className="mb-5 rounded-xl border border-sky-500/25 bg-sky-500/10 px-4 py-3 text-sm text-[var(--sp-muted)]">
+        Restart, rollback, and edit config become available after the apply path lands. Current actions are read-only.
+      </div>
+
+      <div className="mb-6 grid gap-px overflow-hidden rounded-xl border border-[var(--sp-border)] bg-[var(--sp-border)] sm:grid-cols-2 lg:grid-cols-4">
+        <MetricCard label="Heartbeat" value={formatRelativeTime(node.lastHeartbeatAt)} title={formatDate(node.lastHeartbeatAt)} />
+        <MetricCard label="Config hash" value={compactHash(node.configHash || primarySnapshot?.configHash)} monospace />
+        <MetricCard label="Desired hash" value="not configured" muted />
+        <MetricCard label="Last error" value={node.lastError || 'none'} tone={node.lastError ? 'danger' : 'normal'} />
+      </div>
+
+      <section className="mb-6">
+        <div className="mb-3 text-xs font-semibold uppercase tracking-[0.14em] text-[var(--sp-faint)]">Runtimes</div>
+        <div className="grid gap-3">
+          {(node.runtimes ?? []).length > 0 ? node.runtimes?.map((runtime, index) => (
+            <RuntimeCard key={runtimeKey(runtime, index)} runtime={runtime} snapshot={snapshotForRuntime(runtime, snapshots)} />
+          )) : (
+            <div className="rounded-xl border border-[var(--sp-border)] bg-[var(--sp-surface)] px-4 py-6 text-sm text-[var(--sp-muted)]">
+              No runtimes reported yet. Run a deep probe to refresh runtime discovery.
+            </div>
+          )}
+        </div>
+      </section>
+
+      <section className="rounded-xl border border-[var(--sp-border)] bg-[var(--sp-surface)]">
+        <div className="flex items-center justify-between border-b border-[var(--sp-border)] px-4 py-3">
+          <div className="text-sm font-semibold">Recent jobs</div>
+          {jobsLoading && <div className="text-xs text-[var(--sp-muted)]">Loading jobs…</div>}
         </div>
         {jobsError && <div className="mt-4 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-600">Failed to load jobs: {jobsError}</div>}
-        <div className="mt-5 divide-y divide-[var(--sp-border)] rounded-lg border border-[var(--sp-border)]">
-          {jobsLoading && <div className="px-3 py-3 text-xs text-[var(--sp-muted)]">Loading jobs…</div>}
-          {!jobsLoading && jobs.length === 0 && <div className="px-3 py-3 text-xs text-[var(--sp-muted)]">No jobs yet.</div>}
-          {jobs.slice(0, 4).map((job) => (
-            <div key={job.id} className="grid gap-2 px-3 py-3 text-xs sm:grid-cols-[1fr_auto_auto] sm:items-center">
+        <div className="divide-y divide-[var(--sp-border)]">
+          {!jobsLoading && jobs.length === 0 && <div className="px-4 py-4 text-xs text-[var(--sp-muted)]">No jobs yet.</div>}
+          {jobs.slice(0, 6).map((job) => (
+            <div key={job.id} className="grid gap-2 px-4 py-3 text-xs sm:grid-cols-[1fr_auto_auto] sm:items-center">
               <span className="font-mono text-[var(--sp-text)]">{job.type}</span>
               <span className={`inline-flex w-fit rounded border px-2 py-0.5 font-semibold ${jobBadgeClasses(job.status)}`}>{job.status}</span>
-              <span className="text-[var(--sp-faint)]">{formatRelativeTime(job.createdAt)}</span>
+              <span className="text-[var(--sp-faint)]" title={formatDate(job.createdAt)}>{formatRelativeTime(job.createdAt)}</span>
             </div>
           ))}
         </div>
+      </section>
+    </div>
+  )
+}
+
+function DisabledAction({ label, primary = false }: { label: string; primary?: boolean }) {
+  return (
+    <button
+      type="button"
+      className={`h-9 cursor-not-allowed rounded-lg px-3 text-sm font-medium opacity-55 ${primary ? 'bg-[var(--sp-accent)] text-white' : 'border border-[var(--sp-border-strong)] bg-[var(--sp-surface)] text-[var(--sp-text)]'}`}
+      disabled
+      title="Available after the apply path lands"
+    >
+      {label}
+    </button>
+  )
+}
+
+function MetricCard({ label, value, title, monospace = false, muted = false, tone = 'normal' }: { label: string; value: string; title?: string; monospace?: boolean; muted?: boolean; tone?: 'normal' | 'danger' }) {
+  return (
+    <div className="bg-[var(--sp-surface)] px-4 py-4">
+      <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--sp-faint)]">{label}</div>
+      <div
+        className={`mt-2 truncate text-sm font-medium ${monospace ? 'font-mono' : ''} ${muted ? 'text-[var(--sp-muted)]' : ''} ${tone === 'danger' ? 'text-rose-600' : ''}`}
+        title={title || value}
+      >
+        {value}
       </div>
     </div>
   )
+}
+
+function RuntimeCard({ runtime, snapshot }: { runtime: RuntimeStatus; snapshot?: RuntimeConfigSnapshot }) {
+  const warnings = [...(snapshot?.warnings ?? [])]
+  if (runtime.lastError) warnings.unshift(runtime.lastError)
+  const entries = snapshot ? redactedEntries(snapshot) : []
+
+  return (
+    <div className="overflow-hidden rounded-xl border border-[var(--sp-border)] bg-[var(--sp-surface)]">
+      <div className="flex flex-col gap-3 border-b border-[var(--sp-border)] px-4 py-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="font-mono text-sm font-semibold">{runtime.name || runtime.type || 'runtime'}</span>
+          {runtime.type && <span className="text-xs text-[var(--sp-faint)]">{runtime.type}</span>}
+          {runtime.state && <span className={`inline-flex rounded border px-2 py-0.5 text-[11px] font-semibold ${runtime.state === 'error' ? 'border-rose-500/30 bg-rose-500/10 text-rose-600' : 'border-[var(--sp-border)] bg-[var(--sp-surface-2)] text-[var(--sp-muted)]'}`}>{runtime.state}</span>}
+        </div>
+        <span className="font-mono text-xs text-[var(--sp-faint)]">{runtime.version || '-'}</span>
+      </div>
+      <div className="grid gap-4 px-4 py-4 sm:grid-cols-3">
+        <RuntimeField label="Provider" value={snapshot?.provider || runtime.provider || '-'} />
+        <RuntimeField label="Model" value={snapshot?.model || runtime.model || '-'} />
+        <RuntimeField label="Config hash" value={compactHash(snapshot?.configHash || runtime.configHash)} title={snapshot?.configHash || runtime.configHash} />
+      </div>
+      {snapshot && (
+        <div className="border-t border-[var(--sp-border)] bg-[var(--sp-surface-2)] px-4 py-4">
+          <div className="grid gap-3 text-xs sm:grid-cols-2">
+            <RuntimeField label="Snapshot source" value={snapshot.configPath || snapshot.source || '-'} />
+            <RuntimeField label="Profile" value={snapshot.profile || '-'} />
+          </div>
+          {entries.length > 0 && (
+            <div className="mt-4 rounded-lg border border-[var(--sp-border)] bg-[var(--sp-surface)] p-3">
+              <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--sp-faint)]">Read-only snapshot</div>
+              <div className="grid gap-2 text-xs sm:grid-cols-2">
+                {entries.map(([key, value]) => (
+                  <div key={key} className="min-w-0">
+                    <div className="truncate font-mono text-[var(--sp-faint)]">{key}</div>
+                    <div className="truncate font-mono text-[var(--sp-muted)]">{value || '-'}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+      {warnings.length > 0 && (
+        <div className="border-t border-amber-500/30 bg-amber-500/10 px-4 py-3 text-xs text-amber-700">
+          {warnings.join('; ')}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function RuntimeField({ label, value, title }: { label: string; value: string; title?: string }) {
+  return (
+    <div className="min-w-0">
+      <div className="text-[11px] text-[var(--sp-faint)]">{label}</div>
+      <div className="mt-1 truncate font-mono text-sm text-[var(--sp-text)]" title={title || value}>{value}</div>
+    </div>
+  )
+}
+
+function snapshotForRuntime(runtime: RuntimeStatus, snapshots: RuntimeConfigSnapshot[]): RuntimeConfigSnapshot | undefined {
+  return snapshots.find((snapshot) => {
+    if (runtime.type && snapshot.runtimeType === runtime.type) return true
+    return runtime.name && snapshot.runtimeName === runtime.name
+  })
 }
 
 function PlaceholderPage({ title, body }: { title: string; body: string }) {
