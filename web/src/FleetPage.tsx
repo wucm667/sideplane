@@ -34,13 +34,12 @@ function jobBadgeClasses(status: JobStatus): string {
 }
 
 function formatDate(iso: string | undefined): string {
-  if (!iso) return '—'
-  try {
-    const d = new Date(iso)
-    return d.toLocaleString()
-  } catch {
-    return iso
-  }
+  if (!iso?.trim()) return '-'
+
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime()) || date.getUTCFullYear() <= 1) return '-'
+
+  return date.toLocaleString()
 }
 
 function hasActiveJobs(jobs: Job[]): boolean {
