@@ -218,6 +218,18 @@ cd web && npm run build
 This outputs static assets to `web/dist/` that can be served by the
 Sideplane server.
 
+To run the server and serve the built Web UI from `web/dist/`:
+
+```bash
+npm --prefix web run build
+go run ./cmd/sideplane-server --web-dir ./web/dist
+```
+
+When `--web-dir` points at a directory, the server serves the built Web UI for
+browser routes while keeping the API routes on `/api/*`, `/healthz`, `/readyz`,
+and `/metrics`. Unknown browser paths fall back to `index.html` so client-side
+routing works. When `--web-dir` is omitted, the server only serves the API.
+
 The server listens on `:8080` by default, opens `sideplane.db` in the current
 directory, and applies SQLite migrations on startup. Use `--addr` to choose
 another address and `--db` to choose a different SQLite database path:

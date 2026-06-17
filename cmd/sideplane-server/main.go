@@ -26,6 +26,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 
 	addr := flags.String("addr", ":8080", "HTTP listen address")
 	dbPath := flags.String("db", "sideplane.db", "SQLite database path")
+	webDir := flags.String("web-dir", "", "directory of built Web UI static assets to serve; when empty, only the API is served")
 	staleAfter := flags.Duration("stale-after", server.DefaultStaleAfter, "duration after last heartbeat before a node is stale")
 	offlineAfter := flags.Duration("offline-after", server.DefaultOfflineAfter, "duration after last heartbeat before a node is offline")
 	showVersion := flags.Bool("version", false, "print version and exit")
@@ -61,6 +62,15 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 1
 	}
 
+	if *webDir != "" {
+		webHandler, err := server.NewWebHandler(*webDir, handler)
+		if err != nil {
+			logger.Error("configure web-dir", "web_dir", *webDir, "error", err)
+			return 1
+		}
+		handler = webHandler
+	}
+
 	httpServer := &http.Server{
 		Addr:    *addr,
 		Handler: handler,
@@ -70,6 +80,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		"starting sideplane-server",
 		"addr", *addr,
 		"db", *dbPath,
+		"web_dir", *webDir,
 		"stale_after", staleAfter.String(),
 		"offline_after", offlineAfter.String(),
 	)
