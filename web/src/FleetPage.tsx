@@ -102,6 +102,20 @@ function jobResultDetails(job: Job) {
   )
 }
 
+function jobErrorDetails(job: Job) {
+  if (!job.error) return '—'
+
+  const timedOut = job.error.toLowerCase().includes('timed out')
+  return (
+    <span
+      className={timedOut ? 'font-medium text-red-700' : 'text-gray-700'}
+      title={timedOut ? job.error : undefined}
+    >
+      {timedOut ? 'Claim timed out' : job.error}
+    </span>
+  )
+}
+
 export default function FleetPage() {
   const [nodes, setNodes] = useState<NodeStatus[] | null>(null)
   const [jobsByNode, setJobsByNode] = useState<Record<string, Job[]>>({})
@@ -461,7 +475,7 @@ export default function FleetPage() {
                           <td className="py-2 pr-3 align-top text-gray-700">{formatDate(job.claimedAt)}</td>
                           <td className="py-2 pr-3 align-top text-gray-700">{formatDate(job.finishedAt)}</td>
                           <td className="py-2 pr-3 align-top text-gray-700">{jobResultDetails(job)}</td>
-                          <td className="py-2 align-top text-gray-700">{job.error || '—'}</td>
+                          <td className="py-2 align-top text-gray-700">{jobErrorDetails(job)}</td>
                         </tr>
                       ))}
                     </tbody>

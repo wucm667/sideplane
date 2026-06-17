@@ -236,6 +236,51 @@ func TestListNodeJobsAPIIncludesFinishedTimestamps(t *testing.T) {
 	}
 }
 
+func TestListNodeJobsAPISurfacesTimedOutJob(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	enrollTestNode(t, nodeStore, "node-timeout")
+
+	now := time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)
+	job, err := nodeStore.CreateJob(context.Background(), protocol.CreateJobRequest{Type: protocol.JobTypeDeepProbe}, "node-timeout", now)
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+	claimed, err := nodeStore.ClaimNextJob(context.Background(), "node-timeout", now.Add(time.Second))
+	if err != nil {
+		t.Fatalf("claim job: %v", err)
+	}
+	if claimed == nil {
+		t.Fatalf("claimed job is nil")
+	}
+	if _, err := nodeStore.ClaimNextJob(context.Background(), "node-timeout", claimed.ClaimExpiresAt.Add(time.Second)); err != nil {
+		t.Fatalf("advance timeout: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/nodes/node-timeout/jobs", nil)
+
+	NewHandlerWithStore(nodeStore).ServeHTTP(rec, req)
+
+	assertStatus(t, rec, http.StatusOK)
+
+	var jobs []protocol.Job
+	if err := json.NewDecoder(rec.Body).Decode(&jobs); err != nil {
+		t.Fatalf("decode jobs response: %v", err)
+	}
+	if len(jobs) != 1 {
+		t.Fatalf("jobs length = %d, want 1", len(jobs))
+	}
+	if jobs[0].ID != job.ID {
+		t.Fatalf("job ID = %q, want %q", jobs[0].ID, job.ID)
+	}
+	if jobs[0].Status != protocol.JobStatusFailed {
+		t.Fatalf("job status = %q, want failed", jobs[0].Status)
+	}
+	if jobs[0].Error != "job claim timed out" {
+		t.Fatalf("job error = %q, want timeout error", jobs[0].Error)
+	}
+}
+
 func TestSidecarClaimsOnlyOwnNodeJobs(t *testing.T) {
 	nodeStore := store.NewMemoryNodeStore()
 	nodeACredential := enrollTestNode(t, nodeStore, "node-a")

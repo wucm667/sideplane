@@ -36,5 +36,6 @@ export interface Job {
   error?: string
   createdAt: string
   claimedAt?: string
+  claimExpiresAt?: string
   finishedAt?: string
 }
