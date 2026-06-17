@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { Job, JobStatus, NodeState, NodeStatus } from './types.ts'
+import type { DeepProbeResult, Job, JobStatus, NodeState, NodeStatus, RuntimeConfigSnapshot } from './types.ts'
 
 const NODE_REFRESH_MS = 10_000
 const ACTIVE_JOB_REFRESH_MS = 2_000
@@ -85,21 +85,94 @@ function formatJobResult(resultJson: string | undefined): string {
   }
 }
 
+function parseDeepProbeResult(resultJson: string | undefined): DeepProbeResult | null {
+  if (!resultJson?.trim()) return null
+
+  try {
+    const parsed = JSON.parse(resultJson) as DeepProbeResult
+    if (!parsed || typeof parsed !== 'object') return null
+    return parsed
+  } catch {
+    return null
+  }
+}
+
+function configSnapshotSource(snapshot: RuntimeConfigSnapshot): string {
+  return snapshot.configPath || snapshot.source || '-'
+}
+
+function configSnapshotDetails(job: Job) {
+  const snapshots = parseDeepProbeResult(job.resultJson)?.configSnapshots ?? []
+  if (snapshots.length === 0) return null
+
+  return (
+    <div className="max-w-[24rem] space-y-1">
+      {snapshots.map((snapshot, index) => (
+        <div
+          key={`${snapshot.runtimeName || snapshot.runtimeType || 'snapshot'}-${index}`}
+          className="rounded border border-gray-200 bg-white px-2 py-1.5 text-[11px] leading-4 text-gray-800"
+        >
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            <span className="font-mono font-medium text-gray-900">
+              {snapshot.runtimeName || snapshot.runtimeType || 'runtime'}
+            </span>
+            {snapshot.runtimeType && (
+              <span className="text-gray-500">({snapshot.runtimeType})</span>
+            )}
+            {snapshot.profile && (
+              <span className="rounded bg-gray-100 px-1.5 py-0.5 text-gray-700">
+                {snapshot.profile}
+              </span>
+            )}
+          </div>
+          <div className="mt-1 grid grid-cols-2 gap-x-3 gap-y-1">
+            <span>
+              <span className="text-gray-500">Provider:</span>{' '}
+              <span className="text-gray-900">{snapshot.provider || '-'}</span>
+            </span>
+            <span>
+              <span className="text-gray-500">Model:</span>{' '}
+              <span className="text-gray-900">{snapshot.model || '-'}</span>
+            </span>
+            <span>
+              <span className="text-gray-500">Hash:</span>{' '}
+              <span className="font-mono text-gray-900">{snapshot.configHash || '-'}</span>
+            </span>
+            <span>
+              <span className="text-gray-500">Source:</span>{' '}
+              <span className="font-mono text-gray-900">{configSnapshotSource(snapshot)}</span>
+            </span>
+          </div>
+          {snapshot.warnings && snapshot.warnings.length > 0 && (
+            <div className="mt-1 text-yellow-700">
+              {snapshot.warnings.join('; ')}
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  )
+}
+
 function jobResultDetails(job: Job) {
   if (job.status !== 'completed' && job.status !== 'failed') return '-'
 
   const result = formatJobResult(job.resultJson)
+  const snapshots = configSnapshotDetails(job)
   if (!result) return '-'
 
   return (
-    <details className="max-w-[22rem]">
-      <summary className="cursor-pointer select-none text-xs font-medium text-gray-700 hover:text-gray-900">
-        View
-      </summary>
-      <pre className="mt-2 max-h-40 overflow-auto rounded border border-gray-200 bg-gray-50 p-2 font-mono text-[11px] leading-4 text-gray-800">
-        {result}
-      </pre>
-    </details>
+    <div className="space-y-2">
+      {snapshots}
+      <details className="max-w-[22rem]">
+        <summary className="cursor-pointer select-none text-xs font-medium text-gray-700 hover:text-gray-900">
+          View
+        </summary>
+        <pre className="mt-2 max-h-40 overflow-auto rounded border border-gray-200 bg-gray-50 p-2 font-mono text-[11px] leading-4 text-gray-800">
+          {result}
+        </pre>
+      </details>
+    </div>
   )
 }
 

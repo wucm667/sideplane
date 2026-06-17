@@ -11,6 +11,24 @@ export interface RuntimeStatus {
   lastError?: string
 }
 
+export interface RuntimeConfigSnapshot {
+  runtimeName: string
+  runtimeType: string
+  configPath?: string
+  source?: string
+  profile?: string
+  provider?: string
+  model?: string
+  configHash?: string
+  warnings?: string[]
+  redactedValues?: Record<string, string>
+}
+
+export interface DeepProbeResult {
+  runtimes?: RuntimeStatus[]
+  configSnapshots?: RuntimeConfigSnapshot[]
+}
+
 export interface NodeStatus {
   nodeId: string
   hostname?: string
