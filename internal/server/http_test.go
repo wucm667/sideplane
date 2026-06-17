@@ -41,6 +41,63 @@ func TestCreateJobAPI(t *testing.T) {
 	}
 }
 
+func TestCreateJobAPIAllowsLocalDevWhenOperatorTokenNotConfigured(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	enrollTestNode(t, nodeStore, "node-jobs")
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/nodes/node-jobs/jobs", strings.NewReader(`{"type":"deep_probe"}`))
+
+	NewHandlerWithStore(nodeStore).ServeHTTP(rec, req)
+
+	assertStatus(t, rec, http.StatusCreated)
+}
+
+func TestCreateJobAPIRequiresConfiguredOperatorToken(t *testing.T) {
+	tests := []struct {
+		name          string
+		authorization string
+		wantStatus    int
+	}{
+		{
+			name:       "missing",
+			wantStatus: http.StatusUnauthorized,
+		},
+		{
+			name:          "wrong",
+			authorization: "Bearer wrong-token",
+			wantStatus:    http.StatusUnauthorized,
+		},
+		{
+			name:          "correct",
+			authorization: "Bearer dev-token",
+			wantStatus:    http.StatusCreated,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			nodeStore := store.NewMemoryNodeStore()
+			enrollTestNode(t, nodeStore, "node-jobs")
+
+			handler, err := NewHandlerWithStoreAndFreshnessPolicyAndOperatorToken(nodeStore, DefaultFreshnessPolicy(), "dev-token")
+			if err != nil {
+				t.Fatalf("build handler: %v", err)
+			}
+
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/api/nodes/node-jobs/jobs", strings.NewReader(`{"type":"deep_probe"}`))
+			if tt.authorization != "" {
+				req.Header.Set("Authorization", tt.authorization)
+			}
+
+			handler.ServeHTTP(rec, req)
+
+			assertStatus(t, rec, tt.wantStatus)
+		})
+	}
+}
+
 func TestCreateJobAPIRejectsMalformedJSON(t *testing.T) {
 	nodeStore := store.NewMemoryNodeStore()
 	enrollTestNode(t, nodeStore, "node-jobs")

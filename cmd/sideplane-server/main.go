@@ -9,7 +9,9 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 
+	"github.com/wucm667/sideplane/internal/auth"
 	"github.com/wucm667/sideplane/internal/server"
 	"github.com/wucm667/sideplane/internal/store"
 )
@@ -29,6 +31,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	webDir := flags.String("web-dir", "", "directory of built Web UI static assets to serve; when empty, only the API is served")
 	staleAfter := flags.Duration("stale-after", server.DefaultStaleAfter, "duration after last heartbeat before a node is stale")
 	offlineAfter := flags.Duration("offline-after", server.DefaultOfflineAfter, "duration after last heartbeat before a node is offline")
+	operatorTokenFlag := flags.String("operator-token", "", "bearer token required for mutating operator API requests; can also be set with SIDEPLANE_OPERATOR_TOKEN")
 	showVersion := flags.Bool("version", false, "print version and exit")
 	if err := flags.Parse(args); err != nil {
 		return 2
@@ -49,6 +52,14 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 
 	logger := slog.New(slog.NewTextHandler(stderr, nil))
+	operatorToken := strings.TrimSpace(*operatorTokenFlag)
+	if operatorToken == "" {
+		operatorToken = strings.TrimSpace(os.Getenv(auth.OperatorTokenEnv))
+	}
+	if operatorToken == "" {
+		logger.Warn("operator token not configured; mutating operator endpoints are unauthenticated")
+	}
+
 	nodeStore, err := store.OpenSQLiteNodeStore(context.Background(), *dbPath)
 	if err != nil {
 		logger.Error("open sqlite store", "db", *dbPath, "error", err)
@@ -56,7 +67,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 	defer nodeStore.Close()
 
-	handler, err := server.NewHandlerWithStoreAndFreshnessPolicy(nodeStore, freshness)
+	handler, err := server.NewHandlerWithStoreAndFreshnessPolicyAndOperatorToken(nodeStore, freshness, operatorToken)
 	if err != nil {
 		logger.Error("configure freshness policy", "error", err)
 		return 1

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wucm667/sideplane/internal/auth"
 	"github.com/wucm667/sideplane/internal/store"
 	"github.com/wucm667/sideplane/pkg/protocol"
 )
@@ -30,6 +31,12 @@ func NewHandlerWithStore(nodeStore store.Store) http.Handler {
 
 // NewHandlerWithStoreAndFreshnessPolicy returns a Sideplane server HTTP handler backed by store.
 func NewHandlerWithStoreAndFreshnessPolicy(nodeStore store.Store, freshness FreshnessPolicy) (http.Handler, error) {
+	return NewHandlerWithStoreAndFreshnessPolicyAndOperatorToken(nodeStore, freshness, "")
+}
+
+// NewHandlerWithStoreAndFreshnessPolicyAndOperatorToken returns a server HTTP
+// handler with optional bearer-token auth for mutating operator endpoints.
+func NewHandlerWithStoreAndFreshnessPolicyAndOperatorToken(nodeStore store.Store, freshness FreshnessPolicy, operatorToken string) (http.Handler, error) {
 	if freshness.Now == nil {
 		freshness.Now = utcNow
 	}
@@ -38,8 +45,9 @@ func NewHandlerWithStoreAndFreshnessPolicy(nodeStore store.Store, freshness Fres
 	}
 
 	handler := &handler{
-		store:     nodeStore,
-		freshness: freshness,
+		store:        nodeStore,
+		freshness:    freshness,
+		operatorAuth: auth.NewOperatorToken(operatorToken),
 	}
 
 	mux := http.NewServeMux()
@@ -57,8 +65,9 @@ func NewHandlerWithStoreAndFreshnessPolicy(nodeStore store.Store, freshness Fres
 }
 
 type handler struct {
-	store     store.Store
-	freshness FreshnessPolicy
+	store        store.Store
+	freshness    FreshnessPolicy
+	operatorAuth auth.OperatorToken
 }
 
 func jsonStatusHandler(status string) http.HandlerFunc {
@@ -184,7 +193,7 @@ func (h *handler) heartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	credential, ok := bearerCredential(r.Header.Get("Authorization"))
+	credential, ok := auth.BearerToken(r.Header.Get("Authorization"))
 	if !ok {
 		http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
 		return
@@ -274,7 +283,9 @@ func (h *handler) listNodeJobs(w http.ResponseWriter, r *http.Request, nodeID st
 }
 
 func (h *handler) createNodeJob(w http.ResponseWriter, r *http.Request, nodeID string) {
-	// TODO(auth): require operator authentication before creating jobs
+	if !h.authorizeOperator(w, r) {
+		return
+	}
 	defer r.Body.Close()
 
 	var req protocol.CreateJobRequest
@@ -331,7 +342,7 @@ func (h *handler) claimNextJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	credential, ok := bearerCredential(r.Header.Get("Authorization"))
+	credential, ok := auth.BearerToken(r.Header.Get("Authorization"))
 	if !ok {
 		http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
 		return
@@ -384,7 +395,7 @@ func (h *handler) submitJobResult(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	credential, ok := bearerCredential(r.Header.Get("Authorization"))
+	credential, ok := auth.BearerToken(r.Header.Get("Authorization"))
 	if !ok {
 		http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
 		return
@@ -439,27 +450,20 @@ func (h *handler) submitJobResult(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "accepted"})
 }
 
-func bearerCredential(authorization string) (string, bool) {
-	fields := strings.Fields(authorization)
-	if len(fields) != 2 {
-		return "", false
-	}
-	if !strings.EqualFold(fields[0], "Bearer") {
-		return "", false
-	}
-	credential := strings.TrimSpace(fields[1])
-	if credential == "" {
-		return "", false
-	}
-	return credential, true
-}
-
 func writeJSON(w http.ResponseWriter, status int, body any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(body); err != nil {
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 	}
+}
+
+func (h *handler) authorizeOperator(w http.ResponseWriter, r *http.Request) bool {
+	if h.operatorAuth.AuthorizeHeader(r.Header.Get("Authorization")) {
+		return true
+	}
+	http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
+	return false
 }
 
 func decodeOptionalJSON(body io.Reader, dst any) error {
