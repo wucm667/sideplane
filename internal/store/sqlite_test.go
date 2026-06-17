@@ -3,7 +3,9 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -29,7 +31,10 @@ func TestSQLiteNodeStoreMigratesAndPersistsHeartbeat(t *testing.T) {
 	assertSQLiteTableExists(t, ctx, first.db, "nodes")
 	assertSQLiteTableExists(t, ctx, first.db, "node_runtimes")
 	assertSQLiteTableExists(t, ctx, first.db, "heartbeats")
+	assertSQLiteTableExists(t, ctx, first.db, "enrollment_tokens")
+	assertSQLiteTableExists(t, ctx, first.db, "node_credentials")
 	assertSQLiteMigrationApplied(t, ctx, first.db, 1)
+	assertSQLiteMigrationApplied(t, ctx, first.db, 2)
 
 	observedAt := time.Date(2026, 6, 16, 1, 2, 3, 0, time.UTC)
 	sentAt := observedAt.Add(-time.Second)
@@ -88,6 +93,90 @@ func TestSQLiteNodeStoreMigratesAndPersistsHeartbeat(t *testing.T) {
 		t.Fatalf("list nodes after reopen: %v", err)
 	}
 	assertSQLiteNodeSnapshot(t, nodes, observedAt)
+}
+
+func TestSQLiteEnrollmentTokenFlow(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenSQLiteNodeStore(ctx, filepath.Join(t.TempDir(), "sideplane.db"))
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer store.Close()
+
+	now := time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)
+	tokenResp, err := store.CreateEnrollmentToken(ctx, now.Add(time.Hour), now)
+	if err != nil {
+		t.Fatalf("create enrollment token: %v", err)
+	}
+	if tokenResp.Token == "" {
+		t.Fatalf("token is empty")
+	}
+	if !tokenResp.ExpiresAt.Equal(now.Add(time.Hour)) {
+		t.Fatalf("expiresAt = %s, want %s", tokenResp.ExpiresAt, now.Add(time.Hour))
+	}
+	assertSQLiteDoesNotContainPlaintext(t, ctx, store.db, "enrollment_tokens", tokenResp.Token)
+
+	enrollResp, err := store.EnrollNode(ctx, protocol.EnrollNodeRequest{
+		Token:    tokenResp.Token,
+		NodeID:   "node-enroll",
+		Hostname: "worker-enroll",
+	}, now.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("enroll node: %v", err)
+	}
+	if enrollResp.NodeID != "node-enroll" {
+		t.Fatalf("nodeId = %q, want node-enroll", enrollResp.NodeID)
+	}
+	if enrollResp.NodeCredential == "" {
+		t.Fatalf("nodeCredential is empty")
+	}
+	assertSQLiteDoesNotContainPlaintext(t, ctx, store.db, "node_credentials", enrollResp.NodeCredential)
+
+	ok, err := store.VerifyNodeCredential(ctx, enrollResp.NodeID, enrollResp.NodeCredential)
+	if err != nil {
+		t.Fatalf("verify node credential: %v", err)
+	}
+	if !ok {
+		t.Fatalf("credential did not verify")
+	}
+	ok, err = store.VerifyNodeCredential(ctx, enrollResp.NodeID, "wrong credential")
+	if err != nil {
+		t.Fatalf("verify wrong node credential: %v", err)
+	}
+	if ok {
+		t.Fatalf("wrong credential verified")
+	}
+
+	_, err = store.EnrollNode(ctx, protocol.EnrollNodeRequest{
+		Token:  tokenResp.Token,
+		NodeID: "node-reuse",
+	}, now.Add(2*time.Minute))
+	if !errors.Is(err, ErrEnrollmentTokenUsed) {
+		t.Fatalf("reuse token error = %v, want ErrEnrollmentTokenUsed", err)
+	}
+}
+
+func TestSQLiteExpiredEnrollmentTokenCannotBeUsed(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenSQLiteNodeStore(ctx, filepath.Join(t.TempDir(), "sideplane.db"))
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer store.Close()
+
+	now := time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)
+	tokenResp, err := store.CreateEnrollmentToken(ctx, now.Add(time.Minute), now)
+	if err != nil {
+		t.Fatalf("create enrollment token: %v", err)
+	}
+
+	_, err = store.EnrollNode(ctx, protocol.EnrollNodeRequest{
+		Token:  tokenResp.Token,
+		NodeID: "node-expired",
+	}, now.Add(2*time.Minute))
+	if !errors.Is(err, ErrEnrollmentTokenExpired) {
+		t.Fatalf("expired token error = %v, want ErrEnrollmentTokenExpired", err)
+	}
 }
 
 func TestSQLiteNodeStoreUpdatesLatestNodeSnapshot(t *testing.T) {
@@ -204,5 +293,42 @@ func assertSQLiteMigrationApplied(t *testing.T, ctx context.Context, db *sql.DB,
 	}
 	if name == "" {
 		t.Fatalf("schema migration %d has empty name", version)
+	}
+}
+
+func assertSQLiteDoesNotContainPlaintext(t *testing.T, ctx context.Context, db *sql.DB, table string, plaintext string) {
+	t.Helper()
+
+	rows, err := db.QueryContext(ctx, `SELECT * FROM `+table)
+	if err != nil {
+		t.Fatalf("query %s: %v", table, err)
+	}
+	defer rows.Close()
+
+	columns, err := rows.Columns()
+	if err != nil {
+		t.Fatalf("columns for %s: %v", table, err)
+	}
+	values := make([]sql.NullString, len(columns))
+	scanTargets := make([]any, len(columns))
+	for i := range values {
+		scanTargets[i] = &values[i]
+	}
+
+	for rows.Next() {
+		if err := rows.Scan(scanTargets...); err != nil {
+			t.Fatalf("scan %s: %v", table, err)
+		}
+		for i, value := range values {
+			if !value.Valid {
+				continue
+			}
+			if value.String == plaintext || strings.Contains(value.String, plaintext) {
+				t.Fatalf("%s.%s contains plaintext secret", table, columns[i])
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate %s: %v", table, err)
 	}
 }

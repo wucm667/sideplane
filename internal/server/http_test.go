@@ -116,6 +116,55 @@ func TestHeartbeatRecordsNode(t *testing.T) {
 	}
 }
 
+func TestEnrollmentAPIsCreateTokenAndEnrollNode(t *testing.T) {
+	handler := NewHandler()
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/enrollment-tokens", strings.NewReader(`{}`))
+
+	handler.ServeHTTP(rec, req)
+
+	assertStatus(t, rec, http.StatusCreated)
+
+	var tokenResp protocol.CreateEnrollmentTokenResponse
+	if err := json.NewDecoder(rec.Body).Decode(&tokenResp); err != nil {
+		t.Fatalf("decode enrollment token response: %v", err)
+	}
+	if tokenResp.Token == "" {
+		t.Fatalf("token is empty")
+	}
+	if tokenResp.ExpiresAt.IsZero() {
+		t.Fatalf("expiresAt is zero")
+	}
+
+	var enrollBody bytes.Buffer
+	if err := json.NewEncoder(&enrollBody).Encode(protocol.EnrollNodeRequest{
+		Token:    tokenResp.Token,
+		NodeID:   "node-enrolled",
+		Hostname: "worker-enrolled",
+	}); err != nil {
+		t.Fatalf("encode enroll request: %v", err)
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/enroll", &enrollBody)
+
+	handler.ServeHTTP(rec, req)
+
+	assertStatus(t, rec, http.StatusOK)
+
+	var enrollResp protocol.EnrollNodeResponse
+	if err := json.NewDecoder(rec.Body).Decode(&enrollResp); err != nil {
+		t.Fatalf("decode enroll response: %v", err)
+	}
+	if enrollResp.NodeID != "node-enrolled" {
+		t.Fatalf("nodeId = %q, want node-enrolled", enrollResp.NodeID)
+	}
+	if enrollResp.NodeCredential == "" {
+		t.Fatalf("nodeCredential is empty")
+	}
+}
+
 func TestHeartbeatRequiresNodeID(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/heartbeat", strings.NewReader(`{"hostname":"worker-a"}`))
@@ -293,4 +342,16 @@ func (s staticNodeStore) RecordHeartbeat(context.Context, protocol.HeartbeatRequ
 func (s staticNodeStore) ListNodes(context.Context) ([]protocol.NodeStatus, error) {
 	nodes := append([]protocol.NodeStatus(nil), s.nodes...)
 	return nodes, nil
+}
+
+func (s staticNodeStore) CreateEnrollmentToken(context.Context, time.Time, time.Time) (protocol.CreateEnrollmentTokenResponse, error) {
+	return protocol.CreateEnrollmentTokenResponse{}, nil
+}
+
+func (s staticNodeStore) EnrollNode(context.Context, protocol.EnrollNodeRequest, time.Time) (protocol.EnrollNodeResponse, error) {
+	return protocol.EnrollNodeResponse{}, nil
+}
+
+func (s staticNodeStore) VerifyNodeCredential(context.Context, string, string) (bool, error) {
+	return false, nil
 }

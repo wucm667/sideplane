@@ -223,17 +223,50 @@ Available endpoints:
 - `GET /healthz` returns `{"status":"ok"}`
 - `GET /readyz` returns `{"status":"ready"}`
 - `GET /metrics` returns a placeholder Prometheus-compatible endpoint
+- `POST /api/enrollment-tokens` creates a one-time sidecar enrollment token
 - `POST /api/heartbeat` records the latest heartbeat-derived node status
+- `POST /api/enroll` exchanges an enrollment token for a node credential
 - `GET /api/nodes` lists nodes with freshness-adjusted `fresh`, `stale`, or
   `offline` state
 
-Expected first steps:
+Create a sidecar enrollment token with the CLI:
 
-1. Expand protocol structs and API routes.
-2. Implement enrollment token flow.
-3. Extend sidecar heartbeat status with Hermes and OpenClaw discovery.
-4. Add Hermes and OpenClaw adapter interfaces.
-5. Implement config diff and safe apply planning.
+```bash
+go run ./cmd/sideplane enrollment create --server http://localhost:8080
+```
+
+The response prints the plaintext token once and its expiry. The server stores
+only a hash of the token. The endpoint is intentionally unauthenticated for the
+first development slice; authentication/RBAC still needs to be added before
+production use.
+
+Enroll a sidecar with the one-time token:
+
+```bash
+go run ./cmd/sideplane-sidecar enroll --server http://localhost:8080 --token TOKEN
+```
+
+Enrollment writes `nodeId` and `nodeCredential` to
+`~/.sideplane/sidecar.json` by default. Use `--state` to choose another path,
+and `--node-id` to request a specific node ID:
+
+```bash
+go run ./cmd/sideplane-sidecar enroll \
+  --server http://localhost:8080 \
+  --token TOKEN \
+  --node-id worker-a \
+  --state ./sidecar-state.json
+```
+
+The sidecar heartbeat path does not yet authenticate with the stored credential;
+that is the next development step.
+
+Expected next steps:
+
+1. Add node credential authentication to sidecar heartbeat.
+2. Extend sidecar heartbeat status with Hermes and OpenClaw discovery.
+3. Add Hermes and OpenClaw adapter interfaces.
+4. Implement config diff and safe apply planning.
 
 ## License
 

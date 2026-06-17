@@ -19,7 +19,7 @@ type SQLiteNodeStore struct {
 	db *sql.DB
 }
 
-var _ NodeStore = (*SQLiteNodeStore)(nil)
+var _ Store = (*SQLiteNodeStore)(nil)
 
 // OpenSQLiteNodeStore opens a SQLite database and applies pending migrations.
 func OpenSQLiteNodeStore(ctx context.Context, path string) (*SQLiteNodeStore, error) {
@@ -247,6 +247,203 @@ ORDER BY node_id, runtime_index
 	}
 
 	return nodes, nil
+}
+
+// CreateEnrollmentToken creates a one-time enrollment token and stores only its hash.
+func (s *SQLiteNodeStore) CreateEnrollmentToken(ctx context.Context, expiresAt time.Time, now time.Time) (protocol.CreateEnrollmentTokenResponse, error) {
+	if s == nil || s.db == nil {
+		return protocol.CreateEnrollmentTokenResponse{}, errors.New("sqlite node store is closed")
+	}
+	if expiresAt.IsZero() {
+		return protocol.CreateEnrollmentTokenResponse{}, errors.New("enrollment token expiry is required")
+	}
+	if !expiresAt.After(now.UTC()) {
+		return protocol.CreateEnrollmentTokenResponse{}, errors.New("enrollment token expiry must be in the future")
+	}
+
+	token, err := newSecret()
+	if err != nil {
+		return protocol.CreateEnrollmentTokenResponse{}, err
+	}
+	tokenHash, err := hashSecret(token)
+	if err != nil {
+		return protocol.CreateEnrollmentTokenResponse{}, err
+	}
+	tokenID, err := newRandomID("enrtok_")
+	if err != nil {
+		return protocol.CreateEnrollmentTokenResponse{}, err
+	}
+
+	_, err = s.db.ExecContext(ctx, `
+INSERT INTO enrollment_tokens (
+	id,
+	token_hash,
+	expires_at,
+	created_at
+) VALUES (?, ?, ?, ?)
+`, tokenID, tokenHash, formatDBTime(expiresAt), formatDBTime(now))
+	if err != nil {
+		return protocol.CreateEnrollmentTokenResponse{}, fmt.Errorf("insert enrollment token: %w", err)
+	}
+
+	return protocol.CreateEnrollmentTokenResponse{
+		Token:     token,
+		ExpiresAt: expiresAt.UTC(),
+	}, nil
+}
+
+// EnrollNode exchanges a valid enrollment token for a long-lived node credential.
+func (s *SQLiteNodeStore) EnrollNode(ctx context.Context, req protocol.EnrollNodeRequest, now time.Time) (protocol.EnrollNodeResponse, error) {
+	if s == nil || s.db == nil {
+		return protocol.EnrollNodeResponse{}, errors.New("sqlite node store is closed")
+	}
+
+	tokenHash, err := hashSecret(req.Token)
+	if err != nil {
+		return protocol.EnrollNodeResponse{}, ErrEnrollmentTokenInvalid
+	}
+
+	nodeID := strings.TrimSpace(req.NodeID)
+	if nodeID == "" {
+		nodeID, err = newRandomID("node_")
+		if err != nil {
+			return protocol.EnrollNodeResponse{}, err
+		}
+	}
+
+	nodeCredential, err := newSecret()
+	if err != nil {
+		return protocol.EnrollNodeResponse{}, err
+	}
+	credentialHash, err := hashSecret(nodeCredential)
+	if err != nil {
+		return protocol.EnrollNodeResponse{}, err
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return protocol.EnrollNodeResponse{}, fmt.Errorf("begin enrollment transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	var tokenID string
+	var expiresAtText string
+	var usedAt sql.NullString
+	err = tx.QueryRowContext(ctx, `
+SELECT id, expires_at, used_at
+FROM enrollment_tokens
+WHERE token_hash = ?
+`, tokenHash).Scan(&tokenID, &expiresAtText, &usedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return protocol.EnrollNodeResponse{}, ErrEnrollmentTokenInvalid
+	}
+	if err != nil {
+		return protocol.EnrollNodeResponse{}, fmt.Errorf("query enrollment token: %w", err)
+	}
+	if usedAt.Valid && usedAt.String != "" {
+		return protocol.EnrollNodeResponse{}, ErrEnrollmentTokenUsed
+	}
+
+	expiresAt, err := parseDBTime(expiresAtText)
+	if err != nil {
+		return protocol.EnrollNodeResponse{}, fmt.Errorf("parse enrollment token expiry: %w", err)
+	}
+	if !expiresAt.After(now.UTC()) {
+		return protocol.EnrollNodeResponse{}, ErrEnrollmentTokenExpired
+	}
+
+	var existingCredentialCount int
+	err = tx.QueryRowContext(ctx, `
+SELECT COUNT(*)
+FROM node_credentials
+WHERE node_id = ?
+`, nodeID).Scan(&existingCredentialCount)
+	if err != nil {
+		return protocol.EnrollNodeResponse{}, fmt.Errorf("query node credential: %w", err)
+	}
+	if existingCredentialCount > 0 {
+		return protocol.EnrollNodeResponse{}, ErrNodeAlreadyEnrolled
+	}
+
+	nowText := formatDBTime(now)
+	_, err = tx.ExecContext(ctx, `
+INSERT INTO nodes (
+	node_id,
+	hostname,
+	state,
+	sidecar_version,
+	last_heartbeat_at,
+	config_hash,
+	last_error,
+	updated_at
+) VALUES (?, ?, ?, ?, ?, '', '', ?)
+ON CONFLICT(node_id) DO NOTHING
+`, nodeID, strings.TrimSpace(req.Hostname), string(protocol.NodeStateOffline), strings.TrimSpace(req.SidecarVersion), "", nowText)
+	if err != nil {
+		return protocol.EnrollNodeResponse{}, fmt.Errorf("insert enrolled node: %w", err)
+	}
+
+	_, err = tx.ExecContext(ctx, `
+INSERT INTO node_credentials (
+	node_id,
+	credential_hash,
+	created_at
+) VALUES (?, ?, ?)
+`, nodeID, credentialHash, nowText)
+	if err != nil {
+		return protocol.EnrollNodeResponse{}, fmt.Errorf("insert node credential: %w", err)
+	}
+
+	result, err := tx.ExecContext(ctx, `
+UPDATE enrollment_tokens
+SET used_at = ?
+WHERE id = ? AND used_at IS NULL
+`, nowText, tokenID)
+	if err != nil {
+		return protocol.EnrollNodeResponse{}, fmt.Errorf("mark enrollment token used: %w", err)
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return protocol.EnrollNodeResponse{}, fmt.Errorf("count enrollment token update: %w", err)
+	}
+	if rowsAffected != 1 {
+		return protocol.EnrollNodeResponse{}, ErrEnrollmentTokenUsed
+	}
+
+	if err := tx.Commit(); err != nil {
+		return protocol.EnrollNodeResponse{}, fmt.Errorf("commit enrollment transaction: %w", err)
+	}
+
+	return protocol.EnrollNodeResponse{
+		NodeID:         nodeID,
+		NodeCredential: nodeCredential,
+	}, nil
+}
+
+// VerifyNodeCredential checks whether a node credential matches the stored hash.
+func (s *SQLiteNodeStore) VerifyNodeCredential(ctx context.Context, nodeID string, credential string) (bool, error) {
+	if s == nil || s.db == nil {
+		return false, errors.New("sqlite node store is closed")
+	}
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" {
+		return false, nil
+	}
+
+	var credentialHash string
+	err := s.db.QueryRowContext(ctx, `
+SELECT credential_hash
+FROM node_credentials
+WHERE node_id = ?
+`, nodeID).Scan(&credentialHash)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("query node credential: %w", err)
+	}
+
+	return secretHashMatches(credential, credentialHash)
 }
 
 func configureSQLite(ctx context.Context, db *sql.DB) error {
