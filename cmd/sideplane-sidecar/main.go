@@ -43,6 +43,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	hermesDockerContainer := flags.String("hermes-docker-container", "", "optional read-only Docker container name for Hermes status/log inspection; can also be set with SIDEPLANE_HERMES_DOCKER_CONTAINER")
 	serverPublicKey := flags.String("server-public-key", "", "base64 ed25519 server public key for signed config plans")
 	applyWorkDir := flags.String("apply-work-dir", "", "sidecar-controlled work directory for config apply dry runs")
+	allowLiveApply := flags.Bool("allow-live-apply", false, "DANGEROUS: allow live config replace and restart; off by default (dry-run only)")
 	showVersion := flags.Bool("version", false, "print version and exit")
 	if err := flags.Parse(args); err != nil {
 		return 2
@@ -64,6 +65,9 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 
 	logger := slog.New(slog.NewTextHandler(stderr, nil))
+	if *allowLiveApply {
+		logger.Warn("live config apply is ENABLED; this sidecar may replace config and restart services")
+	}
 
 	hermesOptions := []hermes.Option{}
 	if value := strings.TrimSpace(*hermesConfigPaths); value != "" {
@@ -92,6 +96,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		NodeCredential: runtimeConfig.NodeCredential,
 		PublicKey:      *serverPublicKey,
 		ApplyWorkDir:   *applyWorkDir,
+		AllowLiveApply: *allowLiveApply,
 		Collector:      reg,
 		Logger:         logger,
 	})

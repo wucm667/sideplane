@@ -3,6 +3,7 @@ package sidecar
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +13,13 @@ import (
 	spcrypto "github.com/wucm667/sideplane/pkg/crypto"
 	"github.com/wucm667/sideplane/pkg/protocol"
 )
+
+func livePlan(nodeID, configPath, provider, model string) protocol.ConfigPlan {
+	p := dryRunPlan(nodeID, configPath, provider, model)
+	p.Mode = protocol.ConfigPlanModeLive
+	p.Body.DryRun = false
+	return p
+}
 
 func newTestSigningKey(t *testing.T) (publicKey string, privateKey []byte) {
 	t.Helper()
@@ -347,5 +355,175 @@ func TestExecuteConfigApplyJobBadPayload(t *testing.T) {
 	res := p.executeConfigApply(context.Background(), &protocol.Job{Type: protocol.JobTypeConfigApply, PayloadJSON: "not json"})
 	if res.Status != protocol.JobStatusFailed {
 		t.Errorf("status = %q, want failed", res.Status)
+	}
+}
+
+func TestConfigApplyLiveReplacesConfig(t *testing.T) {
+	pub, priv := newTestSigningKey(t)
+	srcDir := t.TempDir()
+	workDir := t.TempDir()
+	cfgPath, original := writeHermesConfig(t, srcDir)
+
+	signed, err := protocol.SignConfigPlan(livePlan("node-1", cfgPath, "openai", "gpt-4o"), priv)
+	if err != nil {
+		t.Fatalf("sign plan: %v", err)
+	}
+
+	exec := ConfigApplyExecutor{PublicKey: pub, WorkDir: workDir, AllowLiveApply: true}
+	result, err := exec.Execute(context.Background(), signed)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if result.DryRun {
+		t.Error("result.DryRun = true for a live plan")
+	}
+	if s, ok := findStep(t, result.Steps, "replaced"); !ok || s.Status != "completed" {
+		t.Errorf("replaced step = %+v, want completed", s)
+	}
+
+	want, err := renderHermesDesiredConfig(protocol.ProviderModelConfig{Provider: "openai", Model: "gpt-4o"})
+	if err != nil {
+		t.Fatalf("render desired: %v", err)
+	}
+	after, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read config after: %v", err)
+	}
+	if string(after) != string(want) {
+		t.Errorf("live config = %q, want %q", after, want)
+	}
+	if string(after) == string(original) {
+		t.Error("live config unchanged; expected live replacement")
+	}
+	backup, err := os.ReadFile(result.BackupPath)
+	if err != nil {
+		t.Fatalf("read backup: %v", err)
+	}
+	if string(backup) != string(original) {
+		t.Errorf("backup = %q, want original %q", backup, original)
+	}
+}
+
+func TestConfigApplyLiveRollsBackOnPostReplaceFailure(t *testing.T) {
+	pub, priv := newTestSigningKey(t)
+	srcDir := t.TempDir()
+	workDir := t.TempDir()
+	cfgPath, original := writeHermesConfig(t, srcDir)
+
+	signed, err := protocol.SignConfigPlan(livePlan("node-1", cfgPath, "openai", "gpt-4o"), priv)
+	if err != nil {
+		t.Fatalf("sign plan: %v", err)
+	}
+
+	exec := ConfigApplyExecutor{
+		PublicKey:      pub,
+		WorkDir:        workDir,
+		AllowLiveApply: true,
+		PostReplace: func(context.Context, protocol.SignedConfigPlan) error {
+			return errors.New("simulated restart/health failure")
+		},
+	}
+	result, err := exec.Execute(context.Background(), signed)
+	if err == nil {
+		t.Fatal("expected post-replace failure, got nil")
+	}
+	if s, ok := findStep(t, result.Steps, "replaced"); !ok || s.Status != "completed" {
+		t.Errorf("replaced step = %+v, want completed before the post-replace failure", s)
+	}
+	if s, ok := findStep(t, result.Steps, "rolled_back"); !ok || s.Status != "completed" {
+		t.Errorf("rolled_back step = %+v, want completed", s)
+	}
+	after, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read config after: %v", err)
+	}
+	if string(after) != string(original) {
+		t.Errorf("config after rollback = %q, want original %q (byte-for-byte restore)", after, original)
+	}
+}
+
+func TestConfigApplyLiveNoReplaceOnInvalidDesired(t *testing.T) {
+	pub, priv := newTestSigningKey(t)
+	srcDir := t.TempDir()
+	cfgPath, original := writeHermesConfig(t, srcDir)
+
+	plan := livePlan("node-1", cfgPath, "openai", "") // empty model fails render/validate
+	signed, err := protocol.SignConfigPlan(plan, priv)
+	if err != nil {
+		t.Fatalf("sign plan: %v", err)
+	}
+
+	exec := ConfigApplyExecutor{PublicKey: pub, WorkDir: t.TempDir(), AllowLiveApply: true}
+	result, err := exec.Execute(context.Background(), signed)
+	if err == nil {
+		t.Fatal("expected render/validate failure, got nil")
+	}
+	if _, ok := findStep(t, result.Steps, "replaced"); ok {
+		t.Error("replaced step reached despite invalid desired config")
+	}
+	after, _ := os.ReadFile(cfgPath)
+	if string(after) != string(original) {
+		t.Error("live config modified despite failed validation")
+	}
+}
+
+func TestAtomicReplaceFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "cfg")
+	if err := os.WriteFile(path, []byte("old"), 0o600); err != nil {
+		t.Fatalf("seed file: %v", err)
+	}
+	if err := atomicReplaceFile(path, []byte("new-contents")); err != nil {
+		t.Fatalf("atomic replace: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if string(got) != "new-contents" {
+		t.Errorf("contents = %q, want %q", got, "new-contents")
+	}
+	if n := dirEntryCount(t, dir); n != 1 {
+		t.Errorf("dir entry count = %d, want 1 (no temp leftovers)", n)
+	}
+}
+
+func TestVerifyWritten(t *testing.T) {
+	read := func(string) ([]byte, error) { return []byte("abc"), nil }
+	if err := verifyWritten(read, "p", []byte("abc")); err != nil {
+		t.Errorf("equal bytes rejected: %v", err)
+	}
+	if err := verifyWritten(read, "p", []byte("different")); err == nil {
+		t.Error("hash mismatch accepted")
+	}
+}
+
+func TestPruneApplyRuns(t *testing.T) {
+	workDir := t.TempDir()
+	names := []string{
+		"plan-20240101T000000Z",
+		"plan-20240102T000000Z",
+		"plan-20240103T000000Z",
+		"plan-20240104T000000Z",
+	}
+	for _, n := range names {
+		if err := os.MkdirAll(filepath.Join(workDir, n), 0o700); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+	}
+	pruneApplyRuns(workDir, 2)
+	entries, err := os.ReadDir(workDir)
+	if err != nil {
+		t.Fatalf("read dir: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("kept %d dirs, want 2", len(entries))
+	}
+	kept := map[string]bool{}
+	for _, e := range entries {
+		kept[e.Name()] = true
+	}
+	if !kept["plan-20240103T000000Z"] || !kept["plan-20240104T000000Z"] {
+		t.Errorf("kept = %v, want the newest two", kept)
 	}
 }
