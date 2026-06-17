@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/wucm667/sideplane/pkg/adapters"
+	"github.com/wucm667/sideplane/pkg/adapters/hermes"
 	spcrypto "github.com/wucm667/sideplane/pkg/crypto"
 	"github.com/wucm667/sideplane/pkg/protocol"
 )
@@ -118,12 +119,12 @@ func (e ConfigApplyExecutor) Execute(ctx context.Context, signedPlan protocol.Si
 	result.BackupPath = backupPath
 	addStep("backup_created", "completed", "read-only copy")
 
-	rendered, err := renderHermesDesiredConfig(signedPlan.Plan.Body.Desired)
+	rendered, err := hermes.RenderDesiredModel(contents, signedPlan.Plan.Body.Desired)
 	if err != nil {
 		addStep("temp_written", "failed", err.Error())
 		return result, err
 	}
-	tempPath := filepath.Join(runDir, "desired.json")
+	tempPath := filepath.Join(runDir, "desired"+configExt(configPath))
 	if err := writeFile(tempPath, rendered, 0o600); err != nil {
 		addStep("temp_written", "failed", err.Error())
 		return result, fmt.Errorf("write temp config: %w", err)
@@ -131,7 +132,7 @@ func (e ConfigApplyExecutor) Execute(ctx context.Context, signedPlan protocol.Si
 	result.TempPath = tempPath
 	addStep("temp_written", "completed", "sidecar temp path")
 
-	if err := ValidateHermesConfigBytes(rendered); err != nil {
+	if err := hermes.ValidateModelConfig(rendered, signedPlan.Plan.Body.Desired); err != nil {
 		addStep("validated", "failed", err.Error())
 		return result, err
 	}
@@ -277,35 +278,13 @@ func pruneApplyRuns(workDir string, keep int) {
 	}
 }
 
-func renderHermesDesiredConfig(desired protocol.ProviderModelConfig) ([]byte, error) {
-	if strings.TrimSpace(desired.Provider) == "" {
-		return nil, errors.New("desired provider is required")
+// configExt returns the file extension of the config path so the temp file
+// keeps the same format suffix (e.g. .yaml).
+func configExt(path string) string {
+	if ext := filepath.Ext(path); ext != "" {
+		return ext
 	}
-	if strings.TrimSpace(desired.Model) == "" {
-		return nil, errors.New("desired model is required")
-	}
-	payload := map[string]protocol.ProviderModelConfig{"runtime": {
-		Provider: strings.TrimSpace(desired.Provider),
-		Model:    strings.TrimSpace(desired.Model),
-	}}
-	return json.MarshalIndent(payload, "", "  ")
-}
-
-// ValidateHermesConfigBytes validates the dry-run rendered Hermes config.
-func ValidateHermesConfigBytes(contents []byte) error {
-	var payload struct {
-		Runtime protocol.ProviderModelConfig `json:"runtime"`
-	}
-	if err := json.Unmarshal(contents, &payload); err != nil {
-		return fmt.Errorf("parse hermes temp config: %w", err)
-	}
-	if strings.TrimSpace(payload.Runtime.Provider) == "" {
-		return errors.New("hermes provider is required")
-	}
-	if strings.TrimSpace(payload.Runtime.Model) == "" {
-		return errors.New("hermes model is required")
-	}
-	return nil
+	return ".tmp"
 }
 
 func (p *JobPoller) executeConfigApply(ctx context.Context, job *protocol.Job) protocol.JobResultRequest {

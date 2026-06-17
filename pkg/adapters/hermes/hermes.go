@@ -171,6 +171,11 @@ func (a *Adapter) snapshot(ctx context.Context) (*protocol.RuntimeConfigSnapshot
 	}
 	values := extractConfigValues(contents)
 	provider, model := extractProviderModel(values)
+	// Prefer the explicit top-level model block (model.provider / model.default)
+	// when present; it is the authoritative source for the active provider/model.
+	if blockProvider, blockModel, ok := ModelFields(contents); ok {
+		provider, model = blockProvider, blockModel
+	}
 	warnings := []string{}
 	if provider == "" && model == "" {
 		warnings = append(warnings, "provider/model not found in hermes config")
@@ -322,6 +327,10 @@ func (a *Adapter) configSearchPaths() []string {
 
 func defaultConfigPaths() []string {
 	return []string{
+		"~/.hermes/config.yaml",
+		"~/.hermes/config.yml",
+		"~/.hermes/config.json",
+		"~/.hermes/config.toml",
 		"~/.config/hermes/config.json",
 		"~/.config/hermes/config.yaml",
 		"~/.config/hermes/config.yml",

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wucm667/sideplane/pkg/adapters/hermes"
 	spcrypto "github.com/wucm667/sideplane/pkg/crypto"
 	"github.com/wucm667/sideplane/pkg/protocol"
 )
@@ -66,8 +67,8 @@ func dryRunPlan(nodeID, configPath, provider, model string) protocol.ConfigPlan 
 
 func writeHermesConfig(t *testing.T, dir string) (path string, contents []byte) {
 	t.Helper()
-	path = filepath.Join(dir, "hermes.json")
-	contents = []byte(`{"runtime":{"provider":"anthropic","model":"claude-3.7-sonnet"}}`)
+	path = filepath.Join(dir, "config.yaml")
+	contents = []byte("model:\n  default: claude-3.7-sonnet\n  provider: anthropic\n  base_url: https://example.invalid/v1\nproviders: {}\ntoolsets:\n  shell:\n    provider: auto\n    model: ''\n")
 	if err := os.WriteFile(path, contents, 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -329,21 +330,6 @@ func TestConfigApplyRejectsEmptyDesired(t *testing.T) {
 	}
 }
 
-func TestValidateHermesConfigBytes(t *testing.T) {
-	if err := ValidateHermesConfigBytes([]byte(`{"runtime":{"provider":"openai","model":"gpt-4o"}}`)); err != nil {
-		t.Errorf("valid config rejected: %v", err)
-	}
-	if err := ValidateHermesConfigBytes([]byte(`{"runtime":{"provider":"","model":"gpt-4o"}}`)); err == nil {
-		t.Error("empty provider accepted")
-	}
-	if err := ValidateHermesConfigBytes([]byte(`{"runtime":{"provider":"openai","model":""}}`)); err == nil {
-		t.Error("empty model accepted")
-	}
-	if err := ValidateHermesConfigBytes([]byte(`not json`)); err == nil {
-		t.Error("invalid json accepted")
-	}
-}
-
 func TestExecuteConfigApplyJobCompletes(t *testing.T) {
 	pub, priv := newTestSigningKey(t)
 	srcDir := t.TempDir()
@@ -409,19 +395,19 @@ func TestConfigApplyLiveReplacesConfig(t *testing.T) {
 		t.Errorf("controller calls: restarts=%d healths=%d, want 1/1", controller.restarts, controller.healths)
 	}
 
-	want, err := renderHermesDesiredConfig(protocol.ProviderModelConfig{Provider: "openai", Model: "gpt-4o"})
-	if err != nil {
-		t.Fatalf("render desired: %v", err)
-	}
 	after, err := os.ReadFile(cfgPath)
 	if err != nil {
 		t.Fatalf("read config after: %v", err)
 	}
-	if string(after) != string(want) {
-		t.Errorf("live config = %q, want %q", after, want)
+	provider, model, ok := hermes.ModelFields(after)
+	if !ok || provider != "openai" || model != "gpt-4o" {
+		t.Errorf("live config model fields = (%q, %q, %t), want (openai, gpt-4o, true)", provider, model, ok)
 	}
 	if string(after) == string(original) {
 		t.Error("live config unchanged; expected live replacement")
+	}
+	if !strings.Contains(string(after), "base_url: https://example.invalid/v1") {
+		t.Error("unrelated config (base_url) not preserved during live apply")
 	}
 	backup, err := os.ReadFile(result.BackupPath)
 	if err != nil {
