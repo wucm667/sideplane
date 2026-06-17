@@ -4,9 +4,27 @@ package adapters
 
 import (
 	"context"
+	"errors"
 
 	"github.com/wucm667/sideplane/pkg/protocol"
 )
+
+// ErrLiveApplyDisabled is returned by mutating adapter operations when live
+// apply is not enabled for the adapter. Callers should treat it as "skipped".
+var ErrLiveApplyDisabled = errors.New("live apply disabled")
+
+// ServiceController is an optional adapter capability for restarting a managed
+// runtime and verifying its health after a change. Implementations must use
+// allowlisted operations only and must never offer general command execution.
+// Mutating operations must be a no-op returning ErrLiveApplyDisabled unless the
+// adapter is explicitly permitted to perform live apply.
+type ServiceController interface {
+	// Restart restarts the managed runtime using an allowlisted operation.
+	Restart(ctx context.Context) error
+	// HealthCheck reports whether the runtime is healthy after a change.
+	// It must be read-only.
+	HealthCheck(ctx context.Context) error
+}
 
 // RuntimeAdapter discovers and reports the status of a managed runtime.
 type RuntimeAdapter interface {

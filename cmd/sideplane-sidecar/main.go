@@ -41,6 +41,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	jobPollInterval := flags.Duration("job-poll-interval", 30*time.Second, "job poll interval")
 	hermesConfigPaths := flags.String("hermes-config-paths", "", "path-list of read-only Hermes config files to inspect; can also be set with SIDEPLANE_HERMES_CONFIG_PATHS")
 	hermesDockerContainer := flags.String("hermes-docker-container", "", "optional read-only Docker container name for Hermes status/log inspection; can also be set with SIDEPLANE_HERMES_DOCKER_CONTAINER")
+	hermesServiceUnit := flags.String("hermes-service-unit", "", "optional systemd unit used as the Hermes restart target when no docker container is set; can also be set with SIDEPLANE_HERMES_SERVICE_UNIT")
 	serverPublicKey := flags.String("server-public-key", "", "base64 ed25519 server public key for signed config plans")
 	applyWorkDir := flags.String("apply-work-dir", "", "sidecar-controlled work directory for config apply dry runs")
 	allowLiveApply := flags.Bool("allow-live-apply", false, "DANGEROUS: allow live config replace and restart; off by default (dry-run only)")
@@ -76,6 +77,10 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	if value := strings.TrimSpace(*hermesDockerContainer); value != "" {
 		hermesOptions = append(hermesOptions, hermes.WithDockerContainer(value))
 	}
+	if value := strings.TrimSpace(*hermesServiceUnit); value != "" {
+		hermesOptions = append(hermesOptions, hermes.WithServiceUnit(value))
+	}
+	hermesOptions = append(hermesOptions, hermes.WithAllowLiveApply(*allowLiveApply))
 	reg := registry.New(hermes.NewAdapter(hermesOptions...), openclaw.NewAdapter())
 
 	client, err := sidecar.NewHeartbeatClient(sidecar.HeartbeatClientConfig{

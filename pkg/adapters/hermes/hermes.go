@@ -25,11 +25,13 @@ const AdapterType = "hermes"
 
 // Adapter is a lightweight runtime adapter for Hermes Agent.
 type Adapter struct {
-	lookup      func(string) (string, error)
-	runCommand  func(context.Context, string, ...string) ([]byte, error)
-	configPaths []string
-	container   string
-	getenv      func(string) string
+	lookup          func(string) (string, error)
+	runCommand      func(context.Context, string, ...string) ([]byte, error)
+	configPaths     []string
+	container       string
+	serviceUnitName string
+	allowLive       bool
+	getenv          func(string) string
 }
 
 // Option configures a Hermes adapter.
