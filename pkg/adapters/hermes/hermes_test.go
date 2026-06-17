@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -243,5 +244,83 @@ func TestAdapterConfigPathEnvironmentSearchList(t *testing.T) {
 	}
 	if snapshots[0].ConfigPath != configPath {
 		t.Fatalf("ConfigPath = %q, want %q", snapshots[0].ConfigPath, configPath)
+	}
+}
+
+func TestAdapterConfigSnapshotsParseDockerLogsReadOnly(t *testing.T) {
+	a := &Adapter{
+		lookup:    func(string) (string, error) { return "", errors.New("not found") },
+		container: "hermes-agent",
+		getenv:    func(string) string { return "" },
+		runCommand: func(_ context.Context, name string, args ...string) ([]byte, error) {
+			if name != "docker" {
+				return nil, fmt.Errorf("unexpected command %q", name)
+			}
+			got := strings.Join(args, " ")
+			switch got {
+			case "inspect --type container hermes-agent":
+				return []byte("[]"), nil
+			case "logs --tail 200 hermes-agent":
+				return []byte(`{"level":"info","msg":"initializing chat agent","model":"openai/gpt-5.2","token":"example-secret-do-not-use"}` + "\n"), nil
+			case `inspect --format {{index .Config.Labels "com.docker.compose.config-hash"}} hermes-agent`:
+				return []byte("abc123\n"), nil
+			default:
+				return nil, fmt.Errorf("unexpected docker args %q", got)
+			}
+		},
+	}
+
+	snapshots, err := a.ConfigSnapshots(context.Background())
+	if err != nil {
+		t.Fatalf("ConfigSnapshots error = %v, want nil", err)
+	}
+	if len(snapshots) != 1 {
+		t.Fatalf("len(snapshots) = %d, want 1", len(snapshots))
+	}
+	snapshot := snapshots[0]
+	if snapshot.Source != "docker_logs" {
+		t.Fatalf("Source = %q, want docker_logs", snapshot.Source)
+	}
+	if snapshot.Provider != "openai" {
+		t.Fatalf("Provider = %q, want openai", snapshot.Provider)
+	}
+	if snapshot.Model != "gpt-5.2" {
+		t.Fatalf("Model = %q, want gpt-5.2", snapshot.Model)
+	}
+	if snapshot.ConfigHash != "sha256:abc123" {
+		t.Fatalf("ConfigHash = %q, want docker label hash", snapshot.ConfigHash)
+	}
+	payload, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatalf("marshal snapshot: %v", err)
+	}
+	if strings.Contains(string(payload), "example-secret-do-not-use") {
+		t.Fatalf("snapshot payload contains fixture secret: %s", payload)
+	}
+}
+
+func TestAdapterConfiguredDockerContainerIsOptionalAndAllowlisted(t *testing.T) {
+	a := &Adapter{
+		lookup: func(string) (string, error) { return "", errors.New("not found") },
+		getenv: func(key string) string {
+			if key == "SIDEPLANE_HERMES_DOCKER_CONTAINER" {
+				return "hermes-agent"
+			}
+			return ""
+		},
+		runCommand: func(_ context.Context, name string, args ...string) ([]byte, error) {
+			if name != "docker" || strings.Join(args, " ") != "inspect --type container hermes-agent" {
+				return nil, fmt.Errorf("unexpected command %s %s", name, strings.Join(args, " "))
+			}
+			return []byte("[]"), nil
+		},
+	}
+
+	present, err := a.Detect(context.Background())
+	if err != nil {
+		t.Fatalf("Detect error = %v, want nil", err)
+	}
+	if !present {
+		t.Fatalf("Detect = false, want true for configured container")
 	}
 }

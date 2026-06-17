@@ -39,6 +39,8 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	statePath := flags.String("state", "", "sidecar state file path")
 	heartbeatInterval := flags.Duration("heartbeat-interval", 30*time.Second, "heartbeat interval")
 	jobPollInterval := flags.Duration("job-poll-interval", 30*time.Second, "job poll interval")
+	hermesConfigPaths := flags.String("hermes-config-paths", "", "path-list of read-only Hermes config files to inspect; can also be set with SIDEPLANE_HERMES_CONFIG_PATHS")
+	hermesDockerContainer := flags.String("hermes-docker-container", "", "optional read-only Docker container name for Hermes status/log inspection; can also be set with SIDEPLANE_HERMES_DOCKER_CONTAINER")
 	showVersion := flags.Bool("version", false, "print version and exit")
 	if err := flags.Parse(args); err != nil {
 		return 2
@@ -61,7 +63,14 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 
 	logger := slog.New(slog.NewTextHandler(stderr, nil))
 
-	reg := registry.New(hermes.NewAdapter(), openclaw.NewAdapter())
+	hermesOptions := []hermes.Option{}
+	if value := strings.TrimSpace(*hermesConfigPaths); value != "" {
+		hermesOptions = append(hermesOptions, hermes.WithConfigPaths(splitPathList(value)...))
+	}
+	if value := strings.TrimSpace(*hermesDockerContainer); value != "" {
+		hermesOptions = append(hermesOptions, hermes.WithDockerContainer(value))
+	}
+	reg := registry.New(hermes.NewAdapter(hermesOptions...), openclaw.NewAdapter())
 
 	client, err := sidecar.NewHeartbeatClient(sidecar.HeartbeatClientConfig{
 		ServerURL:      runtimeConfig.ServerURL,
@@ -118,6 +127,18 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+func splitPathList(raw string) []string {
+	replacer := strings.NewReplacer("\n", string(os.PathListSeparator), ",", string(os.PathListSeparator))
+	parts := strings.Split(replacer.Replace(raw), string(os.PathListSeparator))
+	paths := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if path := strings.TrimSpace(part); path != "" {
+			paths = append(paths, path)
+		}
+	}
+	return paths
 }
 
 type runtimeConfig struct {

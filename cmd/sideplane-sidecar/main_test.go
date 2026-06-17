@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -75,5 +76,19 @@ func TestRunRequiresNodeCredential(t *testing.T) {
 	}
 	if stdout.Len() != 0 {
 		t.Fatalf("stdout = %q, want empty", stdout.String())
+	}
+}
+
+func TestSplitPathListAcceptsPathListCommasAndNewlines(t *testing.T) {
+	raw := " /etc/hermes/config.json " + string(os.PathListSeparator) + " /opt/hermes/config.yaml,/tmp/hermes.env\n"
+	paths := splitPathList(raw)
+	want := []string{"/etc/hermes/config.json", "/opt/hermes/config.yaml", "/tmp/hermes.env"}
+	if len(paths) != len(want) {
+		t.Fatalf("len(paths) = %d, want %d: %#v", len(paths), len(want), paths)
+	}
+	for i := range want {
+		if paths[i] != want[i] {
+			t.Fatalf("paths[%d] = %q, want %q", i, paths[i], want[i])
+		}
 	}
 }

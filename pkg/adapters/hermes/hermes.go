@@ -26,7 +26,9 @@ const AdapterType = "hermes"
 // Adapter is a lightweight runtime adapter for Hermes Agent.
 type Adapter struct {
 	lookup      func(string) (string, error)
+	runCommand  func(context.Context, string, ...string) ([]byte, error)
 	configPaths []string
+	container   string
 	getenv      func(string) string
 }
 
@@ -40,11 +42,19 @@ func WithConfigPaths(paths ...string) Option {
 	}
 }
 
+// WithDockerContainer configures a read-only Docker container log source.
+func WithDockerContainer(container string) Option {
+	return func(a *Adapter) {
+		a.container = strings.TrimSpace(container)
+	}
+}
+
 // NewAdapter returns a Hermes Agent runtime adapter.
 func NewAdapter(opts ...Option) *Adapter {
 	a := &Adapter{
-		lookup: exec.LookPath,
-		getenv: os.Getenv,
+		lookup:     exec.LookPath,
+		runCommand: runCommand,
+		getenv:     os.Getenv,
 	}
 	for _, opt := range opts {
 		opt(a)
@@ -64,7 +74,7 @@ func (a *Adapter) Type() string {
 
 // Detect reports whether Hermes appears to be installed on this node.
 // It checks both the hermes command and known read-only config locations.
-func (a *Adapter) Detect(_ context.Context) (bool, error) {
+func (a *Adapter) Detect(ctx context.Context) (bool, error) {
 	lookup := a.lookup
 	if lookup == nil {
 		lookup = exec.LookPath
@@ -77,7 +87,14 @@ func (a *Adapter) Detect(_ context.Context) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	return path != "", nil
+	if path != "" {
+		return true, nil
+	}
+	container := a.dockerContainer()
+	if container == "" {
+		return false, nil
+	}
+	return a.detectDockerContainer(ctx, container)
 }
 
 // Status returns a minimal RuntimeStatus for Hermes Agent.
@@ -96,7 +113,7 @@ func (a *Adapter) Status(ctx context.Context) (protocol.RuntimeStatus, error) {
 		State: "present",
 	}
 
-	snapshot, err := a.snapshot()
+	snapshot, err := a.snapshot(ctx)
 	if err != nil {
 		status.State = "error"
 		status.LastError = err.Error()
@@ -119,7 +136,7 @@ func (a *Adapter) ConfigSnapshots(ctx context.Context) ([]protocol.RuntimeConfig
 	if !present {
 		return nil, nil
 	}
-	snapshot, err := a.snapshot()
+	snapshot, err := a.snapshot(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -136,13 +153,14 @@ func (a *Adapter) ConfigSnapshots(ctx context.Context) ([]protocol.RuntimeConfig
 	return []protocol.RuntimeConfigSnapshot{*snapshot}, nil
 }
 
-func (a *Adapter) snapshot() (*protocol.RuntimeConfigSnapshot, error) {
+func (a *Adapter) snapshot(ctx context.Context) (*protocol.RuntimeConfigSnapshot, error) {
 	path, err := a.findConfigPath()
 	if err != nil {
 		return nil, err
 	}
+	var fileSnapshot *protocol.RuntimeConfigSnapshot
 	if path == "" {
-		return nil, nil
+		return a.snapshotFromDocker(ctx)
 	}
 
 	contents, err := os.ReadFile(path)
@@ -167,7 +185,101 @@ func (a *Adapter) snapshot() (*protocol.RuntimeConfigSnapshot, error) {
 		Warnings:    warnings,
 		Values:      values,
 	})
+	fileSnapshot = &snapshot
+	if fileSnapshot.Provider != "" && fileSnapshot.Model != "" {
+		return fileSnapshot, nil
+	}
+	dockerSnapshot, err := a.snapshotFromDocker(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if dockerSnapshot != nil {
+		return dockerSnapshot, nil
+	}
+	return fileSnapshot, nil
+}
+
+func (a *Adapter) snapshotFromDocker(ctx context.Context) (*protocol.RuntimeConfigSnapshot, error) {
+	container := a.dockerContainer()
+	if container == "" {
+		return nil, nil
+	}
+	logs, err := a.runDocker(ctx, "logs", "--tail", "200", container)
+	if err != nil {
+		return nil, fmt.Errorf("read hermes docker logs: %w", err)
+	}
+	values := extractConfigValues(logs)
+	provider, model := extractProviderModel(values)
+	warnings := []string{}
+	if provider == "" && model == "" {
+		warnings = append(warnings, "provider/model not found in hermes docker logs")
+	}
+	configHash, hashErr := a.dockerConfigHash(ctx, container, logs)
+	if hashErr != nil {
+		warnings = append(warnings, hashErr.Error())
+	}
+	snapshot := spconfig.NewRuntimeConfigSnapshot(spconfig.SnapshotInput{
+		RuntimeName: AdapterName,
+		RuntimeType: AdapterType,
+		ConfigPath:  "docker://" + container + "/logs",
+		Source:      "docker_logs",
+		Provider:    provider,
+		Model:       model,
+		ConfigHash:  configHash,
+		Warnings:    warnings,
+		Values: map[string]string{
+			"provider": provider,
+			"model":    model,
+		},
+	})
 	return &snapshot, nil
+}
+
+func (a *Adapter) dockerConfigHash(ctx context.Context, container string, fallback []byte) (string, error) {
+	label, err := a.runDocker(ctx, "inspect", "--format", `{{index .Config.Labels "com.docker.compose.config-hash"}}`, container)
+	if err == nil {
+		value := strings.TrimSpace(string(label))
+		if value != "" && value != "<no value>" {
+			return "sha256:" + value, nil
+		}
+	}
+	sum := sha256.Sum256(fallback)
+	if err != nil {
+		return "sha256:" + hex.EncodeToString(sum[:]), fmt.Errorf("docker compose config hash unavailable")
+	}
+	return "sha256:" + hex.EncodeToString(sum[:]), nil
+}
+
+func (a *Adapter) dockerContainer() string {
+	container := strings.TrimSpace(a.container)
+	if container != "" {
+		return container
+	}
+	getenv := a.getenv
+	if getenv == nil {
+		getenv = os.Getenv
+	}
+	return strings.TrimSpace(getenv("SIDEPLANE_HERMES_DOCKER_CONTAINER"))
+}
+
+func (a *Adapter) detectDockerContainer(ctx context.Context, container string) (bool, error) {
+	if _, err := a.runDocker(ctx, "inspect", "--type", "container", container); err != nil {
+		return false, nil
+	}
+	return true, nil
+}
+
+func (a *Adapter) runDocker(ctx context.Context, args ...string) ([]byte, error) {
+	runner := a.runCommand
+	if runner == nil {
+		runner = runCommand
+	}
+	return runner(ctx, "docker", args...)
+}
+
+func runCommand(ctx context.Context, name string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	return cmd.CombinedOutput()
 }
 
 func (a *Adapter) findConfigPath() (string, error) {
