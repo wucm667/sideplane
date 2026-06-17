@@ -48,3 +48,30 @@ func TestRuntimeConfigSnapshotJSONShape(t *testing.T) {
 		}
 	}
 }
+
+func TestDesiredConfigJSONShape(t *testing.T) {
+	desired := DesiredConfig{
+		Global: ProviderModelConfig{Provider: "openai", Model: "gpt-5"},
+		NodeOverrides: map[string]ProviderModelConfig{
+			"node-a": {Model: "gpt-5-mini"},
+		},
+		RuntimeProfileOverrides: map[string]ProviderModelConfig{
+			"hermes/default": {Provider: "anthropic"},
+		},
+	}
+
+	payload, err := json.Marshal(desired)
+	if err != nil {
+		t.Fatalf("marshal desired config: %v", err)
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(payload, &got); err != nil {
+		t.Fatalf("unmarshal desired config: %v", err)
+	}
+	for _, key := range []string{"global", "nodeOverrides", "runtimeProfileOverrides"} {
+		if _, ok := got[key]; !ok {
+			t.Fatalf("desired config JSON omits %q: %s", key, payload)
+		}
+	}
+}

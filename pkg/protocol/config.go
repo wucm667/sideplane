@@ -13,3 +13,16 @@ type RuntimeConfigSnapshot struct {
 	Warnings       []string          `json:"warnings,omitempty"`
 	RedactedValues map[string]string `json:"redactedValues,omitempty"`
 }
+
+// ProviderModelConfig is the MVP desired config surface for runtime selection.
+type ProviderModelConfig struct {
+	Provider string `json:"provider,omitempty"`
+	Model    string `json:"model,omitempty"`
+}
+
+// DesiredConfig layers desired provider/model settings.
+type DesiredConfig struct {
+	Global                  ProviderModelConfig            `json:"global,omitempty"`
+	NodeOverrides           map[string]ProviderModelConfig `json:"nodeOverrides,omitempty"`
+	RuntimeProfileOverrides map[string]ProviderModelConfig `json:"runtimeProfileOverrides,omitempty"`
+}
