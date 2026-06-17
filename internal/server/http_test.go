@@ -78,6 +78,83 @@ func TestListNodeJobsAPI(t *testing.T) {
 	}
 }
 
+func TestListNodeJobsAPIOmitsUnsetTimestamps(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	enrollTestNode(t, nodeStore, "node-jobs")
+
+	if _, err := nodeStore.CreateJob(context.Background(), protocol.CreateJobRequest{Type: protocol.JobTypeDeepProbe}, "node-jobs", time.Now().UTC()); err != nil {
+		t.Fatalf("create pending job: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/nodes/node-jobs/jobs", nil)
+
+	NewHandlerWithStore(nodeStore).ServeHTTP(rec, req)
+
+	assertStatus(t, rec, http.StatusOK)
+
+	var jobs []map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&jobs); err != nil {
+		t.Fatalf("decode jobs response: %v", err)
+	}
+	if len(jobs) != 1 {
+		t.Fatalf("jobs length = %d, want 1", len(jobs))
+	}
+	if _, ok := jobs[0]["claimedAt"]; ok {
+		t.Fatalf("pending job response includes claimedAt: %#v", jobs[0])
+	}
+	if _, ok := jobs[0]["finishedAt"]; ok {
+		t.Fatalf("pending job response includes finishedAt: %#v", jobs[0])
+	}
+}
+
+func TestListNodeJobsAPIIncludesFinishedTimestamps(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	credential := enrollTestNode(t, nodeStore, "node-jobs")
+
+	job, err := nodeStore.CreateJob(context.Background(), protocol.CreateJobRequest{Type: protocol.JobTypeDeepProbe}, "node-jobs", time.Now().UTC())
+	if err != nil {
+		t.Fatalf("create pending job: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/sidecar/jobs/next?nodeId=node-jobs", nil)
+	req.Header.Set("Authorization", "Bearer "+credential)
+
+	NewHandlerWithStore(nodeStore).ServeHTTP(rec, req)
+
+	assertStatus(t, rec, http.StatusOK)
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/sidecar/jobs/"+job.ID+"/result", strings.NewReader(`{"status":"completed","resultJson":"{}"}`))
+	req.Header.Set("Authorization", "Bearer "+credential)
+
+	NewHandlerWithStore(nodeStore).ServeHTTP(rec, req)
+
+	assertStatus(t, rec, http.StatusOK)
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/nodes/node-jobs/jobs", nil)
+
+	NewHandlerWithStore(nodeStore).ServeHTTP(rec, req)
+
+	assertStatus(t, rec, http.StatusOK)
+
+	var jobs []map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&jobs); err != nil {
+		t.Fatalf("decode jobs response: %v", err)
+	}
+	if len(jobs) != 1 {
+		t.Fatalf("jobs length = %d, want 1", len(jobs))
+	}
+	if _, ok := jobs[0]["claimedAt"]; !ok {
+		t.Fatalf("completed job response omits claimedAt: %#v", jobs[0])
+	}
+	if _, ok := jobs[0]["finishedAt"]; !ok {
+		t.Fatalf("completed job response omits finishedAt: %#v", jobs[0])
+	}
+}
+
 func TestSidecarClaimsOnlyOwnNodeJobs(t *testing.T) {
 	nodeStore := store.NewMemoryNodeStore()
 	nodeACredential := enrollTestNode(t, nodeStore, "node-a")

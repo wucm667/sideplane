@@ -34,8 +34,8 @@ type Job struct {
 	ResultJSON  string    `json:"resultJson,omitempty"`
 	Error       string    `json:"error,omitempty"`
 	CreatedAt   time.Time `json:"createdAt"`
-	ClaimedAt   time.Time `json:"claimedAt,omitempty"`
-	FinishedAt  time.Time `json:"finishedAt,omitempty"`
+	ClaimedAt   time.Time `json:"claimedAt,omitzero"`
+	FinishedAt  time.Time `json:"finishedAt,omitzero"`
 }
 
 // CreateJobRequest is the server-side request to create a new job for a node.
