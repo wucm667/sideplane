@@ -26,3 +26,18 @@ type DesiredConfig struct {
 	NodeOverrides           map[string]ProviderModelConfig `json:"nodeOverrides,omitempty"`
 	RuntimeProfileOverrides map[string]ProviderModelConfig `json:"runtimeProfileOverrides,omitempty"`
 }
+
+// ConfigDiffEntry describes one read-only desired-vs-actual config difference.
+type ConfigDiffEntry struct {
+	Field   string `json:"field"`
+	Actual  string `json:"actual,omitempty"`
+	Desired string `json:"desired,omitempty"`
+	Change  string `json:"change"`
+}
+
+const (
+	// ConfigDiffChangeUpdate means actual and desired values differ.
+	ConfigDiffChangeUpdate = "update"
+	// ConfigDiffChangeMissingActual means no actual config snapshot exists.
+	ConfigDiffChangeMissingActual = "missingActual"
+)

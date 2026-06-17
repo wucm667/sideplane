@@ -75,3 +75,27 @@ func TestDesiredConfigJSONShape(t *testing.T) {
 		}
 	}
 }
+
+func TestConfigDiffEntryJSONShape(t *testing.T) {
+	entry := ConfigDiffEntry{
+		Field:   "provider",
+		Actual:  "openai",
+		Desired: "anthropic",
+		Change:  ConfigDiffChangeUpdate,
+	}
+
+	payload, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatalf("marshal config diff entry: %v", err)
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(payload, &got); err != nil {
+		t.Fatalf("unmarshal config diff entry: %v", err)
+	}
+	for _, key := range []string{"field", "actual", "desired", "change"} {
+		if _, ok := got[key]; !ok {
+			t.Fatalf("diff entry JSON omits %q: %s", key, payload)
+		}
+	}
+}
