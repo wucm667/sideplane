@@ -65,23 +65,46 @@ ON heartbeats(node_id, observed_at DESC)`,
 		name:    "create enrollment credential tables",
 		statements: []string{
 			`
-CREATE TABLE IF NOT EXISTS enrollment_tokens (
-	id TEXT PRIMARY KEY,
-	token_hash TEXT NOT NULL UNIQUE,
-	expires_at TEXT NOT NULL,
-	used_at TEXT,
-	created_at TEXT NOT NULL
-)`,
+	CREATE TABLE IF NOT EXISTS enrollment_tokens (
+		id TEXT PRIMARY KEY,
+		token_hash TEXT NOT NULL UNIQUE,
+		expires_at TEXT NOT NULL,
+		used_at TEXT,
+		created_at TEXT NOT NULL
+	)`,
 			`
-CREATE INDEX IF NOT EXISTS idx_enrollment_tokens_expires_at
-ON enrollment_tokens(expires_at)`,
+	CREATE INDEX IF NOT EXISTS idx_enrollment_tokens_expires_at
+	ON enrollment_tokens(expires_at)`,
 			`
-CREATE TABLE IF NOT EXISTS node_credentials (
-	node_id TEXT PRIMARY KEY,
-	credential_hash TEXT NOT NULL UNIQUE,
-	created_at TEXT NOT NULL,
-	FOREIGN KEY (node_id) REFERENCES nodes(node_id) ON DELETE CASCADE
-)`,
+	CREATE TABLE IF NOT EXISTS node_credentials (
+		node_id TEXT PRIMARY KEY,
+		credential_hash TEXT NOT NULL UNIQUE,
+		created_at TEXT NOT NULL,
+		FOREIGN KEY (node_id) REFERENCES nodes(node_id) ON DELETE CASCADE
+	)`,
+		},
+	},
+	{
+		version: 3,
+		name:    "create jobs table",
+		statements: []string{
+			`
+	CREATE TABLE IF NOT EXISTS jobs (
+		id TEXT PRIMARY KEY,
+		node_id TEXT NOT NULL,
+		type TEXT NOT NULL,
+		status TEXT NOT NULL,
+		payload_json TEXT NOT NULL DEFAULT '',
+		result_json TEXT NOT NULL DEFAULT '',
+		error TEXT NOT NULL DEFAULT '',
+		created_at TEXT NOT NULL,
+		claimed_at TEXT,
+		finished_at TEXT,
+		FOREIGN KEY (node_id) REFERENCES nodes(node_id) ON DELETE CASCADE
+	)`,
+			`
+	CREATE INDEX IF NOT EXISTS idx_jobs_node_status
+	ON jobs(node_id, status)`,
 		},
 	},
 }

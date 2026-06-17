@@ -38,6 +38,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	nodeCredential := flags.String("node-credential", "", "node credential for testing or temporary runs")
 	statePath := flags.String("state", "", "sidecar state file path")
 	heartbeatInterval := flags.Duration("heartbeat-interval", 30*time.Second, "heartbeat interval")
+	jobPollInterval := flags.Duration("job-poll-interval", 30*time.Second, "job poll interval")
 	showVersion := flags.Bool("version", false, "print version and exit")
 	if err := flags.Parse(args); err != nil {
 		return 2
@@ -74,25 +75,46 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 1
 	}
 
+	jobPoller, err := sidecar.NewJobPoller(sidecar.JobPollerConfig{
+		ServerURL:      runtimeConfig.ServerURL,
+		NodeID:         runtimeConfig.NodeID,
+		NodeCredential: runtimeConfig.NodeCredential,
+		Collector:      reg,
+		Logger:         logger,
+	})
+	if err != nil {
+		logger.Error("configure job poller", "error", err)
+		return 1
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	logger.Info(
-		"starting sidecar heartbeat",
+		"starting sidecar",
 		"server", runtimeConfig.ServerURL,
 		"node_id", runtimeConfig.NodeID,
 		"state", runtimeConfig.StatePath,
-		"interval", heartbeatInterval.String(),
+		"heartbeat_interval", heartbeatInterval.String(),
+		"job_poll_interval", jobPollInterval.String(),
 	)
-	err = sidecar.RunHeartbeatLoop(ctx, client, *heartbeatInterval, func(resp *protocol.HeartbeatResponse, err error) {
-		if err != nil {
-			logger.Warn("heartbeat failed", "error", err)
-			return
-		}
-		logger.Info("heartbeat accepted", "node_id", resp.Node.NodeID, "state", resp.Node.State)
-	})
-	if err != nil {
-		logger.Error("heartbeat loop stopped", "error", err)
+
+	errCh := make(chan error, 2)
+	go func() {
+		errCh <- sidecar.RunHeartbeatLoop(ctx, client, *heartbeatInterval, func(resp *protocol.HeartbeatResponse, err error) {
+			if err != nil {
+				logger.Warn("heartbeat failed", "error", err)
+				return
+			}
+			logger.Info("heartbeat accepted", "node_id", resp.Node.NodeID, "state", resp.Node.State)
+		})
+	}()
+	go func() {
+		errCh <- sidecar.RunJobPoller(ctx, jobPoller, *jobPollInterval)
+	}()
+
+	if err := <-errCh; err != nil && ctx.Err() == nil {
+		logger.Error("sidecar loop stopped", "error", err)
 		return 1
 	}
 	return 0

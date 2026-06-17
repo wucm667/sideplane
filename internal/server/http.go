@@ -50,6 +50,9 @@ func NewHandlerWithStoreAndFreshnessPolicy(nodeStore store.Store, freshness Fres
 	mux.HandleFunc("/api/enroll", handler.enrollNode)
 	mux.HandleFunc("/api/heartbeat", handler.heartbeat)
 	mux.HandleFunc("/api/nodes", handler.nodes)
+	mux.HandleFunc("/api/nodes/", handler.nodeJobsRouter)
+	mux.HandleFunc("/api/sidecar/jobs/next", handler.claimNextJob)
+	mux.HandleFunc("/api/sidecar/jobs/", handler.submitJobResult)
 	return mux, nil
 }
 
@@ -232,6 +235,178 @@ func (h *handler) applyFreshness(nodes []protocol.NodeStatus) {
 	for i := range nodes {
 		nodes[i].State = h.freshness.StateFor(nodes[i].LastHeartbeatAt)
 	}
+}
+
+// nodeJobsRouter handles POST /api/nodes/{nodeId}/jobs
+func (h *handler) nodeJobsRouter(w http.ResponseWriter, r *http.Request) {
+	// Parse path: /api/nodes/{nodeId}/jobs
+	path := strings.TrimPrefix(r.URL.Path, "/api/nodes/")
+	parts := strings.Split(path, "/")
+	if len(parts) != 2 || parts[1] != "jobs" {
+		http.NotFound(w, r)
+		return
+	}
+	nodeID := strings.TrimSpace(parts[0])
+	if nodeID == "" {
+		http.NotFound(w, r)
+		return
+	}
+
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
+		return
+	}
+
+	// TODO(auth): require operator authentication before creating jobs
+	defer r.Body.Close()
+
+	var req protocol.CreateJobRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		http.Error(w, "invalid job JSON", http.StatusBadRequest)
+		return
+	}
+
+	if req.Type == "" {
+		http.Error(w, "type is required", http.StatusBadRequest)
+		return
+	}
+	if req.Type != protocol.JobTypeDeepProbe {
+		http.Error(w, "unsupported job type", http.StatusBadRequest)
+		return
+	}
+
+	job, err := h.store.CreateJob(r.Context(), req, nodeID, time.Now().UTC())
+	if err != nil {
+		http.Error(w, "create job", http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, job)
+}
+
+// claimNextJob handles GET /api/sidecar/jobs/next?nodeId=...
+func (h *handler) claimNextJob(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
+		return
+	}
+
+	nodeID := strings.TrimSpace(r.URL.Query().Get("nodeId"))
+	if nodeID == "" {
+		http.Error(w, "nodeId query parameter is required", http.StatusBadRequest)
+		return
+	}
+
+	credential, ok := bearerCredential(r.Header.Get("Authorization"))
+	if !ok {
+		http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
+		return
+	}
+
+	ok, err := h.store.VerifyNodeCredential(r.Context(), nodeID, credential)
+	if err != nil {
+		http.Error(w, "verify node credential", http.StatusInternalServerError)
+		return
+	}
+	if !ok {
+		http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
+		return
+	}
+
+	job, err := h.store.ClaimNextJob(r.Context(), nodeID, time.Now().UTC())
+	if err != nil {
+		http.Error(w, "claim next job", http.StatusInternalServerError)
+		return
+	}
+
+	if job == nil {
+		// No pending jobs
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, job)
+}
+
+// submitJobResult handles POST /api/sidecar/jobs/{jobId}/result
+func (h *handler) submitJobResult(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Parse path: /api/sidecar/jobs/{jobId}/result
+	path := strings.TrimPrefix(r.URL.Path, "/api/sidecar/jobs/")
+	parts := strings.Split(path, "/")
+	if len(parts) != 2 || parts[1] != "result" {
+		http.NotFound(w, r)
+		return
+	}
+	jobID := strings.TrimSpace(parts[0])
+	if jobID == "" {
+		http.NotFound(w, r)
+		return
+	}
+
+	credential, ok := bearerCredential(r.Header.Get("Authorization"))
+	if !ok {
+		http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
+		return
+	}
+
+	// Load job to get nodeId for credential verification
+	job, err := h.store.GetJob(r.Context(), jobID)
+	if err != nil {
+		http.Error(w, "get job", http.StatusInternalServerError)
+		return
+	}
+	if job == nil {
+		http.Error(w, "job not found", http.StatusNotFound)
+		return
+	}
+
+	ok, err = h.store.VerifyNodeCredential(r.Context(), job.NodeID, credential)
+	if err != nil {
+		http.Error(w, "verify node credential", http.StatusInternalServerError)
+		return
+	}
+	if !ok {
+		http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
+		return
+	}
+
+	defer r.Body.Close()
+
+	var req protocol.JobResultRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		http.Error(w, "invalid result JSON", http.StatusBadRequest)
+		return
+	}
+
+	now := time.Now().UTC()
+	if req.Status == protocol.JobStatusCompleted {
+		err = h.store.CompleteJob(r.Context(), jobID, req, now)
+	} else if req.Status == protocol.JobStatusFailed {
+		err = h.store.FailJob(r.Context(), jobID, req.Error, now)
+	} else {
+		http.Error(w, "status must be completed or failed", http.StatusBadRequest)
+		return
+	}
+
+	if err != nil {
+		http.Error(w, "submit job result", http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "accepted"})
 }
 
 func bearerCredential(authorization string) (string, bool) {

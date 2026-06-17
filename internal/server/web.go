@@ -95,7 +95,7 @@ func serveWebAsset(w http.ResponseWriter, r *http.Request, root string, fileServ
 
 // hasFileExtension reports whether the last path segment has a file
 // extension. Go's filepath.Ext treats leading-dot names like ".hidden" as
-// having no extension, which matches the desired SPA fallback behavior.
+// having extension ".hidden", so hidden files are handled as static assets.
 func hasFileExtension(path string) bool {
 	return filepath.Ext(filepath.Base(path)) != ""
 }

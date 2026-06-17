@@ -243,6 +243,69 @@ func TestSQLiteNodeStoreUpdatesLatestNodeSnapshot(t *testing.T) {
 	}
 }
 
+func TestSQLiteJobLifecycle(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenSQLiteNodeStore(ctx, filepath.Join(t.TempDir(), "sideplane.db"))
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer store.Close()
+
+	now := time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)
+	if _, err := store.RecordHeartbeat(ctx, protocol.HeartbeatRequest{NodeID: "node-jobs"}, now); err != nil {
+		t.Fatalf("record heartbeat: %v", err)
+	}
+
+	job, err := store.CreateJob(ctx, protocol.CreateJobRequest{
+		Type:        protocol.JobTypeDeepProbe,
+		PayloadJSON: `{"probe":"full"}`,
+	}, "node-jobs", now)
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+	if job.ID == "" {
+		t.Fatalf("job ID is empty")
+	}
+	if job.Status != protocol.JobStatusPending {
+		t.Fatalf("job status = %q, want pending", job.Status)
+	}
+
+	claimed, err := store.ClaimNextJob(ctx, "node-jobs", now.Add(time.Second))
+	if err != nil {
+		t.Fatalf("claim next job: %v", err)
+	}
+	if claimed == nil {
+		t.Fatalf("claimed job is nil")
+	}
+	if claimed.ID != job.ID {
+		t.Fatalf("claimed job = %q, want %q", claimed.ID, job.ID)
+	}
+	if claimed.Status != protocol.JobStatusClaimed {
+		t.Fatalf("claimed status = %q, want claimed", claimed.Status)
+	}
+
+	if err := store.CompleteJob(ctx, job.ID, protocol.JobResultRequest{
+		Status:     protocol.JobStatusCompleted,
+		ResultJSON: `{"runtimes":[]}`,
+	}, now.Add(2*time.Second)); err != nil {
+		t.Fatalf("complete job: %v", err)
+	}
+
+	jobs, err := store.ListNodeJobs(ctx, "node-jobs")
+	if err != nil {
+		t.Fatalf("list node jobs: %v", err)
+	}
+	if len(jobs) != 1 {
+		t.Fatalf("jobs length = %d, want 1", len(jobs))
+	}
+	if jobs[0].Status != protocol.JobStatusCompleted {
+		t.Fatalf("listed job status = %q, want completed", jobs[0].Status)
+	}
+	if jobs[0].ResultJSON != `{"runtimes":[]}` {
+		t.Fatalf("result JSON = %q, want runtimes result", jobs[0].ResultJSON)
+	}
+}
+
 func assertSQLiteNodeSnapshot(t *testing.T, nodes []protocol.NodeStatus, observedAt time.Time) {
 	t.Helper()
 

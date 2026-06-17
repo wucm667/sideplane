@@ -17,6 +17,7 @@ type MemoryNodeStore struct {
 	nodes            map[string]protocol.NodeStatus
 	enrollmentTokens map[string]memoryEnrollmentToken
 	nodeCredentials  map[string]string
+	jobs             map[string]protocol.Job
 }
 
 type memoryEnrollmentToken struct {
@@ -30,6 +31,7 @@ func NewMemoryNodeStore() *MemoryNodeStore {
 		nodes:            make(map[string]protocol.NodeStatus),
 		enrollmentTokens: make(map[string]memoryEnrollmentToken),
 		nodeCredentials:  make(map[string]string),
+		jobs:             make(map[string]protocol.Job),
 	}
 }
 
@@ -180,4 +182,169 @@ func (s *MemoryNodeStore) VerifyNodeCredential(_ context.Context, nodeID string,
 	}
 
 	return secretHashMatches(credential, credentialHash)
+}
+
+// GetJob retrieves a job by ID.
+func (s *MemoryNodeStore) GetJob(_ context.Context, jobID string) (*protocol.Job, error) {
+	jobID = strings.TrimSpace(jobID)
+	if jobID == "" {
+		return nil, errors.New("job ID is required")
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	job, ok := s.jobs[jobID]
+	if !ok {
+		return nil, nil
+	}
+	return &job, nil
+}
+
+// CreateJob creates a new job for a node.
+func (s *MemoryNodeStore) CreateJob(_ context.Context, req protocol.CreateJobRequest, nodeID string, now time.Time) (protocol.Job, error) {
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" {
+		return protocol.Job{}, errors.New("node ID is required")
+	}
+
+	jobID, err := newRandomID("job_")
+	if err != nil {
+		return protocol.Job{}, err
+	}
+
+	job := protocol.Job{
+		ID:          jobID,
+		NodeID:      nodeID,
+		Type:        req.Type,
+		Status:      protocol.JobStatusPending,
+		PayloadJSON: req.PayloadJSON,
+		CreatedAt:   now.UTC(),
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.jobs == nil {
+		s.jobs = make(map[string]protocol.Job)
+	}
+	s.jobs[jobID] = job
+
+	return job, nil
+}
+
+// ClaimNextJob claims the next pending job for a node.
+func (s *MemoryNodeStore) ClaimNextJob(_ context.Context, nodeID string, now time.Time) (*protocol.Job, error) {
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" {
+		return nil, errors.New("node ID is required")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.jobs == nil {
+		return nil, nil
+	}
+
+	// Find oldest pending job for this node
+	var oldestJob *protocol.Job
+	for _, job := range s.jobs {
+		if job.NodeID == nodeID && job.Status == protocol.JobStatusPending {
+			if oldestJob == nil || job.CreatedAt.Before(oldestJob.CreatedAt) {
+				jobCopy := job
+				oldestJob = &jobCopy
+			}
+		}
+	}
+
+	if oldestJob == nil {
+		return nil, nil
+	}
+
+	oldestJob.Status = protocol.JobStatusClaimed
+	oldestJob.ClaimedAt = now.UTC()
+	s.jobs[oldestJob.ID] = *oldestJob
+
+	return oldestJob, nil
+}
+
+// CompleteJob marks a job as completed with a result.
+func (s *MemoryNodeStore) CompleteJob(_ context.Context, jobID string, result protocol.JobResultRequest, now time.Time) error {
+	jobID = strings.TrimSpace(jobID)
+	if jobID == "" {
+		return errors.New("job ID is required")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	job, ok := s.jobs[jobID]
+	if !ok {
+		return errors.New("job not found")
+	}
+	if job.Status != protocol.JobStatusClaimed {
+		return errors.New("job not in claimed state")
+	}
+
+	job.Status = protocol.JobStatusCompleted
+	job.ResultJSON = result.ResultJSON
+	job.FinishedAt = now.UTC()
+	s.jobs[jobID] = job
+
+	return nil
+}
+
+// FailJob marks a job as failed with an error message.
+func (s *MemoryNodeStore) FailJob(_ context.Context, jobID string, errMsg string, now time.Time) error {
+	jobID = strings.TrimSpace(jobID)
+	if jobID == "" {
+		return errors.New("job ID is required")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	job, ok := s.jobs[jobID]
+	if !ok {
+		return errors.New("job not found")
+	}
+	if job.Status != protocol.JobStatusClaimed {
+		return errors.New("job not in claimed state")
+	}
+
+	job.Status = protocol.JobStatusFailed
+	job.Error = errMsg
+	job.FinishedAt = now.UTC()
+	s.jobs[jobID] = job
+
+	return nil
+}
+
+// ListNodeJobs returns all jobs for a node.
+func (s *MemoryNodeStore) ListNodeJobs(_ context.Context, nodeID string) ([]protocol.Job, error) {
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" {
+		return nil, errors.New("node ID is required")
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var jobs []protocol.Job
+	for _, job := range s.jobs {
+		if job.NodeID == nodeID {
+			jobs = append(jobs, job)
+		}
+	}
+
+	// Sort by created_at descending
+	for i := 0; i < len(jobs); i++ {
+		for j := i + 1; j < len(jobs); j++ {
+			if jobs[i].CreatedAt.Before(jobs[j].CreatedAt) {
+				jobs[i], jobs[j] = jobs[j], jobs[i]
+			}
+		}
+	}
+
+	return jobs, nil
 }

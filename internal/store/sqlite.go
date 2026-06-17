@@ -446,6 +446,271 @@ WHERE node_id = ?
 	return secretHashMatches(credential, credentialHash)
 }
 
+// GetJob retrieves a job by ID.
+func (s *SQLiteNodeStore) GetJob(ctx context.Context, jobID string) (*protocol.Job, error) {
+	if s == nil || s.db == nil {
+		return nil, errors.New("sqlite node store is closed")
+	}
+	jobID = strings.TrimSpace(jobID)
+	if jobID == "" {
+		return nil, errors.New("job ID is required")
+	}
+
+	job, err := s.loadJob(ctx, jobID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &job, nil
+}
+
+// CreateJob creates a new job for a node.
+func (s *SQLiteNodeStore) CreateJob(ctx context.Context, req protocol.CreateJobRequest, nodeID string, now time.Time) (protocol.Job, error) {
+	if s == nil || s.db == nil {
+		return protocol.Job{}, errors.New("sqlite node store is closed")
+	}
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" {
+		return protocol.Job{}, errors.New("node ID is required")
+	}
+
+	jobID, err := newRandomID("job_")
+	if err != nil {
+		return protocol.Job{}, err
+	}
+
+	job := protocol.Job{
+		ID:          jobID,
+		NodeID:      nodeID,
+		Type:        req.Type,
+		Status:      protocol.JobStatusPending,
+		PayloadJSON: req.PayloadJSON,
+		CreatedAt:   now.UTC(),
+	}
+
+	_, err = s.db.ExecContext(ctx, `
+INSERT INTO jobs (
+	id,
+	node_id,
+	type,
+	status,
+	payload_json,
+	result_json,
+	error,
+	created_at,
+	claimed_at,
+	finished_at
+) VALUES (?, ?, ?, ?, ?, '', '', ?, NULL, NULL)
+`, job.ID, job.NodeID, string(job.Type), string(job.Status), job.PayloadJSON, formatDBTime(job.CreatedAt))
+	if err != nil {
+		return protocol.Job{}, fmt.Errorf("insert job: %w", err)
+	}
+
+	return job, nil
+}
+
+// ClaimNextJob claims the next pending job for a node.
+func (s *SQLiteNodeStore) ClaimNextJob(ctx context.Context, nodeID string, now time.Time) (*protocol.Job, error) {
+	if s == nil || s.db == nil {
+		return nil, errors.New("sqlite node store is closed")
+	}
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" {
+		return nil, errors.New("node ID is required")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin claim job transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	var jobID string
+	err = tx.QueryRowContext(ctx, `
+SELECT id
+FROM jobs
+WHERE node_id = ? AND status = ?
+ORDER BY created_at ASC
+LIMIT 1
+`, nodeID, string(protocol.JobStatusPending)).Scan(&jobID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("query next pending job: %w", err)
+	}
+
+	claimedAt := now.UTC()
+	result, err := tx.ExecContext(ctx, `
+UPDATE jobs
+SET status = ?, claimed_at = ?
+WHERE id = ? AND status = ?
+`, string(protocol.JobStatusClaimed), formatDBTime(claimedAt), jobID, string(protocol.JobStatusPending))
+	if err != nil {
+		return nil, fmt.Errorf("update job status to claimed: %w", err)
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return nil, fmt.Errorf("count job claim update: %w", err)
+	}
+	if rowsAffected != 1 {
+		return nil, nil
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit job claim transaction: %w", err)
+	}
+
+	job, err := s.loadJob(ctx, jobID)
+	if err != nil {
+		return nil, err
+	}
+	return &job, nil
+}
+
+// CompleteJob marks a job as completed with a result.
+func (s *SQLiteNodeStore) CompleteJob(ctx context.Context, jobID string, result protocol.JobResultRequest, now time.Time) error {
+	if s == nil || s.db == nil {
+		return errors.New("sqlite node store is closed")
+	}
+	jobID = strings.TrimSpace(jobID)
+	if jobID == "" {
+		return errors.New("job ID is required")
+	}
+
+	finishedAt := now.UTC()
+	res, err := s.db.ExecContext(ctx, `
+UPDATE jobs
+SET status = ?, result_json = ?, finished_at = ?
+WHERE id = ? AND status = ?
+`, string(protocol.JobStatusCompleted), result.ResultJSON, formatDBTime(finishedAt), jobID, string(protocol.JobStatusClaimed))
+	if err != nil {
+		return fmt.Errorf("update job to completed: %w", err)
+	}
+	rowsAffected, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("count job completion update: %w", err)
+	}
+	if rowsAffected == 0 {
+		return errors.New("job not found or not in claimed state")
+	}
+	return nil
+}
+
+// FailJob marks a job as failed with an error message.
+func (s *SQLiteNodeStore) FailJob(ctx context.Context, jobID string, errMsg string, now time.Time) error {
+	if s == nil || s.db == nil {
+		return errors.New("sqlite node store is closed")
+	}
+	jobID = strings.TrimSpace(jobID)
+	if jobID == "" {
+		return errors.New("job ID is required")
+	}
+
+	finishedAt := now.UTC()
+	res, err := s.db.ExecContext(ctx, `
+UPDATE jobs
+SET status = ?, error = ?, finished_at = ?
+WHERE id = ? AND status = ?
+`, string(protocol.JobStatusFailed), errMsg, formatDBTime(finishedAt), jobID, string(protocol.JobStatusClaimed))
+	if err != nil {
+		return fmt.Errorf("update job to failed: %w", err)
+	}
+	rowsAffected, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("count job failure update: %w", err)
+	}
+	if rowsAffected == 0 {
+		return errors.New("job not found or not in claimed state")
+	}
+	return nil
+}
+
+// ListNodeJobs returns all jobs for a node.
+func (s *SQLiteNodeStore) ListNodeJobs(ctx context.Context, nodeID string) ([]protocol.Job, error) {
+	if s == nil || s.db == nil {
+		return nil, errors.New("sqlite node store is closed")
+	}
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" {
+		return nil, errors.New("node ID is required")
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+SELECT id
+FROM jobs
+WHERE node_id = ?
+ORDER BY created_at DESC
+`, nodeID)
+	if err != nil {
+		return nil, fmt.Errorf("query node jobs: %w", err)
+	}
+	defer rows.Close()
+
+	var jobIDs []string
+	for rows.Next() {
+		var jobID string
+		if err := rows.Scan(&jobID); err != nil {
+			return nil, fmt.Errorf("scan job ID: %w", err)
+		}
+		jobIDs = append(jobIDs, jobID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate job IDs: %w", err)
+	}
+
+	jobs := make([]protocol.Job, 0, len(jobIDs))
+	for _, jobID := range jobIDs {
+		job, err := s.loadJob(ctx, jobID)
+		if err != nil {
+			return nil, err
+		}
+		jobs = append(jobs, job)
+	}
+	return jobs, nil
+}
+
+func (s *SQLiteNodeStore) loadJob(ctx context.Context, jobID string) (protocol.Job, error) {
+	var job protocol.Job
+	var status, createdAt string
+	var claimedAt, finishedAt sql.NullString
+
+	err := s.db.QueryRowContext(ctx, `
+SELECT id, node_id, type, status, payload_json, result_json, error, created_at, claimed_at, finished_at
+FROM jobs
+WHERE id = ?
+`, jobID).Scan(&job.ID, &job.NodeID, &job.Type, &status, &job.PayloadJSON, &job.ResultJSON, &job.Error, &createdAt, &claimedAt, &finishedAt)
+	if err != nil {
+		return protocol.Job{}, fmt.Errorf("load job %q: %w", jobID, err)
+	}
+
+	job.Status = protocol.JobStatus(status)
+	parsed, err := parseDBTime(createdAt)
+	if err != nil {
+		return protocol.Job{}, fmt.Errorf("parse job %q created_at: %w", jobID, err)
+	}
+	job.CreatedAt = parsed
+
+	if claimedAt.Valid && claimedAt.String != "" {
+		parsed, err := parseDBTime(claimedAt.String)
+		if err != nil {
+			return protocol.Job{}, fmt.Errorf("parse job %q claimed_at: %w", jobID, err)
+		}
+		job.ClaimedAt = parsed
+	}
+	if finishedAt.Valid && finishedAt.String != "" {
+		parsed, err := parseDBTime(finishedAt.String)
+		if err != nil {
+			return protocol.Job{}, fmt.Errorf("parse job %q finished_at: %w", jobID, err)
+		}
+		job.FinishedAt = parsed
+	}
+
+	return job, nil
+}
+
 func configureSQLite(ctx context.Context, db *sql.DB) error {
 	if _, err := db.ExecContext(ctx, `PRAGMA busy_timeout = 5000`); err != nil {
 		return fmt.Errorf("configure sqlite busy timeout: %w", err)

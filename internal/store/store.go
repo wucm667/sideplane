@@ -32,8 +32,19 @@ type EnrollmentStore interface {
 	VerifyNodeCredential(ctx context.Context, nodeID string, credential string) (bool, error)
 }
 
+// JobStore persists server-assigned jobs and their lifecycle.
+type JobStore interface {
+	CreateJob(ctx context.Context, req protocol.CreateJobRequest, nodeID string, now time.Time) (protocol.Job, error)
+	GetJob(ctx context.Context, jobID string) (*protocol.Job, error)
+	ClaimNextJob(ctx context.Context, nodeID string, now time.Time) (*protocol.Job, error)
+	CompleteJob(ctx context.Context, jobID string, result protocol.JobResultRequest, now time.Time) error
+	FailJob(ctx context.Context, jobID string, errMsg string, now time.Time) error
+	ListNodeJobs(ctx context.Context, nodeID string) ([]protocol.Job, error)
+}
+
 // Store is the complete persistence contract currently required by the server.
 type Store interface {
 	NodeStore
 	EnrollmentStore
+	JobStore
 }

@@ -261,6 +261,11 @@ Available endpoints:
   requires `Authorization: Bearer <nodeCredential>`
 - `GET /api/nodes` lists nodes with freshness-adjusted `fresh`, `stale`, or
   `offline` state
+- `POST /api/nodes/{nodeId}/jobs` creates a `deep_probe` job for a node
+- `GET /api/sidecar/jobs/next?nodeId=...` lets an enrolled sidecar claim its
+  next pending job and requires `Authorization: Bearer <nodeCredential>`
+- `POST /api/sidecar/jobs/{jobId}/result` lets the owning sidecar submit a job
+  result and requires `Authorization: Bearer <nodeCredential>`
 
 Create a sidecar enrollment token with the CLI:
 
@@ -291,10 +296,17 @@ go run ./cmd/sideplane-sidecar enroll \
   --state ./sidecar-state.json
 ```
 
-After enrollment, start the sidecar heartbeat loop from the saved state:
+After enrollment, start the sidecar heartbeat and job polling loops from the saved state:
 
 ```bash
 go run ./cmd/sideplane-sidecar
+```
+
+Both loops default to a `30s` interval. Use `--heartbeat-interval` and
+`--job-poll-interval` to tune development runs:
+
+```bash
+go run ./cmd/sideplane-sidecar --heartbeat-interval 15s --job-poll-interval 10s
 ```
 
 For a custom state path, pass the same `--state` value used during enrollment:

@@ -14,6 +14,100 @@ import (
 	"github.com/wucm667/sideplane/pkg/protocol"
 )
 
+func TestCreateJobAPI(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	enrollTestNode(t, nodeStore, "node-jobs")
+
+	body := strings.NewReader(`{"type":"deep_probe","payloadJson":"{}"}`)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/nodes/node-jobs/jobs", body)
+
+	NewHandlerWithStore(nodeStore).ServeHTTP(rec, req)
+
+	assertStatus(t, rec, http.StatusCreated)
+
+	var job protocol.Job
+	if err := json.NewDecoder(rec.Body).Decode(&job); err != nil {
+		t.Fatalf("decode job response: %v", err)
+	}
+	if job.NodeID != "node-jobs" {
+		t.Fatalf("job nodeId = %q, want node-jobs", job.NodeID)
+	}
+	if job.Type != protocol.JobTypeDeepProbe {
+		t.Fatalf("job type = %q, want deep_probe", job.Type)
+	}
+	if job.Status != protocol.JobStatusPending {
+		t.Fatalf("job status = %q, want pending", job.Status)
+	}
+}
+
+func TestSidecarClaimsOnlyOwnNodeJobs(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	nodeACredential := enrollTestNode(t, nodeStore, "node-a")
+	enrollTestNode(t, nodeStore, "node-b")
+
+	now := time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)
+	if _, err := nodeStore.CreateJob(context.Background(), protocol.CreateJobRequest{Type: protocol.JobTypeDeepProbe}, "node-b", now); err != nil {
+		t.Fatalf("create node-b job: %v", err)
+	}
+	jobA, err := nodeStore.CreateJob(context.Background(), protocol.CreateJobRequest{Type: protocol.JobTypeDeepProbe}, "node-a", now.Add(time.Second))
+	if err != nil {
+		t.Fatalf("create node-a job: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/sidecar/jobs/next?nodeId=node-a", nil)
+	req.Header.Set("Authorization", "Bearer "+nodeACredential)
+
+	NewHandlerWithStore(nodeStore).ServeHTTP(rec, req)
+
+	assertStatus(t, rec, http.StatusOK)
+
+	var job protocol.Job
+	if err := json.NewDecoder(rec.Body).Decode(&job); err != nil {
+		t.Fatalf("decode job response: %v", err)
+	}
+	if job.ID != jobA.ID {
+		t.Fatalf("claimed job = %q, want node-a job %q", job.ID, jobA.ID)
+	}
+	if job.NodeID != "node-a" {
+		t.Fatalf("claimed nodeId = %q, want node-a", job.NodeID)
+	}
+}
+
+func TestSidecarJobPollingRejectsWrongCredential(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	enrollTestNode(t, nodeStore, "node-auth")
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/sidecar/jobs/next?nodeId=node-auth", nil)
+	req.Header.Set("Authorization", "Bearer wrong-credential")
+
+	NewHandlerWithStore(nodeStore).ServeHTTP(rec, req)
+
+	assertStatus(t, rec, http.StatusUnauthorized)
+}
+
+func TestSidecarJobResultRejectsWrongCredential(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	enrollTestNode(t, nodeStore, "node-result")
+	job, err := nodeStore.CreateJob(context.Background(), protocol.CreateJobRequest{Type: protocol.JobTypeDeepProbe}, "node-result", time.Now().UTC())
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+	if _, err := nodeStore.ClaimNextJob(context.Background(), "node-result", time.Now().UTC()); err != nil {
+		t.Fatalf("claim job: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/sidecar/jobs/"+job.ID+"/result", strings.NewReader(`{"status":"completed","resultJson":"{}"}`))
+	req.Header.Set("Authorization", "Bearer wrong-credential")
+
+	NewHandlerWithStore(nodeStore).ServeHTTP(rec, req)
+
+	assertStatus(t, rec, http.StatusUnauthorized)
+}
+
 func TestHealthz(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
@@ -415,4 +509,28 @@ func (s staticNodeStore) EnrollNode(context.Context, protocol.EnrollNodeRequest,
 
 func (s staticNodeStore) VerifyNodeCredential(context.Context, string, string) (bool, error) {
 	return false, nil
+}
+
+func (s staticNodeStore) CreateJob(context.Context, protocol.CreateJobRequest, string, time.Time) (protocol.Job, error) {
+	return protocol.Job{}, nil
+}
+
+func (s staticNodeStore) GetJob(context.Context, string) (*protocol.Job, error) {
+	return nil, nil
+}
+
+func (s staticNodeStore) ClaimNextJob(context.Context, string, time.Time) (*protocol.Job, error) {
+	return nil, nil
+}
+
+func (s staticNodeStore) CompleteJob(context.Context, string, protocol.JobResultRequest, time.Time) error {
+	return nil
+}
+
+func (s staticNodeStore) FailJob(context.Context, string, string, time.Time) error {
+	return nil
+}
+
+func (s staticNodeStore) ListNodeJobs(context.Context, string) ([]protocol.Job, error) {
+	return nil, nil
 }
