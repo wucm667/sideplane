@@ -1,0 +1,50 @@
+package protocol
+
+import (
+	"encoding/json"
+	"testing"
+)
+
+func TestRuntimeConfigSnapshotJSONShape(t *testing.T) {
+	snapshot := RuntimeConfigSnapshot{
+		RuntimeName: "default",
+		RuntimeType: "hermes",
+		ConfigPath:  "/etc/hermes/config.toml",
+		Source:      "config file",
+		Profile:     "worker",
+		Provider:    "openai",
+		Model:       "gpt-5",
+		ConfigHash:  "sha256:abc",
+		Warnings:    []string{"provider key redacted"},
+		RedactedValues: map[string]string{
+			"apiKey": "[redacted]",
+		},
+	}
+
+	payload, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatalf("marshal snapshot: %v", err)
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(payload, &got); err != nil {
+		t.Fatalf("unmarshal snapshot: %v", err)
+	}
+
+	for _, key := range []string{
+		"runtimeName",
+		"runtimeType",
+		"configPath",
+		"source",
+		"profile",
+		"provider",
+		"model",
+		"configHash",
+		"warnings",
+		"redactedValues",
+	} {
+		if _, ok := got[key]; !ok {
+			t.Fatalf("snapshot JSON omits %q: %s", key, payload)
+		}
+	}
+}
