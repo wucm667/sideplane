@@ -51,3 +51,9 @@ type JobResultRequest struct {
 	ResultJSON string    `json:"resultJson,omitempty"`
 	Error      string    `json:"error,omitempty"`
 }
+
+// DeepProbeResult is the stable result payload for deep_probe jobs.
+type DeepProbeResult struct {
+	Runtimes        []RuntimeStatus         `json:"runtimes"`
+	ConfigSnapshots []RuntimeConfigSnapshot `json:"configSnapshots"`
+}

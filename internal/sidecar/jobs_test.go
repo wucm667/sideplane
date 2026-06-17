@@ -127,7 +127,8 @@ func TestJobPollerCompletesDeepProbe(t *testing.T) {
 	}
 
 	var result struct {
-		Runtimes []protocol.RuntimeStatus `json:"runtimes"`
+		Runtimes        []protocol.RuntimeStatus         `json:"runtimes"`
+		ConfigSnapshots []protocol.RuntimeConfigSnapshot `json:"configSnapshots"`
 	}
 	if err := json.Unmarshal([]byte(got.ResultJSON), &result); err != nil {
 		t.Fatalf("unmarshal result JSON: %v", err)
@@ -135,9 +136,12 @@ func TestJobPollerCompletesDeepProbe(t *testing.T) {
 	if len(result.Runtimes) != 1 || result.Runtimes[0].Type != "hermes" {
 		t.Fatalf("runtimes = %#v, want hermes runtime", result.Runtimes)
 	}
+	if len(result.ConfigSnapshots) != 0 {
+		t.Fatalf("config snapshots = %#v, want none", result.ConfigSnapshots)
+	}
 }
 
-func TestJobPollerDeepProbeEmptyRuntimesAsArray(t *testing.T) {
+func TestJobPollerDeepProbeEmptyCollectionsAsArrays(t *testing.T) {
 	ctx := context.Background()
 	nodeStore := store.NewMemoryNodeStore()
 	credential := enrollTestNode(t, nodeStore, "node-empty-probe")
@@ -174,13 +178,79 @@ func TestJobPollerDeepProbeEmptyRuntimesAsArray(t *testing.T) {
 	}
 
 	var result struct {
-		Runtimes json.RawMessage `json:"runtimes"`
+		Runtimes        json.RawMessage `json:"runtimes"`
+		ConfigSnapshots json.RawMessage `json:"configSnapshots"`
 	}
 	if err := json.Unmarshal([]byte(got.ResultJSON), &result); err != nil {
 		t.Fatalf("unmarshal result JSON: %v", err)
 	}
 	if string(result.Runtimes) != "[]" {
 		t.Fatalf("runtimes JSON = %s, want [] in %s", result.Runtimes, got.ResultJSON)
+	}
+	if string(result.ConfigSnapshots) != "[]" {
+		t.Fatalf("configSnapshots JSON = %s, want [] in %s", result.ConfigSnapshots, got.ResultJSON)
+	}
+}
+
+func TestJobPollerDeepProbeIncludesConfigSnapshots(t *testing.T) {
+	ctx := context.Background()
+	nodeStore := store.NewMemoryNodeStore()
+	credential := enrollTestNode(t, nodeStore, "node-config-probe")
+
+	job, err := nodeStore.CreateJob(ctx, protocol.CreateJobRequest{Type: protocol.JobTypeDeepProbe}, "node-config-probe", time.Now().UTC())
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	api := httptest.NewServer(server.NewHandlerWithStore(nodeStore))
+	defer api.Close()
+
+	poller, err := NewJobPoller(JobPollerConfig{
+		ServerURL:      api.URL,
+		NodeID:         "node-config-probe",
+		NodeCredential: credential,
+		Collector: fakeRuntimeCollector{
+			runtimes: []protocol.RuntimeStatus{
+				{Name: "default", Type: "hermes", State: "present"},
+			},
+			configSnapshots: []protocol.RuntimeConfigSnapshot{
+				{
+					RuntimeName: "default",
+					RuntimeType: "hermes",
+					Source:      "adapter",
+					Provider:    "openai",
+					Model:       "gpt-5",
+					ConfigHash:  "sha256:config",
+				},
+			},
+		},
+		HTTPClient: api.Client(),
+	})
+	if err != nil {
+		t.Fatalf("new job poller: %v", err)
+	}
+
+	if err := poller.PollAndExecute(ctx); err != nil {
+		t.Fatalf("poll and execute: %v", err)
+	}
+
+	got, err := nodeStore.GetJob(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("get job: %v", err)
+	}
+	if got.Status != protocol.JobStatusCompleted {
+		t.Fatalf("job status = %q, want completed; error=%q", got.Status, got.Error)
+	}
+
+	var result protocol.DeepProbeResult
+	if err := json.Unmarshal([]byte(got.ResultJSON), &result); err != nil {
+		t.Fatalf("unmarshal result JSON: %v", err)
+	}
+	if len(result.ConfigSnapshots) != 1 {
+		t.Fatalf("len(configSnapshots) = %d, want 1", len(result.ConfigSnapshots))
+	}
+	if result.ConfigSnapshots[0].Provider != "openai" || result.ConfigSnapshots[0].Model != "gpt-5" {
+		t.Fatalf("config snapshot = %#v, want provider/model", result.ConfigSnapshots[0])
 	}
 }
 
@@ -273,9 +343,14 @@ func enrollTestNode(t *testing.T, nodeStore store.Store, nodeID string) string {
 }
 
 type fakeRuntimeCollector struct {
-	runtimes []protocol.RuntimeStatus
+	runtimes        []protocol.RuntimeStatus
+	configSnapshots []protocol.RuntimeConfigSnapshot
 }
 
 func (c fakeRuntimeCollector) CollectStatuses(context.Context) []protocol.RuntimeStatus {
 	return append([]protocol.RuntimeStatus(nil), c.runtimes...)
+}
+
+func (c fakeRuntimeCollector) CollectConfigSnapshots(context.Context) []protocol.RuntimeConfigSnapshot {
+	return append([]protocol.RuntimeConfigSnapshot(nil), c.configSnapshots...)
 }

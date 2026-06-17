@@ -18,23 +18,25 @@ import (
 
 // JobPollerConfig configures a sidecar job poller.
 type JobPollerConfig struct {
-	ServerURL      string
-	NodeID         string
-	NodeCredential string
-	HTTPClient     *http.Client
-	Collector      adapters.RuntimeCollector
-	Logger         *slog.Logger
+	ServerURL       string
+	NodeID          string
+	NodeCredential  string
+	HTTPClient      *http.Client
+	Collector       adapters.RuntimeCollector
+	ConfigCollector adapters.ConfigSnapshotCollector
+	Logger          *slog.Logger
 }
 
 // JobPoller polls for jobs from the server and executes them.
 type JobPoller struct {
-	serverURL      string
-	endpoint       string
-	nodeID         string
-	nodeCredential string
-	httpClient     *http.Client
-	collector      adapters.RuntimeCollector
-	logger         *slog.Logger
+	serverURL       string
+	endpoint        string
+	nodeID          string
+	nodeCredential  string
+	httpClient      *http.Client
+	collector       adapters.RuntimeCollector
+	configCollector adapters.ConfigSnapshotCollector
+	logger          *slog.Logger
 }
 
 // NewJobPoller creates a new job poller.
@@ -64,15 +66,22 @@ func NewJobPoller(cfg JobPollerConfig) (*JobPoller, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	configCollector := cfg.ConfigCollector
+	if configCollector == nil {
+		if collector, ok := cfg.Collector.(adapters.ConfigSnapshotCollector); ok {
+			configCollector = collector
+		}
+	}
 
 	return &JobPoller{
-		serverURL:      serverURL,
-		endpoint:       endpoint,
-		nodeID:         cfg.NodeID,
-		nodeCredential: cfg.NodeCredential,
-		httpClient:     httpClient,
-		collector:      cfg.Collector,
-		logger:         logger,
+		serverURL:       serverURL,
+		endpoint:        endpoint,
+		nodeID:          cfg.NodeID,
+		nodeCredential:  cfg.NodeCredential,
+		httpClient:      httpClient,
+		collector:       cfg.Collector,
+		configCollector: configCollector,
+		logger:          logger,
 	}, nil
 }
 
@@ -188,10 +197,16 @@ func (p *JobPoller) executeDeepProbe(ctx context.Context, job *protocol.Job) pro
 	if runtimes == nil {
 		runtimes = []protocol.RuntimeStatus{}
 	}
-	resultJSON, err := json.Marshal(struct {
-		Runtimes []protocol.RuntimeStatus `json:"runtimes"`
-	}{
-		Runtimes: runtimes,
+	configSnapshots := []protocol.RuntimeConfigSnapshot{}
+	if p.configCollector != nil {
+		configSnapshots = p.configCollector.CollectConfigSnapshots(ctx)
+		if configSnapshots == nil {
+			configSnapshots = []protocol.RuntimeConfigSnapshot{}
+		}
+	}
+	resultJSON, err := json.Marshal(protocol.DeepProbeResult{
+		Runtimes:        runtimes,
+		ConfigSnapshots: configSnapshots,
 	})
 	if err != nil {
 		return protocol.JobResultRequest{
