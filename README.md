@@ -198,6 +198,26 @@ Run the development server:
 go run ./cmd/sideplane-server
 ```
 
+Run the Web UI development server (in another terminal):
+
+```bash
+cd web && npm install && npm run dev
+```
+
+The Vite dev server listens on `http://localhost:3000` and proxies API
+requests to `http://localhost:8080`. You can also change the target server
+with the `VITE_API_URL` environment variable if the backend is on a different
+port.
+
+To build the Web UI for production:
+
+```bash
+cd web && npm run build
+```
+
+This outputs static assets to `web/dist/` that can be served by the
+Sideplane server.
+
 The server listens on `:8080` by default, opens `sideplane.db` in the current
 directory, and applies SQLite migrations on startup. Use `--addr` to choose
 another address and `--db` to choose a different SQLite database path:
