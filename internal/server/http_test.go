@@ -1003,3 +1003,11 @@ func (s staticNodeStore) AppendAuditEvent(context.Context, protocol.AuditEvent) 
 func (s staticNodeStore) ListAuditEvents(context.Context, int) ([]protocol.AuditEvent, error) {
 	return nil, nil
 }
+
+func (s staticNodeStore) GetDesiredConfig(context.Context) (protocol.DesiredConfig, error) {
+	return protocol.DesiredConfig{}, nil
+}
+
+func (s staticNodeStore) SetDesiredConfig(context.Context, protocol.DesiredConfig, time.Time) error {
+	return nil
+}

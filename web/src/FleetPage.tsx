@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { AuditEvent, DeepProbeResult, Job, JobStatus, ListAuditEventsResponse, NodeState, NodeStatus, RuntimeConfigSnapshot, RuntimeStatus } from './types.ts'
+import type { AuditEvent, ConfigDiffEntry, DeepProbeResult, EffectiveConfigResponse, Job, JobStatus, ListAuditEventsResponse, NodeState, NodeStatus, RuntimeConfigSnapshot, RuntimeStatus } from './types.ts'
 
 const NODE_REFRESH_MS = 10_000
 const ACTIVE_JOB_REFRESH_MS = 2_000
@@ -162,6 +162,8 @@ export default function FleetPage() {
   const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([])
   const [auditLoading, setAuditLoading] = useState(true)
   const [auditError, setAuditError] = useState<string | null>(null)
+  const [effectiveByNode, setEffectiveByNode] = useState<Record<string, EffectiveConfigResponse>>({})
+  const [effectiveErrorByNode, setEffectiveErrorByNode] = useState<Record<string, string>>({})
   const [theme, setTheme] = useState<Theme>(loadStoredTheme)
   const [view, setView] = useState<View>('fleet')
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
@@ -328,6 +330,30 @@ export default function FleetPage() {
     }
   }, [])
 
+  const loadEffectiveConfig = useCallback(async (nodeId: string, runtimeType = 'hermes', profile = 'default') => {
+    try {
+      const params = new URLSearchParams({ nodeId, runtimeType, profile })
+      const res = await fetch(`/api/config/effective?${params.toString()}`)
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}: ${res.statusText}`)
+      }
+      const data: EffectiveConfigResponse = await res.json()
+      if (!mountedRef.current) return
+      setEffectiveByNode((current) => ({ ...current, [nodeId]: data }))
+      setEffectiveErrorByNode((current) => {
+        const next = { ...current }
+        delete next[nodeId]
+        return next
+      })
+    } catch (e) {
+      if (!mountedRef.current) return
+      setEffectiveErrorByNode((current) => ({
+        ...current,
+        [nodeId]: e instanceof Error ? e.message : 'Unknown error',
+      }))
+    }
+  }, [])
+
   useEffect(() => {
     refreshFleet(false)
   }, [refreshFleet])
@@ -363,6 +389,12 @@ export default function FleetPage() {
 
     return () => window.clearInterval(interval)
   }, [jobsByNode, loadNodeJobs])
+
+  useEffect(() => {
+    if (view === 'node' && selectedNodeId) {
+      loadEffectiveConfig(selectedNodeId)
+    }
+  }, [loadEffectiveConfig, selectedNodeId, view])
 
   const safeNodes = nodes ?? []
   const stats = useMemo(() => {
@@ -424,6 +456,8 @@ export default function FleetPage() {
               jobsError={jobsErrorByNode[selectedNode.nodeId]}
               jobsLoading={Boolean(jobsLoadingByNode[selectedNode.nodeId])}
               node={selectedNode}
+              effective={effectiveByNode[selectedNode.nodeId]}
+              effectiveError={effectiveErrorByNode[selectedNode.nodeId]}
               onBack={() => setView('fleet')}
               onDeepProbe={() => createDeepProbe(selectedNode.nodeId)}
             />
@@ -703,6 +737,8 @@ function NodeDetailView({
   jobsError,
   jobsLoading,
   node,
+  effective,
+  effectiveError,
   onBack,
   onDeepProbe,
 }: {
@@ -711,6 +747,8 @@ function NodeDetailView({
   jobsError?: string
   jobsLoading: boolean
   node: NodeStatus
+  effective?: EffectiveConfigResponse
+  effectiveError?: string
   onBack: () => void
   onDeepProbe: () => void
 }) {
@@ -756,9 +794,11 @@ function NodeDetailView({
       <div className="mb-6 grid gap-px overflow-hidden rounded-xl border border-[var(--sp-border)] bg-[var(--sp-border)] sm:grid-cols-2 lg:grid-cols-4">
         <MetricCard label="Heartbeat" value={formatRelativeTime(node.lastHeartbeatAt)} title={formatDate(node.lastHeartbeatAt)} />
         <MetricCard label="Config hash" value={compactHash(node.configHash || primarySnapshot?.configHash)} monospace />
-        <MetricCard label="Desired hash" value="not configured" muted />
+        <MetricCard label="Desired hash" value={compactHash(effective?.desiredHash)} monospace muted={!effective?.desiredHash} title={effective?.desiredHash} />
         <MetricCard label="Last error" value={node.lastError || 'none'} tone={node.lastError ? 'danger' : 'normal'} />
       </div>
+
+      <ConfigDiffPanel effective={effective} error={effectiveError} />
 
       <section className="mb-6">
         <div className="mb-3 text-xs font-semibold uppercase tracking-[0.14em] text-[var(--sp-faint)]">Runtimes</div>
@@ -790,6 +830,48 @@ function NodeDetailView({
           ))}
         </div>
       </section>
+    </div>
+  )
+}
+
+function ConfigDiffPanel({ effective, error }: { effective?: EffectiveConfigResponse; error?: string }) {
+  return (
+    <section className="mb-6 rounded-xl border border-[var(--sp-border)] bg-[var(--sp-surface)]">
+      <div className="flex flex-col gap-2 border-b border-[var(--sp-border)] px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <div className="text-sm font-semibold">Desired configuration</div>
+          <div className="mt-1 text-xs text-[var(--sp-muted)]">Effective provider/model and read-only actual diff</div>
+        </div>
+        <div className="font-mono text-xs text-[var(--sp-faint)]">{effective?.runtimeType || 'hermes'}/{effective?.profile || 'default'}</div>
+      </div>
+      {error && <div className="border-b border-rose-500/30 bg-rose-500/10 px-4 py-3 text-xs text-rose-600">Failed to load desired diff: {error}</div>}
+      <div className="grid gap-4 px-4 py-4 sm:grid-cols-3">
+        <RuntimeField label="Desired provider" value={effective?.effective.provider || '-'} />
+        <RuntimeField label="Desired model" value={effective?.effective.model || '-'} />
+        <RuntimeField label="Desired hash" value={compactHash(effective?.desiredHash)} title={effective?.desiredHash} />
+      </div>
+      <div className="border-t border-[var(--sp-border)] px-4 py-4">
+        {!effective ? (
+          <div className="text-sm text-[var(--sp-muted)]">Desired diff not loaded yet.</div>
+        ) : effective.diff.length === 0 ? (
+          <div className="text-sm text-emerald-600">Actual provider/model matches desired effective config.</div>
+        ) : (
+          <div className="grid gap-2">
+            {effective.diff.map((entry) => <DiffRow key={`${entry.field}-${entry.change}`} entry={entry} />)}
+          </div>
+        )}
+      </div>
+    </section>
+  )
+}
+
+function DiffRow({ entry }: { entry: ConfigDiffEntry }) {
+  return (
+    <div className="grid gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs sm:grid-cols-[1fr_1fr_1fr_auto] sm:items-center">
+      <span className="font-mono font-semibold text-[var(--sp-text)]">{entry.field}</span>
+      <span className="font-mono text-[var(--sp-muted)]">actual: {entry.actual || '-'}</span>
+      <span className="font-mono text-[var(--sp-muted)]">desired: {entry.desired || '-'}</span>
+      <span className="font-semibold text-amber-700">{entry.change}</span>
     </div>
   )
 }

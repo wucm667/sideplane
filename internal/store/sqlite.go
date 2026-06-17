@@ -830,6 +830,48 @@ LIMIT ?
 	return events, nil
 }
 
+// GetDesiredConfig returns the layered desired runtime config.
+func (s *SQLiteNodeStore) GetDesiredConfig(ctx context.Context) (protocol.DesiredConfig, error) {
+	if s == nil || s.db == nil {
+		return protocol.DesiredConfig{}, errors.New("sqlite node store is closed")
+	}
+	var payload string
+	err := s.db.QueryRowContext(ctx, `SELECT config_json FROM desired_config WHERE id = 1`).Scan(&payload)
+	if errors.Is(err, sql.ErrNoRows) {
+		return protocol.DesiredConfig{}, nil
+	}
+	if err != nil {
+		return protocol.DesiredConfig{}, fmt.Errorf("query desired config: %w", err)
+	}
+	var desired protocol.DesiredConfig
+	if err := json.Unmarshal([]byte(payload), &desired); err != nil {
+		return protocol.DesiredConfig{}, fmt.Errorf("parse desired config: %w", err)
+	}
+	return desired, nil
+}
+
+// SetDesiredConfig replaces the layered desired runtime config.
+func (s *SQLiteNodeStore) SetDesiredConfig(ctx context.Context, desired protocol.DesiredConfig, now time.Time) error {
+	if s == nil || s.db == nil {
+		return errors.New("sqlite node store is closed")
+	}
+	payload, err := json.Marshal(desired)
+	if err != nil {
+		return fmt.Errorf("marshal desired config: %w", err)
+	}
+	_, err = s.db.ExecContext(ctx, `
+INSERT INTO desired_config (id, config_json, updated_at)
+VALUES (1, ?, ?)
+ON CONFLICT(id) DO UPDATE SET
+	config_json = excluded.config_json,
+	updated_at = excluded.updated_at
+`, string(payload), formatDBTime(now.UTC()))
+	if err != nil {
+		return fmt.Errorf("upsert desired config: %w", err)
+	}
+	return nil
+}
+
 func (s *SQLiteNodeStore) loadJob(ctx context.Context, jobID string) (protocol.Job, error) {
 	var job protocol.Job
 	var status, createdAt string

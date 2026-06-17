@@ -132,6 +132,18 @@ ON heartbeats(node_id, observed_at DESC)`,
 	ON audit_events(created_at DESC)`,
 		},
 	},
+	{
+		version: 6,
+		name:    "create desired config table",
+		statements: []string{
+			`
+	CREATE TABLE IF NOT EXISTS desired_config (
+		id INTEGER PRIMARY KEY CHECK (id = 1),
+		config_json TEXT NOT NULL,
+		updated_at TEXT NOT NULL
+	)`,
+		},
+	},
 }
 
 func runSQLiteMigrations(ctx context.Context, db *sql.DB) error {

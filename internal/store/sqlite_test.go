@@ -39,6 +39,7 @@ func TestSQLiteNodeStoreMigratesAndPersistsHeartbeat(t *testing.T) {
 	assertSQLiteMigrationApplied(t, ctx, first.db, 3)
 	assertSQLiteMigrationApplied(t, ctx, first.db, 4)
 	assertSQLiteMigrationApplied(t, ctx, first.db, 5)
+	assertSQLiteMigrationApplied(t, ctx, first.db, 6)
 
 	observedAt := time.Date(2026, 6, 16, 1, 2, 3, 0, time.UTC)
 	sentAt := observedAt.Add(-time.Second)
@@ -412,6 +413,40 @@ func TestSQLiteAuditEventsInsertAndListNewestFirst(t *testing.T) {
 		t.Fatalf("events order/limit = %#v, want newest only", events)
 	}
 	assertSQLiteDoesNotContainPlaintext(t, ctx, store.db, "audit_events", "secret-token-value")
+}
+
+func TestSQLiteDesiredConfigPersistsAcrossReopen(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "sideplane.db")
+	first, err := OpenSQLiteNodeStore(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	desired := protocol.DesiredConfig{
+		Global: protocol.ProviderModelConfig{Provider: "openai", Model: "gpt-5"},
+		NodeOverrides: map[string]protocol.ProviderModelConfig{
+			"node-a": {Model: "gpt-5-mini"},
+		},
+	}
+	if err := first.SetDesiredConfig(ctx, desired, time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("set desired config: %v", err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatalf("close first store: %v", err)
+	}
+
+	second, err := OpenSQLiteNodeStore(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("reopen sqlite store: %v", err)
+	}
+	defer second.Close()
+	got, err := second.GetDesiredConfig(ctx)
+	if err != nil {
+		t.Fatalf("get desired config: %v", err)
+	}
+	if got.Global.Provider != "openai" || got.NodeOverrides["node-a"].Model != "gpt-5-mini" {
+		t.Fatalf("desired config = %#v, want persisted provider/model", got)
+	}
 }
 
 func assertSQLiteNodeSnapshot(t *testing.T, nodes []protocol.NodeStatus, observedAt time.Time) {

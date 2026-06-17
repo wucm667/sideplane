@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -12,6 +14,7 @@ import (
 	"github.com/wucm667/sideplane/internal/audit"
 	"github.com/wucm667/sideplane/internal/auth"
 	"github.com/wucm667/sideplane/internal/store"
+	spconfig "github.com/wucm667/sideplane/pkg/config"
 	spcrypto "github.com/wucm667/sideplane/pkg/crypto"
 	"github.com/wucm667/sideplane/pkg/protocol"
 )
@@ -92,6 +95,8 @@ func NewHandlerWithConfig(cfg HandlerConfig) (http.Handler, error) {
 	mux.HandleFunc("/metrics", metricsHandler)
 	mux.HandleFunc("/api/audit", handler.auditEvents)
 	mux.HandleFunc("/api/signing-key", handler.publicSigningKey)
+	mux.HandleFunc("/api/config/desired", handler.desiredConfig)
+	mux.HandleFunc("/api/config/effective", handler.effectiveConfig)
 	mux.HandleFunc("/api/enrollment-tokens", handler.createEnrollmentToken)
 	mux.HandleFunc("/api/enroll", handler.enrollNode)
 	mux.HandleFunc("/api/heartbeat", handler.heartbeat)
@@ -549,6 +554,112 @@ func (h *handler) publicSigningKey(w http.ResponseWriter, r *http.Request) {
 		Algorithm: "ed25519",
 		PublicKey: spcrypto.PublicKeyString(h.signingKey.PublicKey),
 	})
+}
+
+func (h *handler) desiredConfig(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		desired, err := h.store.GetDesiredConfig(r.Context())
+		if err != nil {
+			http.Error(w, "get desired config", http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusOK, desired)
+	case http.MethodPut:
+		if !h.authorizeOperator(w, r) {
+			return
+		}
+		defer r.Body.Close()
+		var desired protocol.DesiredConfig
+		decoder := json.NewDecoder(r.Body)
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&desired); err != nil {
+			http.Error(w, "invalid desired config JSON", http.StatusBadRequest)
+			return
+		}
+		if err := h.store.SetDesiredConfig(r.Context(), desired, time.Now().UTC()); err != nil {
+			http.Error(w, "set desired config", http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusOK, desired)
+	default:
+		w.Header().Set("Allow", http.MethodGet+", "+http.MethodPut)
+		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
+	}
+}
+
+func (h *handler) effectiveConfig(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
+		return
+	}
+	nodeID := strings.TrimSpace(r.URL.Query().Get("nodeId"))
+	if nodeID == "" {
+		http.Error(w, "nodeId query parameter is required", http.StatusBadRequest)
+		return
+	}
+	runtimeType := strings.TrimSpace(r.URL.Query().Get("runtimeType"))
+	profile := strings.TrimSpace(r.URL.Query().Get("profile"))
+
+	desired, err := h.store.GetDesiredConfig(r.Context())
+	if err != nil {
+		http.Error(w, "get desired config", http.StatusInternalServerError)
+		return
+	}
+	effective := spconfig.EffectiveProviderModelConfig(desired, spconfig.EffectiveConfigTarget{
+		NodeID:      nodeID,
+		RuntimeType: runtimeType,
+		Profile:     profile,
+	})
+	actual, err := h.latestActualSnapshot(r.Context(), nodeID, runtimeType, profile)
+	if err != nil {
+		http.Error(w, "get actual config", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, protocol.EffectiveConfigResponse{
+		NodeID:      nodeID,
+		RuntimeType: runtimeType,
+		Profile:     profile,
+		Effective:   effective,
+		DesiredHash: hashDesired(effective),
+		Actual:      actual,
+		Diff:        spconfig.DiffProviderModelConfig(actual, effective),
+	})
+}
+
+func (h *handler) latestActualSnapshot(ctx context.Context, nodeID string, runtimeType string, profile string) (*protocol.RuntimeConfigSnapshot, error) {
+	jobs, err := h.store.ListNodeJobs(ctx, nodeID)
+	if err != nil {
+		return nil, err
+	}
+	for _, job := range jobs {
+		if job.Type != protocol.JobTypeDeepProbe || job.Status != protocol.JobStatusCompleted || strings.TrimSpace(job.ResultJSON) == "" {
+			continue
+		}
+		var result protocol.DeepProbeResult
+		if err := json.Unmarshal([]byte(job.ResultJSON), &result); err != nil {
+			continue
+		}
+		for _, snapshot := range result.ConfigSnapshots {
+			if runtimeType != "" && snapshot.RuntimeType != runtimeType {
+				continue
+			}
+			if profile != "" && snapshot.Profile != profile {
+				continue
+			}
+			matched := snapshot
+			matched.RedactedValues = nil
+			return &matched, nil
+		}
+	}
+	return nil, nil
+}
+
+func hashDesired(effective protocol.ProviderModelConfig) string {
+	payload, _ := json.Marshal(effective)
+	sum := sha256.Sum256(payload)
+	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
 func (h *handler) audit(ctx context.Context, event protocol.AuditEvent) {

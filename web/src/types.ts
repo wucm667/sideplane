@@ -24,6 +24,28 @@ export interface RuntimeConfigSnapshot {
   redactedValues?: Record<string, string>
 }
 
+export interface ProviderModelConfig {
+  provider?: string
+  model?: string
+}
+
+export interface ConfigDiffEntry {
+  field: string
+  actual?: string
+  desired?: string
+  change: string
+}
+
+export interface EffectiveConfigResponse {
+  nodeId: string
+  runtimeType?: string
+  profile?: string
+  effective: ProviderModelConfig
+  desiredHash?: string
+  actual?: RuntimeConfigSnapshot
+  diff: ConfigDiffEntry[]
+}
+
 export interface DeepProbeResult {
   runtimes?: RuntimeStatus[]
   configSnapshots?: RuntimeConfigSnapshot[]

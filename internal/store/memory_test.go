@@ -146,3 +146,26 @@ func TestMemoryAuditEventsInsertAndListNewestFirst(t *testing.T) {
 		t.Fatalf("events order/limit = %#v, want newest only", events)
 	}
 }
+
+func TestMemoryDesiredConfigPersistsCopy(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryNodeStore()
+	desired := protocol.DesiredConfig{
+		Global: protocol.ProviderModelConfig{Provider: "openai", Model: "gpt-5"},
+		NodeOverrides: map[string]protocol.ProviderModelConfig{
+			"node-a": {Model: "gpt-5-mini"},
+		},
+	}
+	if err := store.SetDesiredConfig(ctx, desired, time.Now().UTC()); err != nil {
+		t.Fatalf("set desired config: %v", err)
+	}
+	desired.NodeOverrides["node-a"] = protocol.ProviderModelConfig{Model: "mutated"}
+
+	got, err := store.GetDesiredConfig(ctx)
+	if err != nil {
+		t.Fatalf("get desired config: %v", err)
+	}
+	if got.NodeOverrides["node-a"].Model != "gpt-5-mini" {
+		t.Fatalf("stored desired config mutated: %#v", got)
+	}
+}

@@ -56,10 +56,17 @@ type AuditStore interface {
 	ListAuditEvents(ctx context.Context, limit int) ([]protocol.AuditEvent, error)
 }
 
+// DesiredConfigStore persists the layered desired runtime config.
+type DesiredConfigStore interface {
+	GetDesiredConfig(ctx context.Context) (protocol.DesiredConfig, error)
+	SetDesiredConfig(ctx context.Context, desired protocol.DesiredConfig, now time.Time) error
+}
+
 // Store is the complete persistence contract currently required by the server.
 type Store interface {
 	NodeStore
 	EnrollmentStore
 	JobStore
 	AuditStore
+	DesiredConfigStore
 }

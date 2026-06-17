@@ -20,6 +20,7 @@ type MemoryNodeStore struct {
 	nodeCredentials  map[string]string
 	jobs             map[string]protocol.Job
 	auditEvents      []protocol.AuditEvent
+	desiredConfig    protocol.DesiredConfig
 }
 
 type memoryEnrollmentToken struct {
@@ -432,6 +433,38 @@ func (s *MemoryNodeStore) ListAuditEvents(_ context.Context, limit int) ([]proto
 		events = events[:limit]
 	}
 	return events, nil
+}
+
+// GetDesiredConfig returns the layered desired runtime config.
+func (s *MemoryNodeStore) GetDesiredConfig(_ context.Context) (protocol.DesiredConfig, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return cloneDesiredConfig(s.desiredConfig), nil
+}
+
+// SetDesiredConfig replaces the layered desired runtime config.
+func (s *MemoryNodeStore) SetDesiredConfig(_ context.Context, desired protocol.DesiredConfig, _ time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.desiredConfig = cloneDesiredConfig(desired)
+	return nil
+}
+
+func cloneDesiredConfig(desired protocol.DesiredConfig) protocol.DesiredConfig {
+	clone := protocol.DesiredConfig{Global: desired.Global}
+	if desired.NodeOverrides != nil {
+		clone.NodeOverrides = make(map[string]protocol.ProviderModelConfig, len(desired.NodeOverrides))
+		for key, value := range desired.NodeOverrides {
+			clone.NodeOverrides[key] = value
+		}
+	}
+	if desired.RuntimeProfileOverrides != nil {
+		clone.RuntimeProfileOverrides = make(map[string]protocol.ProviderModelConfig, len(desired.RuntimeProfileOverrides))
+		for key, value := range desired.RuntimeProfileOverrides {
+			clone.RuntimeProfileOverrides[key] = value
+		}
+	}
+	return clone
 }
 
 func jobStatusIsActive(status protocol.JobStatus) bool {

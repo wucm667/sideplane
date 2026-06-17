@@ -27,6 +27,17 @@ type DesiredConfig struct {
 	RuntimeProfileOverrides map[string]ProviderModelConfig `json:"runtimeProfileOverrides,omitempty"`
 }
 
+// EffectiveConfigResponse describes server-computed desired config and diff.
+type EffectiveConfigResponse struct {
+	NodeID      string                 `json:"nodeId"`
+	RuntimeType string                 `json:"runtimeType,omitempty"`
+	Profile     string                 `json:"profile,omitempty"`
+	Effective   ProviderModelConfig    `json:"effective"`
+	DesiredHash string                 `json:"desiredHash,omitempty"`
+	Actual      *RuntimeConfigSnapshot `json:"actual,omitempty"`
+	Diff        []ConfigDiffEntry      `json:"diff"`
+}
+
 // ConfigDiffEntry describes one read-only desired-vs-actual config difference.
 type ConfigDiffEntry struct {
 	Field   string `json:"field"`
