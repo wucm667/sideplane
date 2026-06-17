@@ -185,6 +185,9 @@ func (p *JobPoller) executeDeepProbe(ctx context.Context, job *protocol.Job) pro
 	}
 
 	runtimes := p.collector.CollectStatuses(ctx)
+	if runtimes == nil {
+		runtimes = []protocol.RuntimeStatus{}
+	}
 	resultJSON, err := json.Marshal(struct {
 		Runtimes []protocol.RuntimeStatus `json:"runtimes"`
 	}{

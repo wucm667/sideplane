@@ -137,6 +137,53 @@ func TestJobPollerCompletesDeepProbe(t *testing.T) {
 	}
 }
 
+func TestJobPollerDeepProbeEmptyRuntimesAsArray(t *testing.T) {
+	ctx := context.Background()
+	nodeStore := store.NewMemoryNodeStore()
+	credential := enrollTestNode(t, nodeStore, "node-empty-probe")
+
+	job, err := nodeStore.CreateJob(ctx, protocol.CreateJobRequest{Type: protocol.JobTypeDeepProbe}, "node-empty-probe", time.Now().UTC())
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	api := httptest.NewServer(server.NewHandlerWithStore(nodeStore))
+	defer api.Close()
+
+	poller, err := NewJobPoller(JobPollerConfig{
+		ServerURL:      api.URL,
+		NodeID:         "node-empty-probe",
+		NodeCredential: credential,
+		Collector:      fakeRuntimeCollector{},
+		HTTPClient:     api.Client(),
+	})
+	if err != nil {
+		t.Fatalf("new job poller: %v", err)
+	}
+
+	if err := poller.PollAndExecute(ctx); err != nil {
+		t.Fatalf("poll and execute: %v", err)
+	}
+
+	got, err := nodeStore.GetJob(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("get job: %v", err)
+	}
+	if got.Status != protocol.JobStatusCompleted {
+		t.Fatalf("job status = %q, want completed; error=%q", got.Status, got.Error)
+	}
+
+	var result struct {
+		Runtimes json.RawMessage `json:"runtimes"`
+	}
+	if err := json.Unmarshal([]byte(got.ResultJSON), &result); err != nil {
+		t.Fatalf("unmarshal result JSON: %v", err)
+	}
+	if string(result.Runtimes) != "[]" {
+		t.Fatalf("runtimes JSON = %s, want [] in %s", result.Runtimes, got.ResultJSON)
+	}
+}
+
 func TestJobPollerFailsUnknownJobType(t *testing.T) {
 	ctx := context.Background()
 	nodeStore := store.NewMemoryNodeStore()
