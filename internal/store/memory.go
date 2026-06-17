@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -18,6 +19,7 @@ type MemoryNodeStore struct {
 	enrollmentTokens map[string]memoryEnrollmentToken
 	nodeCredentials  map[string]string
 	jobs             map[string]protocol.Job
+	auditEvents      []protocol.AuditEvent
 }
 
 type memoryEnrollmentToken struct {
@@ -32,6 +34,7 @@ func NewMemoryNodeStore() *MemoryNodeStore {
 		enrollmentTokens: make(map[string]memoryEnrollmentToken),
 		nodeCredentials:  make(map[string]string),
 		jobs:             make(map[string]protocol.Job),
+		auditEvents:      []protocol.AuditEvent{},
 	}
 }
 
@@ -374,6 +377,61 @@ func (s *MemoryNodeStore) ListNodeJobs(_ context.Context, nodeID string) ([]prot
 	}
 
 	return jobs, nil
+}
+
+// AppendAuditEvent stores an audit event and assigns an ID when needed.
+func (s *MemoryNodeStore) AppendAuditEvent(_ context.Context, event protocol.AuditEvent) (protocol.AuditEvent, error) {
+	event.Actor = strings.TrimSpace(event.Actor)
+	event.Action = strings.TrimSpace(event.Action)
+	event.TargetNode = strings.TrimSpace(event.TargetNode)
+	event.Detail = strings.TrimSpace(event.Detail)
+	if event.Actor == "" {
+		return protocol.AuditEvent{}, errors.New("audit actor is required")
+	}
+	if event.Action == "" {
+		return protocol.AuditEvent{}, errors.New("audit action is required")
+	}
+	if event.ID == "" {
+		id, err := newRandomID("audit_")
+		if err != nil {
+			return protocol.AuditEvent{}, err
+		}
+		event.ID = id
+	}
+	if event.CreatedAt.IsZero() {
+		event.CreatedAt = time.Now().UTC()
+	} else {
+		event.CreatedAt = event.CreatedAt.UTC()
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.auditEvents = append(s.auditEvents, event)
+	return event, nil
+}
+
+// ListAuditEvents returns recent audit events newest first.
+func (s *MemoryNodeStore) ListAuditEvents(_ context.Context, limit int) ([]protocol.AuditEvent, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 100
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	events := append([]protocol.AuditEvent(nil), s.auditEvents...)
+	slices.SortStableFunc(events, func(a, b protocol.AuditEvent) int {
+		if a.CreatedAt.Equal(b.CreatedAt) {
+			return strings.Compare(b.ID, a.ID)
+		}
+		if a.CreatedAt.After(b.CreatedAt) {
+			return -1
+		}
+		return 1
+	})
+	if len(events) > limit {
+		events = events[:limit]
+	}
+	return events, nil
 }
 
 func jobStatusIsActive(status protocol.JobStatus) bool {

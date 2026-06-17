@@ -33,10 +33,12 @@ func TestSQLiteNodeStoreMigratesAndPersistsHeartbeat(t *testing.T) {
 	assertSQLiteTableExists(t, ctx, first.db, "heartbeats")
 	assertSQLiteTableExists(t, ctx, first.db, "enrollment_tokens")
 	assertSQLiteTableExists(t, ctx, first.db, "node_credentials")
+	assertSQLiteTableExists(t, ctx, first.db, "audit_events")
 	assertSQLiteMigrationApplied(t, ctx, first.db, 1)
 	assertSQLiteMigrationApplied(t, ctx, first.db, 2)
 	assertSQLiteMigrationApplied(t, ctx, first.db, 3)
 	assertSQLiteMigrationApplied(t, ctx, first.db, 4)
+	assertSQLiteMigrationApplied(t, ctx, first.db, 5)
 
 	observedAt := time.Date(2026, 6, 16, 1, 2, 3, 0, time.UTC)
 	sentAt := observedAt.Add(-time.Second)
@@ -367,6 +369,49 @@ func TestSQLiteNodeStoreTimesOutExpiredClaimedJob(t *testing.T) {
 	if _, err := store.CreateJob(ctx, protocol.CreateJobRequest{Type: protocol.JobTypeDeepProbe}, "node-timeout", got.FinishedAt.Add(time.Second)); err != nil {
 		t.Fatalf("create job after timeout: %v", err)
 	}
+}
+
+func TestSQLiteAuditEventsInsertAndListNewestFirst(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenSQLiteNodeStore(ctx, filepath.Join(t.TempDir(), "sideplane.db"))
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer store.Close()
+	now := time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)
+
+	older, err := store.AppendAuditEvent(ctx, protocol.AuditEvent{
+		Actor:      "operator",
+		Action:     "job.create",
+		TargetNode: "node-a",
+		Detail:     "deep_probe",
+		CreatedAt:  now,
+	})
+	if err != nil {
+		t.Fatalf("append older audit: %v", err)
+	}
+	newer, err := store.AppendAuditEvent(ctx, protocol.AuditEvent{
+		Actor:      "sidecar",
+		Action:     "job.complete",
+		TargetNode: "node-a",
+		Detail:     "deep_probe",
+		CreatedAt:  now.Add(time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("append newer audit: %v", err)
+	}
+
+	events, err := store.ListAuditEvents(ctx, 1)
+	if err != nil {
+		t.Fatalf("list audit events: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events length = %d, want 1", len(events))
+	}
+	if events[0].ID != newer.ID || events[0].ID == older.ID {
+		t.Fatalf("events order/limit = %#v, want newest only", events)
+	}
+	assertSQLiteDoesNotContainPlaintext(t, ctx, store.db, "audit_events", "secret-token-value")
 }
 
 func assertSQLiteNodeSnapshot(t *testing.T, nodes []protocol.NodeStatus, observedAt time.Time) {

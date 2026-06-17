@@ -50,9 +50,16 @@ type JobStore interface {
 	ListNodeJobs(ctx context.Context, nodeID string) ([]protocol.Job, error)
 }
 
+// AuditStore persists bounded audit events for operator-visible history.
+type AuditStore interface {
+	AppendAuditEvent(ctx context.Context, event protocol.AuditEvent) (protocol.AuditEvent, error)
+	ListAuditEvents(ctx context.Context, limit int) ([]protocol.AuditEvent, error)
+}
+
 // Store is the complete persistence contract currently required by the server.
 type Store interface {
 	NodeStore
 	EnrollmentStore
 	JobStore
+	AuditStore
 }

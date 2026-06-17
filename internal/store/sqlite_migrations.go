@@ -114,6 +114,24 @@ ON heartbeats(node_id, observed_at DESC)`,
 			`ALTER TABLE jobs ADD COLUMN claim_expires_at TEXT`,
 		},
 	},
+	{
+		version: 5,
+		name:    "create audit events table",
+		statements: []string{
+			`
+	CREATE TABLE IF NOT EXISTS audit_events (
+		id TEXT PRIMARY KEY,
+		actor TEXT NOT NULL,
+		action TEXT NOT NULL,
+		target_node TEXT NOT NULL DEFAULT '',
+		detail TEXT NOT NULL DEFAULT '',
+		created_at TEXT NOT NULL
+	)`,
+			`
+	CREATE INDEX IF NOT EXISTS idx_audit_events_created_at
+	ON audit_events(created_at DESC)`,
+		},
+	},
 }
 
 func runSQLiteMigrations(ctx context.Context, db *sql.DB) error {

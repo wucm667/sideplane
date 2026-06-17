@@ -99,3 +99,28 @@ func TestConfigDiffEntryJSONShape(t *testing.T) {
 		}
 	}
 }
+
+func TestAuditEventJSONShape(t *testing.T) {
+	event := AuditEvent{
+		ID:         "audit_123",
+		Actor:      "operator",
+		Action:     "job.create",
+		TargetNode: "node-a",
+		Detail:     "deep_probe",
+	}
+
+	payload, err := json.Marshal(event)
+	if err != nil {
+		t.Fatalf("marshal audit event: %v", err)
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(payload, &got); err != nil {
+		t.Fatalf("unmarshal audit event: %v", err)
+	}
+	for _, key := range []string{"id", "actor", "action", "targetNode", "detail", "createdAt"} {
+		if _, ok := got[key]; !ok {
+			t.Fatalf("audit event JSON omits %q: %s", key, payload)
+		}
+	}
+}

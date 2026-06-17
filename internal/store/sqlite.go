@@ -746,6 +746,90 @@ ORDER BY created_at DESC
 	return jobs, nil
 }
 
+// AppendAuditEvent stores an audit event and assigns an ID when needed.
+func (s *SQLiteNodeStore) AppendAuditEvent(ctx context.Context, event protocol.AuditEvent) (protocol.AuditEvent, error) {
+	if s == nil || s.db == nil {
+		return protocol.AuditEvent{}, errors.New("sqlite node store is closed")
+	}
+	event.Actor = strings.TrimSpace(event.Actor)
+	event.Action = strings.TrimSpace(event.Action)
+	event.TargetNode = strings.TrimSpace(event.TargetNode)
+	event.Detail = strings.TrimSpace(event.Detail)
+	if event.Actor == "" {
+		return protocol.AuditEvent{}, errors.New("audit actor is required")
+	}
+	if event.Action == "" {
+		return protocol.AuditEvent{}, errors.New("audit action is required")
+	}
+	if event.ID == "" {
+		id, err := newRandomID("audit_")
+		if err != nil {
+			return protocol.AuditEvent{}, err
+		}
+		event.ID = id
+	}
+	if event.CreatedAt.IsZero() {
+		event.CreatedAt = time.Now().UTC()
+	} else {
+		event.CreatedAt = event.CreatedAt.UTC()
+	}
+
+	_, err := s.db.ExecContext(ctx, `
+INSERT INTO audit_events (
+	id,
+	actor,
+	action,
+	target_node,
+	detail,
+	created_at
+) VALUES (?, ?, ?, ?, ?, ?)
+`, event.ID, event.Actor, event.Action, event.TargetNode, event.Detail, formatDBTime(event.CreatedAt))
+	if err != nil {
+		return protocol.AuditEvent{}, fmt.Errorf("insert audit event: %w", err)
+	}
+	return event, nil
+}
+
+// ListAuditEvents returns recent audit events newest first.
+func (s *SQLiteNodeStore) ListAuditEvents(ctx context.Context, limit int) ([]protocol.AuditEvent, error) {
+	if s == nil || s.db == nil {
+		return nil, errors.New("sqlite node store is closed")
+	}
+	if limit <= 0 || limit > 100 {
+		limit = 100
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+SELECT id, actor, action, target_node, detail, created_at
+FROM audit_events
+ORDER BY created_at DESC, id DESC
+LIMIT ?
+`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("query audit events: %w", err)
+	}
+	defer rows.Close()
+
+	events := []protocol.AuditEvent{}
+	for rows.Next() {
+		var event protocol.AuditEvent
+		var createdAt string
+		if err := rows.Scan(&event.ID, &event.Actor, &event.Action, &event.TargetNode, &event.Detail, &createdAt); err != nil {
+			return nil, fmt.Errorf("scan audit event: %w", err)
+		}
+		parsed, err := parseDBTime(createdAt)
+		if err != nil {
+			return nil, fmt.Errorf("parse audit event %q created_at: %w", event.ID, err)
+		}
+		event.CreatedAt = parsed
+		events = append(events, event)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate audit events: %w", err)
+	}
+	return events, nil
+}
+
 func (s *SQLiteNodeStore) loadJob(ctx context.Context, jobID string) (protocol.Job, error) {
 	var job protocol.Job
 	var status, createdAt string

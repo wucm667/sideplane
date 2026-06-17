@@ -108,3 +108,41 @@ func TestMemoryNodeStoreTimesOutExpiredClaimedJob(t *testing.T) {
 		t.Fatalf("create job after timeout: %v", err)
 	}
 }
+
+func TestMemoryAuditEventsInsertAndListNewestFirst(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryNodeStore()
+	now := time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)
+
+	older, err := store.AppendAuditEvent(ctx, protocol.AuditEvent{
+		Actor:      "operator",
+		Action:     "job.create",
+		TargetNode: "node-a",
+		Detail:     "deep_probe",
+		CreatedAt:  now,
+	})
+	if err != nil {
+		t.Fatalf("append older audit: %v", err)
+	}
+	newer, err := store.AppendAuditEvent(ctx, protocol.AuditEvent{
+		Actor:      "sidecar",
+		Action:     "job.complete",
+		TargetNode: "node-a",
+		Detail:     "deep_probe",
+		CreatedAt:  now.Add(time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("append newer audit: %v", err)
+	}
+
+	events, err := store.ListAuditEvents(ctx, 1)
+	if err != nil {
+		t.Fatalf("list audit events: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events length = %d, want 1", len(events))
+	}
+	if events[0].ID != newer.ID || events[0].ID == older.ID {
+		t.Fatalf("events order/limit = %#v, want newest only", events)
+	}
+}

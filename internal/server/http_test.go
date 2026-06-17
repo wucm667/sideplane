@@ -293,6 +293,88 @@ func TestListNodeJobsAPIIncludesFinishedTimestamps(t *testing.T) {
 	}
 }
 
+func TestAuditAPIRecordsFleetOperations(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	handler := NewHandlerWithStore(nodeStore)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/enrollment-tokens", strings.NewReader(`{}`))
+	handler.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusCreated)
+
+	var tokenResp protocol.CreateEnrollmentTokenResponse
+	if err := json.NewDecoder(rec.Body).Decode(&tokenResp); err != nil {
+		t.Fatalf("decode token response: %v", err)
+	}
+
+	var enrollBody bytes.Buffer
+	if err := json.NewEncoder(&enrollBody).Encode(protocol.EnrollNodeRequest{
+		Token:  tokenResp.Token,
+		NodeID: "node-audit",
+	}); err != nil {
+		t.Fatalf("encode enroll request: %v", err)
+	}
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/enroll", &enrollBody)
+	handler.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusOK)
+
+	var enrollResp protocol.EnrollNodeResponse
+	if err := json.NewDecoder(rec.Body).Decode(&enrollResp); err != nil {
+		t.Fatalf("decode enroll response: %v", err)
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/nodes/node-audit/jobs", strings.NewReader(`{"type":"deep_probe"}`))
+	handler.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusCreated)
+
+	var job protocol.Job
+	if err := json.NewDecoder(rec.Body).Decode(&job); err != nil {
+		t.Fatalf("decode job response: %v", err)
+	}
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/sidecar/jobs/next?nodeId=node-audit", nil)
+	req.Header.Set("Authorization", "Bearer "+enrollResp.NodeCredential)
+	handler.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusOK)
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/sidecar/jobs/"+job.ID+"/result", strings.NewReader(`{"status":"completed","resultJson":"{}"}`))
+	req.Header.Set("Authorization", "Bearer "+enrollResp.NodeCredential)
+	handler.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusOK)
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/audit", nil)
+	handler.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusOK)
+
+	var resp protocol.ListAuditEventsResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode audit response: %v", err)
+	}
+	if len(resp.Events) != 4 {
+		t.Fatalf("audit event count = %d, want 4: %#v", len(resp.Events), resp.Events)
+	}
+	gotActions := map[string]bool{}
+	for _, event := range resp.Events {
+		gotActions[event.Action] = true
+		payload, err := json.Marshal(event)
+		if err != nil {
+			t.Fatalf("marshal audit event: %v", err)
+		}
+		if strings.Contains(string(payload), tokenResp.Token) || strings.Contains(string(payload), enrollResp.NodeCredential) {
+			t.Fatalf("audit event leaked credential material: %s", payload)
+		}
+	}
+	for _, action := range []string{"enrollment.token.create", "node.enroll", "job.create", "job.complete"} {
+		if !gotActions[action] {
+			t.Fatalf("missing audit action %q in %#v", action, resp.Events)
+		}
+	}
+}
+
 func TestListNodeJobsAPISurfacesTimedOutJob(t *testing.T) {
 	nodeStore := store.NewMemoryNodeStore()
 	enrollTestNode(t, nodeStore, "node-timeout")
@@ -833,5 +915,13 @@ func (s staticNodeStore) FailJob(context.Context, string, string, time.Time) err
 }
 
 func (s staticNodeStore) ListNodeJobs(context.Context, string) ([]protocol.Job, error) {
+	return nil, nil
+}
+
+func (s staticNodeStore) AppendAuditEvent(context.Context, protocol.AuditEvent) (protocol.AuditEvent, error) {
+	return protocol.AuditEvent{}, nil
+}
+
+func (s staticNodeStore) ListAuditEvents(context.Context, int) ([]protocol.AuditEvent, error) {
 	return nil, nil
 }

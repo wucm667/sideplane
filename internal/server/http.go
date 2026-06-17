@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -8,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wucm667/sideplane/internal/audit"
 	"github.com/wucm667/sideplane/internal/auth"
 	"github.com/wucm667/sideplane/internal/store"
 	"github.com/wucm667/sideplane/pkg/protocol"
@@ -54,6 +56,7 @@ func NewHandlerWithStoreAndFreshnessPolicyAndOperatorToken(nodeStore store.Store
 	mux.HandleFunc("/healthz", jsonStatusHandler("ok"))
 	mux.HandleFunc("/readyz", jsonStatusHandler("ready"))
 	mux.HandleFunc("/metrics", metricsHandler)
+	mux.HandleFunc("/api/audit", handler.auditEvents)
 	mux.HandleFunc("/api/enrollment-tokens", handler.createEnrollmentToken)
 	mux.HandleFunc("/api/enroll", handler.enrollNode)
 	mux.HandleFunc("/api/heartbeat", handler.heartbeat)
@@ -127,6 +130,12 @@ func (h *handler) createEnrollmentToken(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "create enrollment token", http.StatusInternalServerError)
 		return
 	}
+	h.audit(r.Context(), protocol.AuditEvent{
+		Actor:     audit.ActorOperator,
+		Action:    audit.ActionEnrollmentTokenCreate,
+		Detail:    "one-time enrollment token created",
+		CreatedAt: now,
+	})
 
 	writeJSON(w, http.StatusCreated, resp)
 }
@@ -166,6 +175,13 @@ func (h *handler) enrollNode(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	h.audit(r.Context(), protocol.AuditEvent{
+		Actor:      audit.ActorNode,
+		Action:     audit.ActionNodeEnroll,
+		TargetNode: resp.NodeID,
+		Detail:     "node enrolled",
+		CreatedAt:  time.Now().UTC(),
+	})
 
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -324,6 +340,13 @@ func (h *handler) createNodeJob(w http.ResponseWriter, r *http.Request, nodeID s
 		http.Error(w, "create job", http.StatusInternalServerError)
 		return
 	}
+	h.audit(r.Context(), protocol.AuditEvent{
+		Actor:      audit.ActorOperator,
+		Action:     audit.ActionJobCreate,
+		TargetNode: nodeID,
+		Detail:     string(req.Type),
+		CreatedAt:  job.CreatedAt,
+	})
 
 	writeJSON(w, http.StatusCreated, job)
 }
@@ -446,8 +469,38 @@ func (h *handler) submitJobResult(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "submit job result", http.StatusInternalServerError)
 		return
 	}
+	action := audit.ActionJobComplete
+	if req.Status == protocol.JobStatusFailed {
+		action = audit.ActionJobFail
+	}
+	h.audit(r.Context(), protocol.AuditEvent{
+		Actor:      audit.ActorSidecar,
+		Action:     action,
+		TargetNode: job.NodeID,
+		Detail:     string(job.Type),
+		CreatedAt:  now,
+	})
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "accepted"})
+}
+
+func (h *handler) auditEvents(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
+		return
+	}
+
+	events, err := h.store.ListAuditEvents(r.Context(), 100)
+	if err != nil {
+		http.Error(w, "list audit events", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, protocol.ListAuditEventsResponse{Events: events})
+}
+
+func (h *handler) audit(ctx context.Context, event protocol.AuditEvent) {
+	_, _ = h.store.AppendAuditEvent(ctx, event)
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {
