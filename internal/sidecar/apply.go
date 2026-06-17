@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/wucm667/sideplane/pkg/adapters"
@@ -149,13 +150,16 @@ func (e ConfigApplyExecutor) Execute(ctx context.Context, signedPlan protocol.Si
 	// Live branch. Reachable only when AllowLiveApply is set AND the plan
 	// requested live mode. Atomic rename keeps the live file intact on a write
 	// failure; a failure after replace rolls back to the backup byte-for-byte.
-	if err := atomicReplaceFile(configPath, rendered); err != nil {
+	// The original file's mode and ownership are preserved so a sidecar running
+	// as root does not leave the config owned by root for a non-root runtime.
+	origInfo, _ := os.Stat(configPath)
+	if err := atomicReplaceFile(configPath, rendered, origInfo); err != nil {
 		addStep("replaced", "failed", err.Error())
 		return result, fmt.Errorf("atomic replace: %w", err)
 	}
 	if err := verifyWritten(readFile, configPath, rendered); err != nil {
 		addStep("replaced", "failed", err.Error())
-		return result, e.rollback(addStep, configPath, contents, err)
+		return result, e.rollback(addStep, configPath, contents, origInfo, err)
 	}
 	addStep("replaced", "completed", "atomic rename")
 
@@ -168,13 +172,13 @@ func (e ConfigApplyExecutor) Execute(ctx context.Context, signedPlan protocol.Si
 
 	if err := e.Controller.Restart(ctx); err != nil {
 		addStep("restarted", "failed", err.Error())
-		return result, e.rollback(addStep, configPath, contents, err)
+		return result, e.rollback(addStep, configPath, contents, origInfo, err)
 	}
 	addStep("restarted", "completed", "")
 
 	if err := e.Controller.HealthCheck(ctx); err != nil {
 		addStep("health_checked", "failed", err.Error())
-		return result, e.rollback(addStep, configPath, contents, err)
+		return result, e.rollback(addStep, configPath, contents, origInfo, err)
 	}
 	addStep("health_checked", "completed", "")
 
@@ -184,8 +188,8 @@ func (e ConfigApplyExecutor) Execute(ctx context.Context, signedPlan protocol.Si
 
 // rollback restores the backup contents over the live config and records the
 // outcome. It returns an error wrapping the triggering cause.
-func (e ConfigApplyExecutor) rollback(addStep func(string, string, string), configPath string, backup []byte, cause error) error {
-	if rbErr := atomicReplaceFile(configPath, backup); rbErr != nil {
+func (e ConfigApplyExecutor) rollback(addStep func(string, string, string), configPath string, backup []byte, orig os.FileInfo, cause error) error {
+	if rbErr := atomicReplaceFile(configPath, backup, orig); rbErr != nil {
 		addStep("rolled_back", "failed", rbErr.Error())
 		return fmt.Errorf("apply failed (%v) and rollback failed: %w", cause, rbErr)
 	}
@@ -207,8 +211,10 @@ func planExecutionMode(plan protocol.ConfigPlan) (live bool, err error) {
 }
 
 // atomicReplaceFile writes contents to a sibling temp file and renames it over
-// path, so readers never observe a partial config.
-func atomicReplaceFile(path string, contents []byte) error {
+// path, so readers never observe a partial config. When orig is non-nil, the
+// original file's permission bits and ownership are preserved so that a sidecar
+// running as root does not leave the config owned by root.
+func atomicReplaceFile(path string, contents []byte, orig os.FileInfo) error {
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".sideplane-apply-*.tmp")
 	if err != nil {
 		return fmt.Errorf("create temp file: %w", err)
@@ -231,14 +237,34 @@ func atomicReplaceFile(path string, contents []byte) error {
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("close temp file: %w", err)
 	}
-	if err := os.Chmod(tmpName, 0o600); err != nil {
+	mode := os.FileMode(0o600)
+	if orig != nil {
+		mode = orig.Mode().Perm()
+	}
+	if err := os.Chmod(tmpName, mode); err != nil {
 		return fmt.Errorf("chmod temp file: %w", err)
 	}
 	if err := os.Rename(tmpName, path); err != nil {
 		return fmt.Errorf("rename into place: %w", err)
 	}
 	cleanup = false
+	if uid, gid, ok := fileOwner(orig); ok {
+		if err := os.Chown(path, uid, gid); err != nil {
+			return fmt.Errorf("restore config ownership: %w", err)
+		}
+	}
 	return nil
+}
+
+// fileOwner returns the uid/gid of a stat result, when available on this OS.
+func fileOwner(info os.FileInfo) (uid, gid int, ok bool) {
+	if info == nil {
+		return 0, 0, false
+	}
+	if st, ok := info.Sys().(*syscall.Stat_t); ok {
+		return int(st.Uid), int(st.Gid), true
+	}
+	return 0, 0, false
 }
 
 // verifyWritten confirms the on-disk config matches the intended bytes.

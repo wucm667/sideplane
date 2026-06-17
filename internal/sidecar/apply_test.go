@@ -519,7 +519,7 @@ func TestAtomicReplaceFile(t *testing.T) {
 	if err := os.WriteFile(path, []byte("old"), 0o600); err != nil {
 		t.Fatalf("seed file: %v", err)
 	}
-	if err := atomicReplaceFile(path, []byte("new-contents")); err != nil {
+	if err := atomicReplaceFile(path, []byte("new-contents"), nil); err != nil {
 		t.Fatalf("atomic replace: %v", err)
 	}
 	got, err := os.ReadFile(path)
@@ -531,6 +531,28 @@ func TestAtomicReplaceFile(t *testing.T) {
 	}
 	if n := dirEntryCount(t, dir); n != 1 {
 		t.Errorf("dir entry count = %d, want 1 (no temp leftovers)", n)
+	}
+}
+
+func TestAtomicReplaceFilePreservesMode(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "cfg")
+	if err := os.WriteFile(path, []byte("old"), 0o644); err != nil {
+		t.Fatalf("seed file: %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if err := atomicReplaceFile(path, []byte("new"), info); err != nil {
+		t.Fatalf("atomic replace: %v", err)
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat after: %v", err)
+	}
+	if after.Mode().Perm() != 0o644 {
+		t.Errorf("mode = %v, want 0644 (original preserved)", after.Mode().Perm())
 	}
 }
 
