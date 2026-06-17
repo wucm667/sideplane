@@ -1,38 +1,56 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
-import type { DeepProbeResult, Job, JobStatus, NodeState, NodeStatus, RuntimeConfigSnapshot } from './types.ts'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { Job, JobStatus, NodeState, NodeStatus, RuntimeStatus } from './types.ts'
 
 const NODE_REFRESH_MS = 10_000
 const ACTIVE_JOB_REFRESH_MS = 2_000
 const ACTIVE_JOB_STATUSES: JobStatus[] = ['pending', 'claimed']
-const MAX_RESULT_CHARS = 1_600
-const SECRET_LIKE_KEY = /(?:secret|token|password|api[_-]?key|credential|authorization)/i
 const OPERATOR_TOKEN_STORAGE_KEY = 'sideplane.operatorToken'
+const THEME_STORAGE_KEY = 'sideplane.theme'
+
+type View = 'fleet' | 'node' | 'activity' | 'enrollment'
+type Theme = 'light' | 'dark'
+
+function loadStoredOperatorToken(): string {
+  try {
+    return window.localStorage.getItem(OPERATOR_TOKEN_STORAGE_KEY) ?? ''
+  } catch {
+    return ''
+  }
+}
+
+function loadStoredTheme(): Theme {
+  try {
+    return window.localStorage.getItem(THEME_STORAGE_KEY) === 'dark' ? 'dark' : 'light'
+  } catch {
+    return 'light'
+  }
+}
 
 function stateBadgeClasses(state: NodeState): string {
   switch (state) {
     case 'fresh':
-      return 'bg-green-100 text-green-800 border-green-200'
+      return 'border-emerald-500/25 bg-emerald-500/10 text-emerald-600'
     case 'stale':
-      return 'bg-yellow-100 text-yellow-800 border-yellow-200'
+      return 'border-amber-500/30 bg-amber-500/10 text-amber-600'
     case 'offline':
-      return 'bg-red-100 text-red-800 border-red-200'
+      return 'border-rose-500/30 bg-rose-500/10 text-rose-600'
     default:
-      return 'bg-gray-100 text-gray-800 border-gray-200'
+      return 'border-[var(--sp-border)] bg-[var(--sp-surface-2)] text-[var(--sp-muted)]'
   }
 }
 
 function jobBadgeClasses(status: JobStatus): string {
   switch (status) {
     case 'pending':
-      return 'bg-gray-100 text-gray-800 border-gray-200'
+      return 'border-[var(--sp-border)] bg-[var(--sp-surface-2)] text-[var(--sp-muted)]'
     case 'claimed':
-      return 'bg-blue-100 text-blue-800 border-blue-200'
+      return 'border-sky-500/30 bg-sky-500/10 text-sky-600'
     case 'completed':
-      return 'bg-green-100 text-green-800 border-green-200'
+      return 'border-emerald-500/25 bg-emerald-500/10 text-emerald-600'
     case 'failed':
-      return 'bg-red-100 text-red-800 border-red-200'
+      return 'border-rose-500/30 bg-rose-500/10 text-rose-600'
     default:
-      return 'bg-gray-100 text-gray-800 border-gray-200'
+      return 'border-[var(--sp-border)] bg-[var(--sp-surface-2)] text-[var(--sp-muted)]'
   }
 }
 
@@ -45,6 +63,28 @@ function formatDate(iso: string | undefined): string {
   return date.toLocaleString()
 }
 
+function formatRelativeTime(iso: string | undefined): string {
+  if (!iso?.trim()) return '-'
+
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime()) || date.getUTCFullYear() <= 1) return '-'
+
+  const seconds = Math.max(0, Math.floor((Date.now() - date.getTime()) / 1000))
+  if (seconds < 60) return `${seconds}s ago`
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes}m ago`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}h ago`
+  return `${Math.floor(hours / 24)}d ago`
+}
+
+function compactHash(hash: string | undefined): string {
+  if (!hash?.trim()) return '-'
+  const normalized = hash.replace(/^sha256:/, '')
+  if (normalized.length <= 16) return normalized
+  return `${normalized.slice(0, 12)}…`
+}
+
 function hasActiveJobs(jobs: Job[]): boolean {
   return jobs.some((job) => ACTIVE_JOB_STATUSES.includes(job.status))
 }
@@ -53,149 +93,30 @@ function hasActiveDeepProbe(jobs: Job[]): boolean {
   return jobs.some((job) => job.type === 'deep_probe' && ACTIVE_JOB_STATUSES.includes(job.status))
 }
 
-function redactSecretLikeValues(value: unknown, key = ''): unknown {
-  if (SECRET_LIKE_KEY.test(key)) return '[redacted]'
-  if (Array.isArray(value)) {
-    return value.map((item) => redactSecretLikeValues(item))
+function runtimeKey(runtime: RuntimeStatus, index: number): string {
+  return `${runtime.name || runtime.type || 'runtime'}-${index}`
+}
+
+function runtimeLabel(runtime: RuntimeStatus): string {
+  if (runtime.provider && runtime.model) return `${runtime.provider}/${runtime.model}`
+  if (runtime.model) return runtime.model
+  return runtime.name || runtime.type || 'runtime'
+}
+
+function groupRows(nodes: NodeStatus[]) {
+  const groups = new Map<string, number>()
+  groups.set('all nodes', nodes.length)
+  for (const node of nodes) {
+    if (!node.runtimes || node.runtimes.length === 0) {
+      groups.set('no runtime', (groups.get('no runtime') ?? 0) + 1)
+      continue
+    }
+    for (const runtime of node.runtimes) {
+      const key = runtime.type || runtime.name || 'runtime'
+      groups.set(key, (groups.get(key) ?? 0) + 1)
+    }
   }
-  if (value && typeof value === 'object') {
-    return Object.fromEntries(
-      Object.entries(value).map(([childKey, childValue]) => [
-        childKey,
-        redactSecretLikeValues(childValue, childKey),
-      ]),
-    )
-  }
-  return value
-}
-
-function truncateResult(text: string): string {
-  if (text.length <= MAX_RESULT_CHARS) return text
-  return `${text.slice(0, MAX_RESULT_CHARS)}\n... truncated`
-}
-
-function formatJobResult(resultJson: string | undefined): string {
-  if (!resultJson?.trim()) return ''
-
-  try {
-    const parsed = JSON.parse(resultJson) as unknown
-    return truncateResult(JSON.stringify(redactSecretLikeValues(parsed), null, 2))
-  } catch {
-    return truncateResult(resultJson)
-  }
-}
-
-function parseDeepProbeResult(resultJson: string | undefined): DeepProbeResult | null {
-  if (!resultJson?.trim()) return null
-
-  try {
-    const parsed = JSON.parse(resultJson) as DeepProbeResult
-    if (!parsed || typeof parsed !== 'object') return null
-    return parsed
-  } catch {
-    return null
-  }
-}
-
-function configSnapshotSource(snapshot: RuntimeConfigSnapshot): string {
-  return snapshot.configPath || snapshot.source || '-'
-}
-
-function configSnapshotDetails(job: Job) {
-  const snapshots = parseDeepProbeResult(job.resultJson)?.configSnapshots ?? []
-  if (snapshots.length === 0) return null
-
-  return (
-    <div className="max-w-[24rem] space-y-1">
-      {snapshots.map((snapshot, index) => (
-        <div
-          key={`${snapshot.runtimeName || snapshot.runtimeType || 'snapshot'}-${index}`}
-          className="rounded border border-gray-200 bg-white px-2 py-1.5 text-[11px] leading-4 text-gray-800"
-        >
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-            <span className="font-mono font-medium text-gray-900">
-              {snapshot.runtimeName || snapshot.runtimeType || 'runtime'}
-            </span>
-            {snapshot.runtimeType && (
-              <span className="text-gray-500">({snapshot.runtimeType})</span>
-            )}
-            {snapshot.profile && (
-              <span className="rounded bg-gray-100 px-1.5 py-0.5 text-gray-700">
-                {snapshot.profile}
-              </span>
-            )}
-          </div>
-          <div className="mt-1 grid grid-cols-2 gap-x-3 gap-y-1">
-            <span>
-              <span className="text-gray-500">Provider:</span>{' '}
-              <span className="text-gray-900">{snapshot.provider || '-'}</span>
-            </span>
-            <span>
-              <span className="text-gray-500">Model:</span>{' '}
-              <span className="text-gray-900">{snapshot.model || '-'}</span>
-            </span>
-            <span>
-              <span className="text-gray-500">Hash:</span>{' '}
-              <span className="font-mono text-gray-900">{snapshot.configHash || '-'}</span>
-            </span>
-            <span>
-              <span className="text-gray-500">Source:</span>{' '}
-              <span className="font-mono text-gray-900">{configSnapshotSource(snapshot)}</span>
-            </span>
-          </div>
-          {snapshot.warnings && snapshot.warnings.length > 0 && (
-            <div className="mt-1 text-yellow-700">
-              {snapshot.warnings.join('; ')}
-            </div>
-          )}
-        </div>
-      ))}
-    </div>
-  )
-}
-
-function jobResultDetails(job: Job) {
-  if (job.status !== 'completed' && job.status !== 'failed') return '-'
-
-  const result = formatJobResult(job.resultJson)
-  const snapshots = configSnapshotDetails(job)
-  if (!result) return '-'
-
-  return (
-    <div className="space-y-2">
-      {snapshots}
-      <details className="max-w-[22rem]">
-        <summary className="cursor-pointer select-none text-xs font-medium text-gray-700 hover:text-gray-900">
-          View
-        </summary>
-        <pre className="mt-2 max-h-40 overflow-auto rounded border border-gray-200 bg-gray-50 p-2 font-mono text-[11px] leading-4 text-gray-800">
-          {result}
-        </pre>
-      </details>
-    </div>
-  )
-}
-
-function jobErrorDetails(job: Job) {
-  if (!job.error) return '—'
-
-  const timedOut = job.error.toLowerCase().includes('timed out')
-  return (
-    <span
-      className={timedOut ? 'font-medium text-red-700' : 'text-gray-700'}
-      title={timedOut ? job.error : undefined}
-    >
-      {timedOut ? 'Claim timed out' : job.error}
-    </span>
-  )
-}
-
-function loadStoredOperatorToken(): string {
-  try {
-    return window.localStorage.getItem(OPERATOR_TOKEN_STORAGE_KEY) ?? ''
-  } catch {
-    return ''
-  }
+  return Array.from(groups.entries()).map(([name, count]) => ({ name, count }))
 }
 
 export default function FleetPage() {
@@ -208,6 +129,9 @@ export default function FleetPage() {
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [operatorToken, setOperatorToken] = useState(loadStoredOperatorToken)
+  const [theme, setTheme] = useState<Theme>(loadStoredTheme)
+  const [view, setView] = useState<View>('fleet')
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
   const mountedRef = useRef(false)
 
   useEffect(() => {
@@ -229,6 +153,14 @@ export default function FleetPage() {
       // Local storage is a convenience only; the API request still works with in-memory state.
     }
   }, [operatorToken])
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(THEME_STORAGE_KEY, theme)
+    } catch {
+      // Theme persistence is optional.
+    }
+  }, [theme])
 
   const loadNodeJobs = useCallback(async (nodeId: string, showLoading = true) => {
     if (!mountedRef.current) return
@@ -368,234 +300,419 @@ export default function FleetPage() {
     return () => window.clearInterval(interval)
   }, [jobsByNode, loadNodeJobs])
 
-  const toolbar = (
-    <div className="flex flex-wrap items-center justify-end gap-2">
-      <label className="flex items-center gap-2 text-xs text-gray-500">
-        <span>Operator token</span>
-        <input
-          type="password"
-          className="h-8 w-40 rounded border border-gray-300 bg-white px-2 text-xs text-gray-900 outline-none focus:border-gray-500"
-          value={operatorToken}
-          autoComplete="off"
-          onChange={(event) => setOperatorToken(event.target.value)}
-        />
-      </label>
-      <button
-        type="button"
-        className="rounded border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
-        disabled={refreshing}
-        onClick={() => refreshFleet()}
-      >
-        {refreshing ? 'Refreshing…' : 'Refresh'}
-      </button>
-    </div>
-  )
+  const safeNodes = nodes ?? []
+  const stats = useMemo(() => {
+    const healthy = safeNodes.filter((node) => node.state === 'fresh').length
+    const stale = safeNodes.filter((node) => node.state === 'stale').length
+    const offline = safeNodes.filter((node) => node.state === 'offline').length
+    const drift = 0
+    return { healthy, stale, offline, drift }
+  }, [safeNodes])
+  const groups = useMemo(() => groupRows(safeNodes), [safeNodes])
+  const selectedNode = safeNodes.find((node) => node.nodeId === selectedNodeId) ?? null
+  const fleetSubtitle = `${safeNodes.length} nodes · ${groups.length} groups · ${stats.healthy} healthy`
+  const bannerText = [
+    stats.drift > 0 ? `${stats.drift} node${stats.drift === 1 ? '' : 's'} with config drift` : '',
+    stats.stale > 0 ? `${stats.stale} stale` : '',
+    stats.offline > 0 ? `${stats.offline} offline` : '',
+  ].filter(Boolean).join(' · ')
 
-  if (loading) {
-    return <div className="text-sm text-gray-500">Loading…</div>
-  }
-
-  if (error) {
-    return (
-      <div className="rounded border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
-        Failed to load nodes: {error}
-      </div>
-    )
-  }
-
-  if (!nodes || nodes.length === 0) {
-    return (
-      <div className="space-y-4">
-        {toolbar}
-        <div className="rounded border border-gray-200 bg-white px-4 py-8 text-center text-sm text-gray-500">
-          No nodes registered yet.
-        </div>
-      </div>
-    )
+  const openNode = (nodeId: string) => {
+    setSelectedNodeId(nodeId)
+    setView('node')
   }
 
   return (
-    <div className="space-y-4">
-      {toolbar}
-      {nodes.map((node) => {
-        const jobs = jobsByNode[node.nodeId] ?? []
-        const jobsLoading = jobsLoadingByNode[node.nodeId]
-        const jobsError = jobsErrorByNode[node.nodeId]
-        const creating = creatingByNode[node.nodeId]
-        const activeProbe = hasActiveDeepProbe(jobs)
+    <div data-sideplane-theme={theme} className="min-h-screen bg-[var(--sp-bg)] text-[var(--sp-text)]">
+      <div className="flex min-h-screen flex-col md:flex-row">
+        <Sidebar
+          currentView={view}
+          groups={groups}
+          operatorToken={operatorToken}
+          theme={theme}
+          onOperatorTokenChange={setOperatorToken}
+          onThemeToggle={() => setTheme((current) => (current === 'dark' ? 'light' : 'dark'))}
+          onViewChange={(nextView) => {
+            if (nextView !== 'node') setSelectedNodeId(null)
+            setView(nextView)
+          }}
+        />
 
-        return (
-          <div
+        <main className="min-w-0 flex-1 overflow-y-auto">
+          {view === 'fleet' && (
+            <FleetOverview
+              bannerText={bannerText}
+              error={error}
+              fleetSubtitle={fleetSubtitle}
+              jobsByNode={jobsByNode}
+              loading={loading}
+              nodes={safeNodes}
+              refreshing={refreshing}
+              stats={stats}
+              onOpenNode={openNode}
+              onRefresh={() => refreshFleet()}
+            />
+          )}
+          {view === 'node' && selectedNode && (
+            <NodePlaceholder
+              creating={Boolean(creatingByNode[selectedNode.nodeId])}
+              jobs={jobsByNode[selectedNode.nodeId] ?? []}
+              jobsError={jobsErrorByNode[selectedNode.nodeId]}
+              jobsLoading={Boolean(jobsLoadingByNode[selectedNode.nodeId])}
+              node={selectedNode}
+              onBack={() => setView('fleet')}
+              onDeepProbe={() => createDeepProbe(selectedNode.nodeId)}
+            />
+          )}
+          {view === 'node' && !selectedNode && (
+            <EmptyState title="Node not found" body="Return to Fleet and select a registered node." />
+          )}
+          {view === 'activity' && (
+            <PlaceholderPage
+              title="Activity"
+              body="Audit-backed activity lands in Phase 3. Fleet collection continues to refresh in the background."
+            />
+          )}
+          {view === 'enrollment' && (
+            <PlaceholderPage
+              title="Enrollment"
+              body="Create a one-time enrollment token with the CLI, then run the sidecar on a node. UI token issuance lands after the audit/config work."
+            />
+          )}
+        </main>
+      </div>
+    </div>
+  )
+}
+
+interface SidebarProps {
+  currentView: View
+  groups: Array<{ name: string; count: number }>
+  operatorToken: string
+  theme: Theme
+  onOperatorTokenChange: (value: string) => void
+  onThemeToggle: () => void
+  onViewChange: (view: View) => void
+}
+
+function Sidebar({
+  currentView,
+  groups,
+  operatorToken,
+  theme,
+  onOperatorTokenChange,
+  onThemeToggle,
+  onViewChange,
+}: SidebarProps) {
+  return (
+    <aside className="border-b border-[var(--sp-border)] bg-[var(--sp-surface)] md:flex md:h-screen md:w-60 md:flex-none md:flex-col md:border-b-0 md:border-r">
+      <div className="flex items-center gap-3 border-b border-[var(--sp-border)] px-5 py-4">
+        <div className="relative h-7 w-7 rounded-lg bg-[var(--sp-accent)] shadow-sm">
+          <div className="absolute inset-x-[7px] inset-y-[6px] rounded-sm border-2 border-white/90" />
+          <div className="absolute bottom-[5px] left-1/2 top-[5px] w-0.5 -translate-x-1/2 bg-white/90" />
+        </div>
+        <div>
+          <div className="text-sm font-bold tracking-tight">Sideplane</div>
+          <div className="text-[11px] text-[var(--sp-faint)]">control plane</div>
+        </div>
+      </div>
+
+      <nav className="grid grid-cols-3 gap-1 px-3 py-3 md:flex md:flex-col">
+        <NavButton active={currentView === 'fleet'} label="Fleet" onClick={() => onViewChange('fleet')} />
+        <NavButton active={currentView === 'activity'} label="Activity" onClick={() => onViewChange('activity')} />
+        <NavButton active={currentView === 'enrollment'} label="Enrollment" onClick={() => onViewChange('enrollment')} />
+      </nav>
+
+      <div className="hidden px-4 pt-2 md:block">
+        <div className="px-1 pb-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--sp-faint)]">
+          Groups
+        </div>
+        <div className="space-y-1">
+          {groups.map((group, index) => (
+            <div key={group.name} className="flex items-center justify-between rounded-md px-2 py-1.5 text-xs text-[var(--sp-muted)] hover:bg-[var(--sp-surface-2)]">
+              <span className="flex min-w-0 items-center gap-2">
+                <span className={`h-1.5 w-1.5 flex-none rounded-sm ${index === 0 ? 'bg-[var(--sp-accent)]' : 'bg-[var(--sp-faint)]'}`} />
+                <span className="truncate">{group.name}</span>
+              </span>
+              <span className="font-mono text-[var(--sp-faint)]">{group.count}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="mt-auto grid gap-3 border-t border-[var(--sp-border)] p-4">
+        <label className="grid gap-1.5 text-xs text-[var(--sp-muted)]">
+          <span className="flex items-center gap-2">
+            <span className={`h-2 w-2 rounded-full ${operatorToken.trim() ? 'bg-emerald-500' : 'bg-amber-500'}`} />
+            Operator session
+          </span>
+          <input
+            type="password"
+            className="h-9 rounded-lg border border-[var(--sp-border)] bg-[var(--sp-surface-2)] px-3 font-mono text-xs text-[var(--sp-text)] outline-none focus:border-[var(--sp-accent)]"
+            value={operatorToken}
+            autoComplete="off"
+            placeholder="operator token"
+            onChange={(event) => onOperatorTokenChange(event.target.value)}
+          />
+        </label>
+        <button
+          type="button"
+          className="flex h-9 items-center justify-between rounded-lg border border-[var(--sp-border)] bg-[var(--sp-surface-2)] px-3 text-xs font-medium text-[var(--sp-text)] hover:border-[var(--sp-border-strong)]"
+          onClick={onThemeToggle}
+        >
+          <span>{theme === 'dark' ? 'Dark mode' : 'Light mode'}</span>
+          <span className="font-mono text-[var(--sp-faint)]">{theme === 'dark' ? 'on' : 'off'}</span>
+        </button>
+      </div>
+    </aside>
+  )
+}
+
+function NavButton({ active, label, onClick }: { active: boolean; label: string; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      className={`rounded-lg px-3 py-2 text-left text-xs font-semibold transition md:text-[13px] ${active ? 'bg-[var(--sp-surface-2)] text-[var(--sp-text)]' : 'text-[var(--sp-muted)] hover:bg-[var(--sp-surface-2)] hover:text-[var(--sp-text)]'}`}
+      onClick={onClick}
+    >
+      {label}
+    </button>
+  )
+}
+
+interface FleetOverviewProps {
+  bannerText: string
+  error: string | null
+  fleetSubtitle: string
+  jobsByNode: Record<string, Job[]>
+  loading: boolean
+  nodes: NodeStatus[]
+  refreshing: boolean
+  stats: { healthy: number; stale: number; offline: number; drift: number }
+  onOpenNode: (nodeId: string) => void
+  onRefresh: () => void
+}
+
+function FleetOverview({
+  bannerText,
+  error,
+  fleetSubtitle,
+  jobsByNode,
+  loading,
+  nodes,
+  refreshing,
+  stats,
+  onOpenNode,
+  onRefresh,
+}: FleetOverviewProps) {
+  return (
+    <div className="mx-auto max-w-6xl px-4 py-6 sm:px-6 lg:px-9 lg:py-8">
+      <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">Fleet</h1>
+          <div className="mt-1 text-sm text-[var(--sp-muted)]">{fleetSubtitle}</div>
+        </div>
+        <button
+          type="button"
+          className="inline-flex h-9 w-fit items-center gap-2 rounded-lg border border-[var(--sp-border-strong)] bg-[var(--sp-surface)] px-3 text-sm font-medium hover:bg-[var(--sp-surface-2)] disabled:cursor-not-allowed disabled:opacity-60"
+          disabled={refreshing}
+          onClick={onRefresh}
+        >
+          <span className={refreshing ? 'animate-spin' : ''}>↻</span>
+          {refreshing ? 'Refreshing' : 'Refresh'}
+        </button>
+      </div>
+
+      <div className="mb-5 grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <SummaryCard label="Healthy" value={stats.healthy} dotClass="bg-emerald-500" />
+        <SummaryCard label="Config drift" value={stats.drift} dotClass="bg-amber-500" />
+        <SummaryCard label="Stale" value={stats.stale} dotClass="bg-amber-500" />
+        <SummaryCard label="Offline" value={stats.offline} dotClass="bg-rose-500" />
+      </div>
+
+      {bannerText && (
+        <div className="mb-5 rounded-xl border border-amber-500/35 bg-amber-500/10 px-4 py-3 text-sm font-medium text-[var(--sp-text)]">
+          {bannerText}
+        </div>
+      )}
+
+      {error && (
+        <div className="mb-5 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-600">
+          Failed to load nodes: {error}
+        </div>
+      )}
+
+      <div className="overflow-hidden rounded-xl border border-[var(--sp-border)] bg-[var(--sp-surface)] shadow-sm">
+        <div className="hidden grid-cols-[2fr_1fr_1.4fr_1fr_1fr_2.5rem] gap-4 border-b border-[var(--sp-border)] px-5 py-3 text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--sp-faint)] lg:grid">
+          <div>Node</div>
+          <div>State</div>
+          <div>Runtimes</div>
+          <div>Config</div>
+          <div>Heartbeat</div>
+          <div />
+        </div>
+
+        {loading && <TableMessage message="Loading nodes…" />}
+        {!loading && nodes.length === 0 && <TableMessage message="No nodes registered yet." />}
+        {!loading && nodes.map((node) => (
+          <FleetRow
             key={node.nodeId}
-            className="rounded border border-gray-200 bg-white"
-          >
-            <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3">
-              <div className="flex items-center gap-3">
-                <span className="font-mono text-sm font-medium text-gray-900">
-                  {node.nodeId}
-                </span>
-                <span
-                  className={`inline-flex rounded border px-2 py-0.5 text-xs font-medium ${stateBadgeClasses(node.state)}`}
-                >
-                  {node.state}
-                </span>
-              </div>
-              <div className="flex items-center gap-3">
-                <button
-                  type="button"
-                  className="rounded border border-gray-300 bg-white px-3 py-1 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
-                  disabled={creating || activeProbe}
-                  title={activeProbe ? 'Deep probe already queued or running' : undefined}
-                  onClick={() => createDeepProbe(node.nodeId)}
-                >
-                  {creating ? 'Creating…' : activeProbe ? 'Probe Active' : 'Deep Probe'}
-                </button>
-                <div className="text-xs text-gray-500">
-                  {node.sidecarVersion ? `v${node.sidecarVersion}` : '—'}
-                </div>
-              </div>
-            </div>
+            activeProbe={hasActiveDeepProbe(jobsByNode[node.nodeId] ?? [])}
+            node={node}
+            onOpen={() => onOpenNode(node.nodeId)}
+          />
+        ))}
+      </div>
+    </div>
+  )
+}
 
-            <div className="px-4 py-3">
-              <div className="grid grid-cols-2 gap-2 text-sm sm:grid-cols-4">
-                <div>
-                  <div className="text-xs text-gray-500">Hostname</div>
-                  <div className="font-medium text-gray-900">
-                    {node.hostname || '—'}
-                  </div>
-                </div>
-                <div>
-                  <div className="text-xs text-gray-500">Last heartbeat</div>
-                  <div className="font-medium text-gray-900">
-                    {formatDate(node.lastHeartbeatAt)}
-                  </div>
-                </div>
-                <div>
-                  <div className="text-xs text-gray-500">Config hash</div>
-                  <div className="font-mono text-xs text-gray-900">
-                    {node.configHash || '—'}
-                  </div>
-                </div>
-                <div>
-                  <div className="text-xs text-gray-500">Last error</div>
-                  <div className="text-xs text-gray-900">
-                    {node.lastError || '—'}
-                  </div>
-                </div>
-              </div>
-            </div>
+function SummaryCard({ label, value, dotClass }: { label: string; value: number; dotClass: string }) {
+  return (
+    <div className="rounded-xl border border-[var(--sp-border)] bg-[var(--sp-surface)] px-4 py-4">
+      <div className="flex items-center gap-2 text-xs font-medium text-[var(--sp-muted)]">
+        <span className={`h-2 w-2 rounded-full ${dotClass}`} />
+        {label}
+      </div>
+      <div className="mt-2 font-mono text-3xl font-bold tracking-tight">{value}</div>
+    </div>
+  )
+}
 
-            {node.runtimes && node.runtimes.length > 0 && (
-              <div className="border-t border-gray-100 px-4 py-3">
-                <div className="mb-2 text-xs font-medium uppercase tracking-wider text-gray-500">
-                  Runtimes
-                </div>
-                <div className="space-y-2">
-                  {node.runtimes.map((rt) => (
-                    <div
-                      key={rt.name}
-                      className="rounded bg-gray-50 px-3 py-2 text-sm"
-                    >
-                      <div className="flex items-center gap-2">
-                        <span className="font-mono font-medium text-gray-900">
-                          {rt.name}
-                        </span>
-                        {rt.type && (
-                          <span className="text-xs text-gray-500">({rt.type})</span>
-                        )}
-                        {rt.state && (
-                          <span className="rounded bg-gray-200 px-1.5 py-0.5 text-xs text-gray-700">
-                            {rt.state}
-                          </span>
-                        )}
-                      </div>
-                      <div className="mt-1 grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
-                        <div>
-                          <span className="text-gray-500">Provider:</span>{' '}
-                          <span className="text-gray-900">{rt.provider || '—'}</span>
-                        </div>
-                        <div>
-                          <span className="text-gray-500">Model:</span>{' '}
-                          <span className="text-gray-900">{rt.model || '—'}</span>
-                        </div>
-                        <div>
-                          <span className="text-gray-500">Hash:</span>{' '}
-                          <span className="font-mono text-gray-900">
-                            {rt.configHash || '—'}
-                          </span>
-                        </div>
-                        <div>
-                          <span className="text-gray-500">Error:</span>{' '}
-                          <span className="text-gray-900">{rt.lastError || '—'}</span>
-                        </div>
-                      </div>
-                      {rt.version && (
-                        <div className="mt-1 text-xs text-gray-500">
-                          Version: {rt.version}
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
+function FleetRow({ activeProbe, node, onOpen }: { activeProbe: boolean; node: NodeStatus; onOpen: () => void }) {
+  const configLabel = node.lastError ? 'Error' : node.configHash ? 'Observed' : 'Unknown'
+  const configColor = node.lastError ? 'text-rose-600' : node.configHash ? 'text-emerald-600' : 'text-[var(--sp-muted)]'
 
-            <div className="border-t border-gray-100 px-4 py-3">
-              <div className="mb-2 flex items-center justify-between">
-                <div className="text-xs font-medium uppercase tracking-wider text-gray-500">
-                  Recent jobs
-                </div>
-                {jobsLoading && <div className="text-xs text-gray-500">Loading jobs…</div>}
-              </div>
-              {jobsError && (
-                <div className="mb-2 rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">
-                  Failed to load jobs: {jobsError}
-                </div>
-              )}
-              {jobs.length === 0 ? (
-                <div className="rounded bg-gray-50 px-3 py-2 text-sm text-gray-500">
-                  No jobs yet.
-                </div>
-              ) : (
-                <div className="overflow-x-auto">
-                  <table className="min-w-full text-left text-xs">
-                    <thead className="text-gray-500">
-                      <tr>
-                        <th className="py-2 pr-3 font-medium">ID</th>
-                        <th className="py-2 pr-3 font-medium">Type</th>
-                        <th className="py-2 pr-3 font-medium">Status</th>
-                        <th className="py-2 pr-3 font-medium">Created</th>
-                        <th className="py-2 pr-3 font-medium">Claimed</th>
-                        <th className="py-2 pr-3 font-medium">Finished</th>
-                        <th className="py-2 pr-3 font-medium">Result</th>
-                        <th className="py-2 font-medium">Error</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-gray-100">
-                      {jobs.map((job) => (
-                        <tr key={job.id}>
-                          <td className="py-2 pr-3 align-top font-mono text-gray-900">{job.id}</td>
-                          <td className="py-2 pr-3 align-top font-mono text-gray-900">{job.type}</td>
-                          <td className="py-2 pr-3 align-top">
-                            <span className={`inline-flex rounded border px-2 py-0.5 font-medium ${jobBadgeClasses(job.status)}`}>
-                              {job.status}
-                            </span>
-                          </td>
-                          <td className="py-2 pr-3 align-top text-gray-700">{formatDate(job.createdAt)}</td>
-                          <td className="py-2 pr-3 align-top text-gray-700">{formatDate(job.claimedAt)}</td>
-                          <td className="py-2 pr-3 align-top text-gray-700">{formatDate(job.finishedAt)}</td>
-                          <td className="py-2 pr-3 align-top text-gray-700">{jobResultDetails(job)}</td>
-                          <td className="py-2 align-top text-gray-700">{jobErrorDetails(job)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </div>
+  return (
+    <button
+      type="button"
+      className="grid w-full gap-3 border-b border-[var(--sp-border)] px-5 py-4 text-left last:border-b-0 hover:bg-[var(--sp-surface-2)] lg:grid-cols-[2fr_1fr_1.4fr_1fr_1fr_2.5rem] lg:items-center lg:gap-4"
+      onClick={onOpen}
+    >
+      <div className="min-w-0">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="truncate font-mono text-sm font-semibold">{node.nodeId}</span>
+          {activeProbe && <span className="rounded bg-sky-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-sky-600">probe</span>}
+        </div>
+        <div className="mt-1 truncate font-mono text-xs text-[var(--sp-faint)]">{node.hostname || '-'}</div>
+      </div>
+
+      <div>
+        <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-semibold ${stateBadgeClasses(node.state)}`}>
+          <span className="h-1.5 w-1.5 rounded-full bg-current" />
+          {node.state}
+        </span>
+      </div>
+
+      <div className="flex flex-wrap gap-1.5">
+        {(node.runtimes ?? []).length > 0 ? node.runtimes?.map((runtime, index) => (
+          <span key={runtimeKey(runtime, index)} className="inline-flex max-w-full items-center gap-1.5 rounded-md bg-[var(--sp-surface-3)] px-2 py-1 font-mono text-[11px] text-[var(--sp-muted)]">
+            <span className="h-1.5 w-1.5 flex-none rounded-full bg-[var(--sp-accent)]" />
+            <span className="truncate">{runtimeLabel(runtime)}</span>
+          </span>
+        )) : <span className="text-xs text-[var(--sp-faint)]">-</span>}
+      </div>
+
+      <div>
+        <div className={`text-xs font-semibold ${configColor}`}>{configLabel}</div>
+        <div className="mt-1 font-mono text-[11px] text-[var(--sp-faint)]">{compactHash(node.configHash)}</div>
+      </div>
+
+      <div className="text-xs text-[var(--sp-muted)]" title={formatDate(node.lastHeartbeatAt)}>
+        {formatRelativeTime(node.lastHeartbeatAt)}
+      </div>
+
+      <div className="hidden justify-end text-[var(--sp-faint)] lg:flex">›</div>
+    </button>
+  )
+}
+
+function TableMessage({ message }: { message: string }) {
+  return <div className="px-5 py-10 text-center text-sm text-[var(--sp-muted)]">{message}</div>
+}
+
+function NodePlaceholder({
+  creating,
+  jobs,
+  jobsError,
+  jobsLoading,
+  node,
+  onBack,
+  onDeepProbe,
+}: {
+  creating: boolean
+  jobs: Job[]
+  jobsError?: string
+  jobsLoading: boolean
+  node: NodeStatus
+  onBack: () => void
+  onDeepProbe: () => void
+}) {
+  const activeProbe = hasActiveDeepProbe(jobs)
+  return (
+    <div className="mx-auto max-w-5xl px-4 py-6 sm:px-6 lg:px-9 lg:py-8">
+      <button type="button" className="mb-5 rounded-lg px-2 py-1 text-sm font-medium text-[var(--sp-muted)] hover:bg-[var(--sp-surface-2)] hover:text-[var(--sp-text)]" onClick={onBack}>
+        ‹ Fleet
+      </button>
+      <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <div className="flex flex-wrap items-center gap-3">
+            <h1 className="text-2xl font-bold tracking-tight">{node.nodeId}</h1>
+            <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-semibold ${stateBadgeClasses(node.state)}`}>
+              <span className="h-1.5 w-1.5 rounded-full bg-current" />
+              {node.state}
+            </span>
           </div>
-        )
-      })}
+          <div className="mt-2 font-mono text-sm text-[var(--sp-muted)]">{node.hostname || '-'} · sidecar {node.sidecarVersion || 'dev'}</div>
+        </div>
+        <button
+          type="button"
+          className="h-9 rounded-lg border border-[var(--sp-border-strong)] bg-[var(--sp-surface)] px-3 text-sm font-medium hover:bg-[var(--sp-surface-2)] disabled:cursor-not-allowed disabled:opacity-60"
+          disabled={creating || activeProbe}
+          onClick={onDeepProbe}
+        >
+          {creating ? 'Creating…' : activeProbe ? 'Probe active' : 'Deep probe'}
+        </button>
+      </div>
+
+      <div className="rounded-xl border border-[var(--sp-border)] bg-[var(--sp-surface)] p-5">
+        <div className="text-sm font-semibold">Node detail placeholder</div>
+        <div className="mt-2 text-sm text-[var(--sp-muted)]">
+          The full node detail view lands in the next task. Deep probe remains available here so existing read-only operations continue working.
+        </div>
+        {jobsError && <div className="mt-4 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-600">Failed to load jobs: {jobsError}</div>}
+        <div className="mt-5 divide-y divide-[var(--sp-border)] rounded-lg border border-[var(--sp-border)]">
+          {jobsLoading && <div className="px-3 py-3 text-xs text-[var(--sp-muted)]">Loading jobs…</div>}
+          {!jobsLoading && jobs.length === 0 && <div className="px-3 py-3 text-xs text-[var(--sp-muted)]">No jobs yet.</div>}
+          {jobs.slice(0, 4).map((job) => (
+            <div key={job.id} className="grid gap-2 px-3 py-3 text-xs sm:grid-cols-[1fr_auto_auto] sm:items-center">
+              <span className="font-mono text-[var(--sp-text)]">{job.type}</span>
+              <span className={`inline-flex w-fit rounded border px-2 py-0.5 font-semibold ${jobBadgeClasses(job.status)}`}>{job.status}</span>
+              <span className="text-[var(--sp-faint)]">{formatRelativeTime(job.createdAt)}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function PlaceholderPage({ title, body }: { title: string; body: string }) {
+  return (
+    <div className="mx-auto max-w-4xl px-4 py-6 sm:px-6 lg:px-9 lg:py-8">
+      <h1 className="text-2xl font-bold tracking-tight">{title}</h1>
+      <div className="mt-5 rounded-xl border border-[var(--sp-border)] bg-[var(--sp-surface)] p-6 text-sm text-[var(--sp-muted)]">
+        {body}
+      </div>
+    </div>
+  )
+}
+
+function EmptyState({ title, body }: { title: string; body: string }) {
+  return (
+    <div className="mx-auto max-w-3xl px-4 py-12 text-center sm:px-6 lg:px-9">
+      <h1 className="text-xl font-semibold">{title}</h1>
+      <p className="mt-2 text-sm text-[var(--sp-muted)]">{body}</p>
     </div>
   )
 }
