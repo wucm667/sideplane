@@ -81,7 +81,8 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		hermesOptions = append(hermesOptions, hermes.WithServiceUnit(value))
 	}
 	hermesOptions = append(hermesOptions, hermes.WithAllowLiveApply(*allowLiveApply))
-	reg := registry.New(hermes.NewAdapter(hermesOptions...), openclaw.NewAdapter())
+	hermesAdapter := hermes.NewAdapter(hermesOptions...)
+	reg := registry.New(hermesAdapter, openclaw.NewAdapter())
 
 	client, err := sidecar.NewHeartbeatClient(sidecar.HeartbeatClientConfig{
 		ServerURL:      runtimeConfig.ServerURL,
@@ -102,6 +103,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		PublicKey:      *serverPublicKey,
 		ApplyWorkDir:   *applyWorkDir,
 		AllowLiveApply: *allowLiveApply,
+		Controller:     hermesAdapter,
 		Collector:      reg,
 		Logger:         logger,
 	})

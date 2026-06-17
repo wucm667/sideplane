@@ -19,4 +19,6 @@ const (
 	ActionJobComplete = "job.complete"
 	// ActionJobFail records sidecar job failure.
 	ActionJobFail = "job.fail"
+	// ActionConfigApply records operator creation of a signed config apply plan.
+	ActionConfigApply = "config.apply"
 )

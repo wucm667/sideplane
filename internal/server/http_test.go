@@ -43,6 +43,122 @@ func TestCreateJobAPI(t *testing.T) {
 	}
 }
 
+func seedDesiredAndProbe(t *testing.T, nodeStore store.Store, nodeID, configPath string) {
+	t.Helper()
+	ctx := context.Background()
+	now := time.Now().UTC()
+	if err := nodeStore.SetDesiredConfig(ctx, protocol.DesiredConfig{
+		Global: protocol.ProviderModelConfig{Provider: "openai", Model: "gpt-4o"},
+	}, now); err != nil {
+		t.Fatalf("set desired config: %v", err)
+	}
+	probe, err := nodeStore.CreateJob(ctx, protocol.CreateJobRequest{Type: protocol.JobTypeDeepProbe}, nodeID, now)
+	if err != nil {
+		t.Fatalf("create probe: %v", err)
+	}
+	if _, err := nodeStore.ClaimNextJob(ctx, nodeID, now); err != nil {
+		t.Fatalf("claim probe: %v", err)
+	}
+	resJSON, _ := json.Marshal(protocol.DeepProbeResult{
+		Runtimes: []protocol.RuntimeStatus{},
+		ConfigSnapshots: []protocol.RuntimeConfigSnapshot{{
+			RuntimeName: "hermes",
+			RuntimeType: "hermes",
+			ConfigPath:  configPath,
+			Provider:    "anthropic",
+			Model:       "claude-3.7-sonnet",
+		}},
+	})
+	if err := nodeStore.CompleteJob(ctx, probe.ID, protocol.JobResultRequest{
+		Status:     protocol.JobStatusCompleted,
+		ResultJSON: string(resJSON),
+	}, now); err != nil {
+		t.Fatalf("complete probe: %v", err)
+	}
+}
+
+func TestCreateConfigApplyJobDryRun(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	enrollTestNode(t, nodeStore, "node-apply")
+	seedDesiredAndProbe(t, nodeStore, "node-apply", "/etc/hermes/config.json")
+	handler := NewHandlerWithStore(nodeStore)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/nodes/node-apply/config-apply", strings.NewReader(`{}`))
+	handler.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusCreated)
+
+	var job protocol.Job
+	if err := json.NewDecoder(rec.Body).Decode(&job); err != nil {
+		t.Fatalf("decode job: %v", err)
+	}
+	if job.Type != protocol.JobTypeConfigApply {
+		t.Fatalf("job type = %q, want config_apply", job.Type)
+	}
+
+	var signed protocol.SignedConfigPlan
+	if err := json.Unmarshal([]byte(job.PayloadJSON), &signed); err != nil {
+		t.Fatalf("decode signed plan: %v", err)
+	}
+	if !signed.Plan.Body.DryRun || signed.Plan.Mode != protocol.ConfigPlanModeDryRun {
+		t.Errorf("plan not dry-run: mode=%q dryRun=%t", signed.Plan.Mode, signed.Plan.Body.DryRun)
+	}
+	if signed.Plan.Body.Profile != "/etc/hermes/config.json" {
+		t.Errorf("plan config path = %q, want /etc/hermes/config.json", signed.Plan.Body.Profile)
+	}
+	if signed.Plan.Body.Desired.Provider != "openai" || signed.Plan.Body.Desired.Model != "gpt-4o" {
+		t.Errorf("plan desired = %+v, want openai/gpt-4o", signed.Plan.Body.Desired)
+	}
+
+	keyRec := httptest.NewRecorder()
+	handler.ServeHTTP(keyRec, httptest.NewRequest(http.MethodGet, "/api/signing-key", nil))
+	assertStatus(t, keyRec, http.StatusOK)
+	var keyResp protocol.PublicSigningKeyResponse
+	if err := json.NewDecoder(keyRec.Body).Decode(&keyResp); err != nil {
+		t.Fatalf("decode signing key: %v", err)
+	}
+	pub, err := spcrypto.ParsePublicKey(keyResp.PublicKey)
+	if err != nil {
+		t.Fatalf("parse public key: %v", err)
+	}
+	if err := protocol.VerifySignedConfigPlan(signed, pub); err != nil {
+		t.Errorf("server-signed plan failed verification: %v", err)
+	}
+}
+
+func TestCreateConfigApplyJobRequiresConfigPath(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	enrollTestNode(t, nodeStore, "node-apply")
+	if err := nodeStore.SetDesiredConfig(context.Background(), protocol.DesiredConfig{
+		Global: protocol.ProviderModelConfig{Provider: "openai", Model: "gpt-4o"},
+	}, time.Now().UTC()); err != nil {
+		t.Fatalf("set desired: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/nodes/node-apply/config-apply", strings.NewReader(`{}`))
+	NewHandlerWithStore(nodeStore).ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusBadRequest)
+}
+
+func TestCreateConfigApplyJobRequiresDesired(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	enrollTestNode(t, nodeStore, "node-apply")
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/nodes/node-apply/config-apply", strings.NewReader(`{}`))
+	NewHandlerWithStore(nodeStore).ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusBadRequest)
+}
+
+func TestCreateConfigApplyJobUnknownNode(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/nodes/missing/config-apply", strings.NewReader(`{}`))
+	NewHandlerWithStore(nodeStore).ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusNotFound)
+}
+
 func TestCreateJobAPIAllowsLocalDevWhenOperatorTokenNotConfigured(t *testing.T) {
 	nodeStore := store.NewMemoryNodeStore()
 	enrollTestNode(t, nodeStore, "node-jobs")

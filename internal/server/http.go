@@ -2,10 +2,12 @@ package server
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -305,10 +307,10 @@ func (h *handler) applyFreshness(nodes []protocol.NodeStatus) {
 
 // nodeJobsRouter handles GET and POST /api/nodes/{nodeId}/jobs
 func (h *handler) nodeJobsRouter(w http.ResponseWriter, r *http.Request) {
-	// Parse path: /api/nodes/{nodeId}/jobs
+	// Parse path: /api/nodes/{nodeId}/{jobs|config-apply}
 	path := strings.TrimPrefix(r.URL.Path, "/api/nodes/")
 	parts := strings.Split(path, "/")
-	if len(parts) != 2 || parts[1] != "jobs" {
+	if len(parts) != 2 {
 		http.NotFound(w, r)
 		return
 	}
@@ -318,14 +320,26 @@ func (h *handler) nodeJobsRouter(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	switch r.Method {
-	case http.MethodGet:
-		h.listNodeJobs(w, r, nodeID)
-	case http.MethodPost:
-		h.createNodeJob(w, r, nodeID)
+	switch parts[1] {
+	case "jobs":
+		switch r.Method {
+		case http.MethodGet:
+			h.listNodeJobs(w, r, nodeID)
+		case http.MethodPost:
+			h.createNodeJob(w, r, nodeID)
+		default:
+			w.Header().Set("Allow", http.MethodGet+", "+http.MethodPost)
+			http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
+		}
+	case "config-apply":
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", http.MethodPost)
+			http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
+			return
+		}
+		h.createConfigApplyJob(w, r, nodeID)
 	default:
-		w.Header().Set("Allow", http.MethodGet+", "+http.MethodPost)
-		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
+		http.NotFound(w, r)
 	}
 }
 
@@ -390,6 +404,139 @@ func (h *handler) createNodeJob(w http.ResponseWriter, r *http.Request, nodeID s
 	})
 
 	writeJSON(w, http.StatusCreated, job)
+}
+
+// createConfigApplyJob builds a signed config plan from the desired config and
+// enqueues a config_apply job for the node. It defaults to a dry-run plan.
+func (h *handler) createConfigApplyJob(w http.ResponseWriter, r *http.Request, nodeID string) {
+	if !h.authorizeOperator(w, r) {
+		return
+	}
+	defer r.Body.Close()
+
+	var req protocol.ConfigApplyRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		http.Error(w, "invalid config apply JSON", http.StatusBadRequest)
+		return
+	}
+
+	runtimeType := strings.TrimSpace(req.RuntimeType)
+	if runtimeType == "" {
+		runtimeType = "hermes"
+	}
+	if runtimeType != "hermes" {
+		http.Error(w, "unsupported runtime type", http.StatusBadRequest)
+		return
+	}
+	dryRun := true
+	if req.DryRun != nil {
+		dryRun = *req.DryRun
+	}
+	profile := strings.TrimSpace(req.Profile)
+
+	if len(h.signingKey.PrivateKey) == 0 {
+		http.Error(w, "server signing key is not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	exists, err := h.store.NodeExists(r.Context(), nodeID)
+	if err != nil {
+		http.Error(w, "lookup node", http.StatusInternalServerError)
+		return
+	}
+	if !exists {
+		http.Error(w, "node not found", http.StatusNotFound)
+		return
+	}
+
+	desired, err := h.store.GetDesiredConfig(r.Context())
+	if err != nil {
+		http.Error(w, "get desired config", http.StatusInternalServerError)
+		return
+	}
+	effective := spconfig.EffectiveProviderModelConfig(desired, spconfig.EffectiveConfigTarget{
+		NodeID:      nodeID,
+		RuntimeType: runtimeType,
+		Profile:     profile,
+	})
+	if strings.TrimSpace(effective.Provider) == "" || strings.TrimSpace(effective.Model) == "" {
+		http.Error(w, "desired provider and model must be set before applying config", http.StatusBadRequest)
+		return
+	}
+
+	actual, err := h.latestActualSnapshot(r.Context(), nodeID, runtimeType, profile)
+	if err != nil {
+		http.Error(w, "get actual config", http.StatusInternalServerError)
+		return
+	}
+	if actual == nil || strings.TrimSpace(actual.ConfigPath) == "" {
+		http.Error(w, "no known config path for node; run a deep probe first", http.StatusBadRequest)
+		return
+	}
+
+	now := time.Now().UTC()
+	planID, err := newPlanID()
+	if err != nil {
+		http.Error(w, "generate plan id", http.StatusInternalServerError)
+		return
+	}
+	mode := protocol.ConfigPlanModeDryRun
+	if !dryRun {
+		mode = protocol.ConfigPlanModeLive
+	}
+	plan := protocol.ConfigPlan{
+		ID:           planID,
+		Schema:       protocol.ConfigPlanSchema,
+		Version:      1,
+		CreatedAt:    now,
+		TargetNodeID: nodeID,
+		Mode:         mode,
+		Body: protocol.ConfigPlanBody{
+			RuntimeType: runtimeType,
+			// Profile carries the read-only config path the sidecar reads/backs up.
+			Profile: actual.ConfigPath,
+			Desired: effective,
+			DryRun:  dryRun,
+		},
+	}
+	signed, err := protocol.SignConfigPlan(plan, h.signingKey.PrivateKey)
+	if err != nil {
+		http.Error(w, "sign config plan", http.StatusInternalServerError)
+		return
+	}
+	payload, err := json.Marshal(signed)
+	if err != nil {
+		http.Error(w, "marshal signed plan", http.StatusInternalServerError)
+		return
+	}
+
+	job, err := h.store.CreateJob(r.Context(), protocol.CreateJobRequest{
+		Type:        protocol.JobTypeConfigApply,
+		PayloadJSON: string(payload),
+	}, nodeID, now)
+	if err != nil {
+		http.Error(w, "create job", http.StatusInternalServerError)
+		return
+	}
+	h.audit(r.Context(), protocol.AuditEvent{
+		Actor:      audit.ActorOperator,
+		Action:     audit.ActionConfigApply,
+		TargetNode: nodeID,
+		Detail:     fmt.Sprintf("%s %s plan=%s", runtimeType, mode, planID),
+		CreatedAt:  job.CreatedAt,
+	})
+
+	writeJSON(w, http.StatusCreated, job)
+}
+
+func newPlanID() (string, error) {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return "plan_" + hex.EncodeToString(buf), nil
 }
 
 // claimNextJob handles GET /api/sidecar/jobs/next?nodeId=...

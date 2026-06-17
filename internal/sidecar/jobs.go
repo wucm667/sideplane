@@ -24,6 +24,7 @@ type JobPollerConfig struct {
 	PublicKey       string
 	ApplyWorkDir    string
 	AllowLiveApply  bool
+	Controller      adapters.ServiceController
 	HTTPClient      *http.Client
 	Collector       adapters.RuntimeCollector
 	ConfigCollector adapters.ConfigSnapshotCollector
@@ -39,6 +40,7 @@ type JobPoller struct {
 	publicKey       string
 	applyWorkDir    string
 	allowLiveApply  bool
+	controller      adapters.ServiceController
 	httpClient      *http.Client
 	collector       adapters.RuntimeCollector
 	configCollector adapters.ConfigSnapshotCollector
@@ -87,6 +89,7 @@ func NewJobPoller(cfg JobPollerConfig) (*JobPoller, error) {
 		publicKey:       strings.TrimSpace(cfg.PublicKey),
 		applyWorkDir:    strings.TrimSpace(cfg.ApplyWorkDir),
 		allowLiveApply:  cfg.AllowLiveApply,
+		controller:      cfg.Controller,
 		httpClient:      httpClient,
 		collector:       cfg.Collector,
 		configCollector: configCollector,

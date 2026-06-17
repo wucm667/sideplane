@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wucm667/sideplane/pkg/adapters"
 	spcrypto "github.com/wucm667/sideplane/pkg/crypto"
 	"github.com/wucm667/sideplane/pkg/protocol"
 )
@@ -28,14 +29,14 @@ type ConfigApplyExecutor struct {
 	PublicKey      string
 	WorkDir        string
 	AllowLiveApply bool
-	// PostReplace runs after a successful live atomic replace. It is the seam
-	// where restart + health check land in a later phase. A non-nil error
-	// triggers a rollback to the backup. Nil means no post-replace action.
-	PostReplace func(context.Context, protocol.SignedConfigPlan) error
-	ReadFile    func(string) ([]byte, error)
-	WriteFile   func(string, []byte, os.FileMode) error
-	MkdirAll    func(string, os.FileMode) error
-	Now         func() time.Time
+	// Controller restarts the runtime and verifies its health after a live
+	// replace. When nil, the restart and health-check steps are skipped. A
+	// failure in either step triggers a rollback to the backup.
+	Controller adapters.ServiceController
+	ReadFile   func(string) ([]byte, error)
+	WriteFile  func(string, []byte, os.FileMode) error
+	MkdirAll   func(string, os.FileMode) error
+	Now        func() time.Time
 }
 
 // Execute verifies a signed config apply plan and runs it in dry-run mode, or
@@ -138,13 +139,15 @@ func (e ConfigApplyExecutor) Execute(ctx context.Context, signedPlan protocol.Si
 
 	if !live {
 		addStep("replaced", "skipped", "dry-run")
+		addStep("restarted", "skipped", "dry-run")
+		addStep("health_checked", "skipped", "dry-run")
 		pruneApplyRuns(workDir, defaultApplyRetention)
 		return result, nil
 	}
 
 	// Live branch. Reachable only when AllowLiveApply is set AND the plan
 	// requested live mode. Atomic rename keeps the live file intact on a write
-	// failure; a post-replace error rolls back to the backup byte-for-byte.
+	// failure; a failure after replace rolls back to the backup byte-for-byte.
 	if err := atomicReplaceFile(configPath, rendered); err != nil {
 		addStep("replaced", "failed", err.Error())
 		return result, fmt.Errorf("atomic replace: %w", err)
@@ -155,11 +158,24 @@ func (e ConfigApplyExecutor) Execute(ctx context.Context, signedPlan protocol.Si
 	}
 	addStep("replaced", "completed", "atomic rename")
 
-	if e.PostReplace != nil {
-		if err := e.PostReplace(ctx, signedPlan); err != nil {
-			return result, e.rollback(addStep, configPath, contents, err)
-		}
+	if e.Controller == nil {
+		addStep("restarted", "skipped", "no controller")
+		addStep("health_checked", "skipped", "no controller")
+		pruneApplyRuns(workDir, defaultApplyRetention)
+		return result, nil
 	}
+
+	if err := e.Controller.Restart(ctx); err != nil {
+		addStep("restarted", "failed", err.Error())
+		return result, e.rollback(addStep, configPath, contents, err)
+	}
+	addStep("restarted", "completed", "")
+
+	if err := e.Controller.HealthCheck(ctx); err != nil {
+		addStep("health_checked", "failed", err.Error())
+		return result, e.rollback(addStep, configPath, contents, err)
+	}
+	addStep("health_checked", "completed", "")
 
 	pruneApplyRuns(workDir, defaultApplyRetention)
 	return result, nil
@@ -297,7 +313,7 @@ func (p *JobPoller) executeConfigApply(ctx context.Context, job *protocol.Job) p
 	if err := json.Unmarshal([]byte(job.PayloadJSON), &signedPlan); err != nil {
 		return protocol.JobResultRequest{Status: protocol.JobStatusFailed, Error: fmt.Sprintf("parse config_apply payload: %v", err)}
 	}
-	executor := ConfigApplyExecutor{PublicKey: p.publicKey, WorkDir: p.applyWorkDir, AllowLiveApply: p.allowLiveApply}
+	executor := ConfigApplyExecutor{PublicKey: p.publicKey, WorkDir: p.applyWorkDir, AllowLiveApply: p.allowLiveApply, Controller: p.controller}
 	result, err := executor.Execute(ctx, signedPlan)
 	payload, marshalErr := json.Marshal(result)
 	if marshalErr != nil {

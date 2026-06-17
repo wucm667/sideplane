@@ -21,6 +21,23 @@ func livePlan(nodeID, configPath, provider, model string) protocol.ConfigPlan {
 	return p
 }
 
+type stubController struct {
+	restartErr error
+	healthErr  error
+	restarts   int
+	healths    int
+}
+
+func (s *stubController) Restart(context.Context) error {
+	s.restarts++
+	return s.restartErr
+}
+
+func (s *stubController) HealthCheck(context.Context) error {
+	s.healths++
+	return s.healthErr
+}
+
 func newTestSigningKey(t *testing.T) (publicKey string, privateKey []byte) {
 	t.Helper()
 	kp, err := spcrypto.GenerateKeyPair()
@@ -100,6 +117,11 @@ func TestConfigApplyDryRunHappyPath(t *testing.T) {
 		}
 		if s.Status != "completed" {
 			t.Errorf("step %q status = %q, want completed (%s)", name, s.Status, s.Detail)
+		}
+	}
+	for _, name := range []string{"replaced", "restarted", "health_checked"} {
+		if s, ok := findStep(t, result.Steps, name); !ok || s.Status != "skipped" {
+			t.Errorf("dry-run %s step = %+v, want skipped", name, s)
 		}
 	}
 	if !result.DryRun {
@@ -369,7 +391,8 @@ func TestConfigApplyLiveReplacesConfig(t *testing.T) {
 		t.Fatalf("sign plan: %v", err)
 	}
 
-	exec := ConfigApplyExecutor{PublicKey: pub, WorkDir: workDir, AllowLiveApply: true}
+	controller := &stubController{}
+	exec := ConfigApplyExecutor{PublicKey: pub, WorkDir: workDir, AllowLiveApply: true, Controller: controller}
 	result, err := exec.Execute(context.Background(), signed)
 	if err != nil {
 		t.Fatalf("execute: %v", err)
@@ -377,8 +400,13 @@ func TestConfigApplyLiveReplacesConfig(t *testing.T) {
 	if result.DryRun {
 		t.Error("result.DryRun = true for a live plan")
 	}
-	if s, ok := findStep(t, result.Steps, "replaced"); !ok || s.Status != "completed" {
-		t.Errorf("replaced step = %+v, want completed", s)
+	for _, name := range []string{"replaced", "restarted", "health_checked"} {
+		if s, ok := findStep(t, result.Steps, name); !ok || s.Status != "completed" {
+			t.Errorf("%s step = %+v, want completed", name, s)
+		}
+	}
+	if controller.restarts != 1 || controller.healths != 1 {
+		t.Errorf("controller calls: restarts=%d healths=%d, want 1/1", controller.restarts, controller.healths)
 	}
 
 	want, err := renderHermesDesiredConfig(protocol.ProviderModelConfig{Provider: "openai", Model: "gpt-4o"})
@@ -404,7 +432,7 @@ func TestConfigApplyLiveReplacesConfig(t *testing.T) {
 	}
 }
 
-func TestConfigApplyLiveRollsBackOnPostReplaceFailure(t *testing.T) {
+func TestConfigApplyLiveRollsBackOnRestartFailure(t *testing.T) {
 	pub, priv := newTestSigningKey(t)
 	srcDir := t.TempDir()
 	workDir := t.TempDir()
@@ -415,23 +443,23 @@ func TestConfigApplyLiveRollsBackOnPostReplaceFailure(t *testing.T) {
 		t.Fatalf("sign plan: %v", err)
 	}
 
-	exec := ConfigApplyExecutor{
-		PublicKey:      pub,
-		WorkDir:        workDir,
-		AllowLiveApply: true,
-		PostReplace: func(context.Context, protocol.SignedConfigPlan) error {
-			return errors.New("simulated restart/health failure")
-		},
-	}
+	controller := &stubController{restartErr: errors.New("simulated restart failure")}
+	exec := ConfigApplyExecutor{PublicKey: pub, WorkDir: workDir, AllowLiveApply: true, Controller: controller}
 	result, err := exec.Execute(context.Background(), signed)
 	if err == nil {
-		t.Fatal("expected post-replace failure, got nil")
+		t.Fatal("expected restart failure, got nil")
 	}
 	if s, ok := findStep(t, result.Steps, "replaced"); !ok || s.Status != "completed" {
-		t.Errorf("replaced step = %+v, want completed before the post-replace failure", s)
+		t.Errorf("replaced step = %+v, want completed before the restart failure", s)
+	}
+	if s, ok := findStep(t, result.Steps, "restarted"); !ok || s.Status != "failed" {
+		t.Errorf("restarted step = %+v, want failed", s)
 	}
 	if s, ok := findStep(t, result.Steps, "rolled_back"); !ok || s.Status != "completed" {
 		t.Errorf("rolled_back step = %+v, want completed", s)
+	}
+	if controller.healths != 0 {
+		t.Errorf("health check ran %d times after restart failure, want 0", controller.healths)
 	}
 	after, err := os.ReadFile(cfgPath)
 	if err != nil {
@@ -439,6 +467,38 @@ func TestConfigApplyLiveRollsBackOnPostReplaceFailure(t *testing.T) {
 	}
 	if string(after) != string(original) {
 		t.Errorf("config after rollback = %q, want original %q (byte-for-byte restore)", after, original)
+	}
+}
+
+func TestConfigApplyLiveRollsBackOnHealthFailure(t *testing.T) {
+	pub, priv := newTestSigningKey(t)
+	srcDir := t.TempDir()
+	workDir := t.TempDir()
+	cfgPath, original := writeHermesConfig(t, srcDir)
+
+	signed, err := protocol.SignConfigPlan(livePlan("node-1", cfgPath, "openai", "gpt-4o"), priv)
+	if err != nil {
+		t.Fatalf("sign plan: %v", err)
+	}
+
+	controller := &stubController{healthErr: errors.New("unhealthy after restart")}
+	exec := ConfigApplyExecutor{PublicKey: pub, WorkDir: workDir, AllowLiveApply: true, Controller: controller}
+	result, err := exec.Execute(context.Background(), signed)
+	if err == nil {
+		t.Fatal("expected health-check failure, got nil")
+	}
+	if s, ok := findStep(t, result.Steps, "restarted"); !ok || s.Status != "completed" {
+		t.Errorf("restarted step = %+v, want completed", s)
+	}
+	if s, ok := findStep(t, result.Steps, "health_checked"); !ok || s.Status != "failed" {
+		t.Errorf("health_checked step = %+v, want failed", s)
+	}
+	if s, ok := findStep(t, result.Steps, "rolled_back"); !ok || s.Status != "completed" {
+		t.Errorf("rolled_back step = %+v, want completed", s)
+	}
+	after, _ := os.ReadFile(cfgPath)
+	if string(after) != string(original) {
+		t.Errorf("config after rollback = %q, want original %q", after, original)
 	}
 }
 

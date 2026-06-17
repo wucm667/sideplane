@@ -52,3 +52,12 @@ const (
 	// ConfigDiffChangeMissingActual means no actual config snapshot exists.
 	ConfigDiffChangeMissingActual = "missingActual"
 )
+
+// ConfigApplyRequest is the operator request to create a signed config apply
+// job for a node. DryRun defaults to true when omitted so that the safe path is
+// the default; a live apply must be requested explicitly.
+type ConfigApplyRequest struct {
+	RuntimeType string `json:"runtimeType,omitempty"`
+	Profile     string `json:"profile,omitempty"`
+	DryRun      *bool  `json:"dryRun,omitempty"`
+}
