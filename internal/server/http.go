@@ -306,6 +306,10 @@ func (h *handler) createNodeJob(w http.ResponseWriter, r *http.Request, nodeID s
 
 	job, err := h.store.CreateJob(r.Context(), req, nodeID, time.Now().UTC())
 	if err != nil {
+		if errors.Is(err, store.ErrActiveJobExists) {
+			http.Error(w, "active job already exists", http.StatusConflict)
+			return
+		}
 		http.Error(w, "create job", http.StatusInternalServerError)
 		return
 	}

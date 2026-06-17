@@ -48,6 +48,10 @@ function hasActiveJobs(jobs: Job[]): boolean {
   return jobs.some((job) => ACTIVE_JOB_STATUSES.includes(job.status))
 }
 
+function hasActiveDeepProbe(jobs: Job[]): boolean {
+  return jobs.some((job) => job.type === 'deep_probe' && ACTIVE_JOB_STATUSES.includes(job.status))
+}
+
 function redactSecretLikeValues(value: unknown, key = ''): unknown {
   if (SECRET_LIKE_KEY.test(key)) return '[redacted]'
   if (Array.isArray(value)) {
@@ -294,6 +298,7 @@ export default function FleetPage() {
         const jobsLoading = jobsLoadingByNode[node.nodeId]
         const jobsError = jobsErrorByNode[node.nodeId]
         const creating = creatingByNode[node.nodeId]
+        const activeProbe = hasActiveDeepProbe(jobs)
 
         return (
           <div
@@ -315,10 +320,11 @@ export default function FleetPage() {
                 <button
                   type="button"
                   className="rounded border border-gray-300 bg-white px-3 py-1 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
-                  disabled={creating}
+                  disabled={creating || activeProbe}
+                  title={activeProbe ? 'Deep probe already queued or running' : undefined}
                   onClick={() => createDeepProbe(node.nodeId)}
                 >
-                  {creating ? 'Creating…' : 'Deep Probe'}
+                  {creating ? 'Creating…' : activeProbe ? 'Probe Active' : 'Deep Probe'}
                 </button>
                 <div className="text-xs text-gray-500">
                   {node.sidecarVersion ? `v${node.sidecarVersion}` : '—'}

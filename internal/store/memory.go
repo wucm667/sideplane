@@ -240,6 +240,13 @@ func (s *MemoryNodeStore) CreateJob(_ context.Context, req protocol.CreateJobReq
 	if s.jobs == nil {
 		s.jobs = make(map[string]protocol.Job)
 	}
+	if req.Type == protocol.JobTypeDeepProbe {
+		for _, existing := range s.jobs {
+			if existing.NodeID == nodeID && existing.Type == req.Type && jobStatusIsActive(existing.Status) {
+				return protocol.Job{}, ErrActiveJobExists
+			}
+		}
+	}
 	s.jobs[jobID] = job
 
 	return job, nil
@@ -360,4 +367,8 @@ func (s *MemoryNodeStore) ListNodeJobs(_ context.Context, nodeID string) ([]prot
 	}
 
 	return jobs, nil
+}
+
+func jobStatusIsActive(status protocol.JobStatus) bool {
+	return status == protocol.JobStatusPending || status == protocol.JobStatusClaimed
 }

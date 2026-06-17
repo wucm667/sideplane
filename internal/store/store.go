@@ -17,6 +17,8 @@ var (
 	ErrEnrollmentTokenUsed = errors.New("enrollment token has already been used")
 	// ErrNodeAlreadyEnrolled means the node already has a long-lived credential.
 	ErrNodeAlreadyEnrolled = errors.New("node is already enrolled")
+	// ErrActiveJobExists means the node already has an active job of that type.
+	ErrActiveJobExists = errors.New("active job already exists")
 )
 
 // NodeStore persists heartbeat-derived node status snapshots.

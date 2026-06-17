@@ -76,6 +76,46 @@ func TestCreateJobAPIRejectsUnknownNode(t *testing.T) {
 	assertStatus(t, rec, http.StatusNotFound)
 }
 
+func TestCreateJobAPIRejectsDuplicatePendingDeepProbe(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	enrollTestNode(t, nodeStore, "node-jobs")
+
+	handler := NewHandlerWithStore(nodeStore)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/nodes/node-jobs/jobs", strings.NewReader(`{"type":"deep_probe"}`))
+
+	handler.ServeHTTP(rec, req)
+
+	assertStatus(t, rec, http.StatusCreated)
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/nodes/node-jobs/jobs", strings.NewReader(`{"type":"deep_probe"}`))
+
+	handler.ServeHTTP(rec, req)
+
+	assertStatus(t, rec, http.StatusConflict)
+}
+
+func TestCreateJobAPIRejectsDuplicateClaimedDeepProbe(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	enrollTestNode(t, nodeStore, "node-jobs")
+
+	if _, err := nodeStore.CreateJob(context.Background(), protocol.CreateJobRequest{Type: protocol.JobTypeDeepProbe}, "node-jobs", time.Now().UTC()); err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+	if _, err := nodeStore.ClaimNextJob(context.Background(), "node-jobs", time.Now().UTC()); err != nil {
+		t.Fatalf("claim job: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/nodes/node-jobs/jobs", strings.NewReader(`{"type":"deep_probe"}`))
+
+	NewHandlerWithStore(nodeStore).ServeHTTP(rec, req)
+
+	assertStatus(t, rec, http.StatusConflict)
+}
+
 func TestListNodeJobsAPI(t *testing.T) {
 	nodeStore := store.NewMemoryNodeStore()
 	enrollTestNode(t, nodeStore, "node-jobs")
@@ -85,6 +125,12 @@ func TestListNodeJobsAPI(t *testing.T) {
 	older, err := nodeStore.CreateJob(context.Background(), protocol.CreateJobRequest{Type: protocol.JobTypeDeepProbe}, "node-jobs", now)
 	if err != nil {
 		t.Fatalf("create older job: %v", err)
+	}
+	if _, err := nodeStore.ClaimNextJob(context.Background(), "node-jobs", now.Add(30*time.Second)); err != nil {
+		t.Fatalf("claim older job: %v", err)
+	}
+	if err := nodeStore.CompleteJob(context.Background(), older.ID, protocol.JobResultRequest{Status: protocol.JobStatusCompleted}, now.Add(45*time.Second)); err != nil {
+		t.Fatalf("complete older job: %v", err)
 	}
 	newer, err := nodeStore.CreateJob(context.Background(), protocol.CreateJobRequest{Type: protocol.JobTypeDeepProbe}, "node-jobs", now.Add(time.Minute))
 	if err != nil {

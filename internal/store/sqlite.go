@@ -511,7 +511,28 @@ func (s *SQLiteNodeStore) CreateJob(ctx context.Context, req protocol.CreateJobR
 		CreatedAt:   now.UTC(),
 	}
 
-	_, err = s.db.ExecContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return protocol.Job{}, fmt.Errorf("begin create job transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	if req.Type == protocol.JobTypeDeepProbe {
+		var activeCount int
+		err = tx.QueryRowContext(ctx, `
+SELECT COUNT(*)
+FROM jobs
+WHERE node_id = ? AND type = ? AND status IN (?, ?)
+`, nodeID, string(req.Type), string(protocol.JobStatusPending), string(protocol.JobStatusClaimed)).Scan(&activeCount)
+		if err != nil {
+			return protocol.Job{}, fmt.Errorf("query active jobs: %w", err)
+		}
+		if activeCount > 0 {
+			return protocol.Job{}, ErrActiveJobExists
+		}
+	}
+
+	_, err = tx.ExecContext(ctx, `
 INSERT INTO jobs (
 	id,
 	node_id,
@@ -527,6 +548,9 @@ INSERT INTO jobs (
 `, job.ID, job.NodeID, string(job.Type), string(job.Status), job.PayloadJSON, formatDBTime(job.CreatedAt))
 	if err != nil {
 		return protocol.Job{}, fmt.Errorf("insert job: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return protocol.Job{}, fmt.Errorf("commit create job transaction: %w", err)
 	}
 
 	return job, nil
