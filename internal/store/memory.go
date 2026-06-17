@@ -240,6 +240,7 @@ func (s *MemoryNodeStore) CreateJob(_ context.Context, req protocol.CreateJobReq
 	if s.jobs == nil {
 		s.jobs = make(map[string]protocol.Job)
 	}
+	s.expireClaimedJobsLocked(now.UTC())
 	if req.Type == protocol.JobTypeDeepProbe {
 		for _, existing := range s.jobs {
 			if existing.NodeID == nodeID && existing.Type == req.Type && jobStatusIsActive(existing.Status) {
@@ -265,6 +266,8 @@ func (s *MemoryNodeStore) ClaimNextJob(_ context.Context, nodeID string, now tim
 	if s.jobs == nil {
 		return nil, nil
 	}
+	now = now.UTC()
+	s.expireClaimedJobsLocked(now)
 
 	// Find oldest pending job for this node
 	var oldestJob *protocol.Job
@@ -282,7 +285,8 @@ func (s *MemoryNodeStore) ClaimNextJob(_ context.Context, nodeID string, now tim
 	}
 
 	oldestJob.Status = protocol.JobStatusClaimed
-	oldestJob.ClaimedAt = now.UTC()
+	oldestJob.ClaimedAt = now
+	oldestJob.ClaimExpiresAt = now.Add(defaultJobClaimLease)
 	s.jobs[oldestJob.ID] = *oldestJob
 
 	return oldestJob, nil
@@ -309,6 +313,7 @@ func (s *MemoryNodeStore) CompleteJob(_ context.Context, jobID string, result pr
 	job.Status = protocol.JobStatusCompleted
 	job.ResultJSON = result.ResultJSON
 	job.FinishedAt = now.UTC()
+	job.ClaimExpiresAt = time.Time{}
 	s.jobs[jobID] = job
 
 	return nil
@@ -335,6 +340,7 @@ func (s *MemoryNodeStore) FailJob(_ context.Context, jobID string, errMsg string
 	job.Status = protocol.JobStatusFailed
 	job.Error = errMsg
 	job.FinishedAt = now.UTC()
+	job.ClaimExpiresAt = time.Time{}
 	s.jobs[jobID] = job
 
 	return nil
@@ -347,8 +353,9 @@ func (s *MemoryNodeStore) ListNodeJobs(_ context.Context, nodeID string) ([]prot
 		return nil, errors.New("node ID is required")
 	}
 
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.expireClaimedJobsLocked(time.Now().UTC())
 
 	var jobs []protocol.Job
 	for _, job := range s.jobs {
@@ -371,4 +378,17 @@ func (s *MemoryNodeStore) ListNodeJobs(_ context.Context, nodeID string) ([]prot
 
 func jobStatusIsActive(status protocol.JobStatus) bool {
 	return status == protocol.JobStatusPending || status == protocol.JobStatusClaimed
+}
+
+func (s *MemoryNodeStore) expireClaimedJobsLocked(now time.Time) {
+	for id, job := range s.jobs {
+		if job.Status != protocol.JobStatusClaimed || job.ClaimExpiresAt.IsZero() || job.ClaimExpiresAt.After(now) {
+			continue
+		}
+		job.Status = protocol.JobStatusFailed
+		job.Error = jobClaimTimeoutError
+		job.FinishedAt = now
+		job.ClaimExpiresAt = time.Time{}
+		s.jobs[id] = job
+	}
 }

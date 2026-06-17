@@ -8,6 +8,11 @@ import (
 	"github.com/wucm667/sideplane/pkg/protocol"
 )
 
+const (
+	defaultJobClaimLease = 5 * time.Minute
+	jobClaimTimeoutError = "job claim timed out"
+)
+
 var (
 	// ErrEnrollmentTokenInvalid means no matching enrollment token exists.
 	ErrEnrollmentTokenInvalid = errors.New("enrollment token is invalid")

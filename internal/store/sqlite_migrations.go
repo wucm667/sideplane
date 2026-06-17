@@ -107,6 +107,13 @@ ON heartbeats(node_id, observed_at DESC)`,
 	ON jobs(node_id, status)`,
 		},
 	},
+	{
+		version: 4,
+		name:    "add job claim lease deadline",
+		statements: []string{
+			`ALTER TABLE jobs ADD COLUMN claim_expires_at TEXT`,
+		},
+	},
 }
 
 func runSQLiteMigrations(ctx context.Context, db *sql.DB) error {

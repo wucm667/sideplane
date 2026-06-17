@@ -26,16 +26,17 @@ const (
 
 // Job is a unit of work assigned to a node.
 type Job struct {
-	ID          string    `json:"id"`
-	NodeID      string    `json:"nodeId"`
-	Type        JobType   `json:"type"`
-	Status      JobStatus `json:"status"`
-	PayloadJSON string    `json:"payloadJson,omitempty"`
-	ResultJSON  string    `json:"resultJson,omitempty"`
-	Error       string    `json:"error,omitempty"`
-	CreatedAt   time.Time `json:"createdAt"`
-	ClaimedAt   time.Time `json:"claimedAt,omitzero"`
-	FinishedAt  time.Time `json:"finishedAt,omitzero"`
+	ID             string    `json:"id"`
+	NodeID         string    `json:"nodeId"`
+	Type           JobType   `json:"type"`
+	Status         JobStatus `json:"status"`
+	PayloadJSON    string    `json:"payloadJson,omitempty"`
+	ResultJSON     string    `json:"resultJson,omitempty"`
+	Error          string    `json:"error,omitempty"`
+	CreatedAt      time.Time `json:"createdAt"`
+	ClaimedAt      time.Time `json:"claimedAt,omitzero"`
+	ClaimExpiresAt time.Time `json:"claimExpiresAt,omitzero"`
+	FinishedAt     time.Time `json:"finishedAt,omitzero"`
 }
 
 // CreateJobRequest is the server-side request to create a new job for a node.

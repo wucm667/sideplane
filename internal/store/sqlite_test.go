@@ -35,6 +35,8 @@ func TestSQLiteNodeStoreMigratesAndPersistsHeartbeat(t *testing.T) {
 	assertSQLiteTableExists(t, ctx, first.db, "node_credentials")
 	assertSQLiteMigrationApplied(t, ctx, first.db, 1)
 	assertSQLiteMigrationApplied(t, ctx, first.db, 2)
+	assertSQLiteMigrationApplied(t, ctx, first.db, 3)
+	assertSQLiteMigrationApplied(t, ctx, first.db, 4)
 
 	observedAt := time.Date(2026, 6, 16, 1, 2, 3, 0, time.UTC)
 	sentAt := observedAt.Add(-time.Second)
@@ -303,6 +305,67 @@ func TestSQLiteJobLifecycle(t *testing.T) {
 	}
 	if jobs[0].ResultJSON != `{"runtimes":[]}` {
 		t.Fatalf("result JSON = %q, want runtimes result", jobs[0].ResultJSON)
+	}
+}
+
+func TestSQLiteNodeStoreTimesOutExpiredClaimedJob(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenSQLiteNodeStore(ctx, filepath.Join(t.TempDir(), "sideplane.db"))
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer store.Close()
+
+	now := time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)
+	if _, err := store.RecordHeartbeat(ctx, protocol.HeartbeatRequest{NodeID: "node-timeout"}, now); err != nil {
+		t.Fatalf("record heartbeat: %v", err)
+	}
+	job, err := store.CreateJob(ctx, protocol.CreateJobRequest{Type: protocol.JobTypeDeepProbe}, "node-timeout", now)
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	claimed, err := store.ClaimNextJob(ctx, "node-timeout", now.Add(time.Second))
+	if err != nil {
+		t.Fatalf("claim job: %v", err)
+	}
+	if claimed == nil {
+		t.Fatalf("claimed job is nil")
+	}
+	if !claimed.ClaimExpiresAt.Equal(claimed.ClaimedAt.Add(defaultJobClaimLease)) {
+		t.Fatalf("claim expires at = %s, want claimedAt + lease", claimed.ClaimExpiresAt)
+	}
+
+	next, err := store.ClaimNextJob(ctx, "node-timeout", claimed.ClaimExpiresAt.Add(time.Second))
+	if err != nil {
+		t.Fatalf("claim after timeout: %v", err)
+	}
+	if next != nil {
+		t.Fatalf("next job = %#v, want nil", next)
+	}
+
+	got, err := store.GetJob(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("get job: %v", err)
+	}
+	if got == nil {
+		t.Fatalf("timed out job not found")
+	}
+	if got.Status != protocol.JobStatusFailed {
+		t.Fatalf("job status = %q, want failed", got.Status)
+	}
+	if got.Error != jobClaimTimeoutError {
+		t.Fatalf("job error = %q, want %q", got.Error, jobClaimTimeoutError)
+	}
+	if got.FinishedAt.IsZero() {
+		t.Fatalf("finishedAt is zero")
+	}
+	if !got.ClaimExpiresAt.IsZero() {
+		t.Fatalf("claimExpiresAt = %s, want zero after timeout", got.ClaimExpiresAt)
+	}
+
+	if _, err := store.CreateJob(ctx, protocol.CreateJobRequest{Type: protocol.JobTypeDeepProbe}, "node-timeout", got.FinishedAt.Add(time.Second)); err != nil {
+		t.Fatalf("create job after timeout: %v", err)
 	}
 }
 

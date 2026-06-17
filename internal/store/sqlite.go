@@ -517,6 +517,10 @@ func (s *SQLiteNodeStore) CreateJob(ctx context.Context, req protocol.CreateJobR
 	}
 	defer tx.Rollback()
 
+	if err := s.expireClaimedJobsTx(ctx, tx, now.UTC()); err != nil {
+		return protocol.Job{}, err
+	}
+
 	if req.Type == protocol.JobTypeDeepProbe {
 		var activeCount int
 		err = tx.QueryRowContext(ctx, `
@@ -572,6 +576,11 @@ func (s *SQLiteNodeStore) ClaimNextJob(ctx context.Context, nodeID string, now t
 	}
 	defer tx.Rollback()
 
+	now = now.UTC()
+	if err := s.expireClaimedJobsTx(ctx, tx, now); err != nil {
+		return nil, err
+	}
+
 	var jobID string
 	err = tx.QueryRowContext(ctx, `
 SELECT id
@@ -581,18 +590,22 @@ ORDER BY created_at ASC
 LIMIT 1
 `, nodeID, string(protocol.JobStatusPending)).Scan(&jobID)
 	if errors.Is(err, sql.ErrNoRows) {
+		if err := tx.Commit(); err != nil {
+			return nil, fmt.Errorf("commit expired job updates: %w", err)
+		}
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("query next pending job: %w", err)
 	}
 
-	claimedAt := now.UTC()
+	claimedAt := now
+	claimExpiresAt := claimedAt.Add(defaultJobClaimLease)
 	result, err := tx.ExecContext(ctx, `
 UPDATE jobs
-SET status = ?, claimed_at = ?
+SET status = ?, claimed_at = ?, claim_expires_at = ?
 WHERE id = ? AND status = ?
-`, string(protocol.JobStatusClaimed), formatDBTime(claimedAt), jobID, string(protocol.JobStatusPending))
+`, string(protocol.JobStatusClaimed), formatDBTime(claimedAt), formatDBTime(claimExpiresAt), jobID, string(protocol.JobStatusPending))
 	if err != nil {
 		return nil, fmt.Errorf("update job status to claimed: %w", err)
 	}
@@ -601,6 +614,9 @@ WHERE id = ? AND status = ?
 		return nil, fmt.Errorf("count job claim update: %w", err)
 	}
 	if rowsAffected != 1 {
+		if err := tx.Commit(); err != nil {
+			return nil, fmt.Errorf("commit expired job updates: %w", err)
+		}
 		return nil, nil
 	}
 
@@ -628,7 +644,7 @@ func (s *SQLiteNodeStore) CompleteJob(ctx context.Context, jobID string, result 
 	finishedAt := now.UTC()
 	res, err := s.db.ExecContext(ctx, `
 UPDATE jobs
-SET status = ?, result_json = ?, finished_at = ?
+SET status = ?, result_json = ?, finished_at = ?, claim_expires_at = NULL
 WHERE id = ? AND status = ?
 `, string(protocol.JobStatusCompleted), result.ResultJSON, formatDBTime(finishedAt), jobID, string(protocol.JobStatusClaimed))
 	if err != nil {
@@ -657,7 +673,7 @@ func (s *SQLiteNodeStore) FailJob(ctx context.Context, jobID string, errMsg stri
 	finishedAt := now.UTC()
 	res, err := s.db.ExecContext(ctx, `
 UPDATE jobs
-SET status = ?, error = ?, finished_at = ?
+SET status = ?, error = ?, finished_at = ?, claim_expires_at = NULL
 WHERE id = ? AND status = ?
 `, string(protocol.JobStatusFailed), errMsg, formatDBTime(finishedAt), jobID, string(protocol.JobStatusClaimed))
 	if err != nil {
@@ -683,7 +699,17 @@ func (s *SQLiteNodeStore) ListNodeJobs(ctx context.Context, nodeID string) ([]pr
 		return nil, errors.New("node ID is required")
 	}
 
-	rows, err := s.db.QueryContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin list jobs transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	if err := s.expireClaimedJobsTx(ctx, tx, time.Now().UTC()); err != nil {
+		return nil, err
+	}
+
+	rows, err := tx.QueryContext(ctx, `
 SELECT id
 FROM jobs
 WHERE node_id = ?
@@ -705,6 +731,9 @@ ORDER BY created_at DESC
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate job IDs: %w", err)
 	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit list jobs transaction: %w", err)
+	}
 
 	jobs := make([]protocol.Job, 0, len(jobIDs))
 	for _, jobID := range jobIDs {
@@ -720,13 +749,13 @@ ORDER BY created_at DESC
 func (s *SQLiteNodeStore) loadJob(ctx context.Context, jobID string) (protocol.Job, error) {
 	var job protocol.Job
 	var status, createdAt string
-	var claimedAt, finishedAt sql.NullString
+	var claimedAt, claimExpiresAt, finishedAt sql.NullString
 
 	err := s.db.QueryRowContext(ctx, `
-SELECT id, node_id, type, status, payload_json, result_json, error, created_at, claimed_at, finished_at
+SELECT id, node_id, type, status, payload_json, result_json, error, created_at, claimed_at, claim_expires_at, finished_at
 FROM jobs
 WHERE id = ?
-`, jobID).Scan(&job.ID, &job.NodeID, &job.Type, &status, &job.PayloadJSON, &job.ResultJSON, &job.Error, &createdAt, &claimedAt, &finishedAt)
+`, jobID).Scan(&job.ID, &job.NodeID, &job.Type, &status, &job.PayloadJSON, &job.ResultJSON, &job.Error, &createdAt, &claimedAt, &claimExpiresAt, &finishedAt)
 	if err != nil {
 		return protocol.Job{}, fmt.Errorf("load job %q: %w", jobID, err)
 	}
@@ -745,6 +774,13 @@ WHERE id = ?
 		}
 		job.ClaimedAt = parsed
 	}
+	if claimExpiresAt.Valid && claimExpiresAt.String != "" {
+		parsed, err := parseDBTime(claimExpiresAt.String)
+		if err != nil {
+			return protocol.Job{}, fmt.Errorf("parse job %q claim_expires_at: %w", jobID, err)
+		}
+		job.ClaimExpiresAt = parsed
+	}
 	if finishedAt.Valid && finishedAt.String != "" {
 		parsed, err := parseDBTime(finishedAt.String)
 		if err != nil {
@@ -754,6 +790,54 @@ WHERE id = ?
 	}
 
 	return job, nil
+}
+
+func (s *SQLiteNodeStore) expireClaimedJobsTx(ctx context.Context, tx *sql.Tx, now time.Time) error {
+	rows, err := tx.QueryContext(ctx, `
+SELECT id, claim_expires_at
+FROM jobs
+WHERE status = ? AND claim_expires_at IS NOT NULL AND claim_expires_at != ''
+`, string(protocol.JobStatusClaimed))
+	if err != nil {
+		return fmt.Errorf("query expired claimed jobs: %w", err)
+	}
+
+	var expiredJobIDs []string
+	for rows.Next() {
+		var jobID, claimExpiresAt string
+		if err := rows.Scan(&jobID, &claimExpiresAt); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan claimed job lease: %w", err)
+		}
+		parsed, err := parseDBTime(claimExpiresAt)
+		if err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("parse job %q claim_expires_at: %w", jobID, err)
+		}
+		if !parsed.After(now) {
+			expiredJobIDs = append(expiredJobIDs, jobID)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("iterate claimed job leases: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close claimed job lease rows: %w", err)
+	}
+
+	for _, jobID := range expiredJobIDs {
+		_, err := tx.ExecContext(ctx, `
+UPDATE jobs
+SET status = ?, error = ?, finished_at = ?, claim_expires_at = NULL
+WHERE id = ? AND status = ?
+`, string(protocol.JobStatusFailed), jobClaimTimeoutError, formatDBTime(now), jobID, string(protocol.JobStatusClaimed))
+		if err != nil {
+			return fmt.Errorf("mark job %q timed out: %w", jobID, err)
+		}
+	}
+
+	return nil
 }
 
 func configureSQLite(ctx context.Context, db *sql.DB) error {
