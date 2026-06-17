@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { AuditEvent, ConfigDiffEntry, DeepProbeResult, EffectiveConfigResponse, Job, JobStatus, ListAuditEventsResponse, NodeState, NodeStatus, RuntimeConfigSnapshot, RuntimeStatus } from './types.ts'
+import ConfigWizard from './ConfigWizard.tsx'
 
 const NODE_REFRESH_MS = 10_000
 const ACTIVE_JOB_REFRESH_MS = 2_000
@@ -458,8 +459,13 @@ export default function FleetPage() {
               node={selectedNode}
               effective={effectiveByNode[selectedNode.nodeId]}
               effectiveError={effectiveErrorByNode[selectedNode.nodeId]}
+              operatorToken={operatorToken}
               onBack={() => setView('fleet')}
               onDeepProbe={() => createDeepProbe(selectedNode.nodeId)}
+              onApplied={() => {
+                void loadNodeJobs(selectedNode.nodeId, false)
+                void loadEffectiveConfig(selectedNode.nodeId)
+              }}
             />
           )}
           {view === 'node' && !selectedNode && (
@@ -739,8 +745,10 @@ function NodeDetailView({
   node,
   effective,
   effectiveError,
+  operatorToken,
   onBack,
   onDeepProbe,
+  onApplied,
 }: {
   creating: boolean
   jobs: Job[]
@@ -749,12 +757,16 @@ function NodeDetailView({
   node: NodeStatus
   effective?: EffectiveConfigResponse
   effectiveError?: string
+  operatorToken: string
   onBack: () => void
   onDeepProbe: () => void
+  onApplied: () => void
 }) {
   const activeProbe = hasActiveDeepProbe(jobs)
   const snapshots = latestConfigSnapshots(jobs)
   const primarySnapshot = snapshots[0]
+  const [wizardOpen, setWizardOpen] = useState(false)
+  const canEditConfig = Boolean(primarySnapshot?.configPath)
 
   return (
     <div className="mx-auto max-w-5xl px-4 py-6 sm:px-6 lg:px-9 lg:py-8">
@@ -781,14 +793,22 @@ function NodeDetailView({
           >
             {creating ? 'Creating…' : activeProbe ? 'Probe active' : 'Deep probe'}
           </button>
-          <DisabledAction label="Restart" />
-          <DisabledAction label="Rollback" />
-          <DisabledAction label="Edit config" primary />
+          <DisabledAction label="Restart" title="Restart runs as part of a live config apply (enable --allow-live-apply on the sidecar)" />
+          <DisabledAction label="Rollback" title="Rollback runs automatically when a live apply fails its health check" />
+          <button
+            type="button"
+            className="h-9 rounded-lg bg-[var(--sp-accent)] px-3 text-sm font-medium text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-55"
+            disabled={!canEditConfig}
+            title={canEditConfig ? 'Open the change configuration wizard' : 'Run a deep probe first to discover the config path'}
+            onClick={() => setWizardOpen(true)}
+          >
+            Edit config
+          </button>
         </div>
       </div>
 
       <div className="mb-5 rounded-xl border border-sky-500/25 bg-sky-500/10 px-4 py-3 text-sm text-[var(--sp-muted)]">
-        Restart, rollback, and edit config become available after the apply path lands. Current actions are read-only.
+        Edit config opens a signed plan wizard. It defaults to a dry run; a live apply (replace + restart + rollback) requires the sidecar to run with <span className="font-mono">--allow-live-apply</span>.
       </div>
 
       <div className="mb-6 grid gap-px overflow-hidden rounded-xl border border-[var(--sp-border)] bg-[var(--sp-border)] sm:grid-cols-2 lg:grid-cols-4">
@@ -830,6 +850,18 @@ function NodeDetailView({
           ))}
         </div>
       </section>
+
+      {wizardOpen && (
+        <ConfigWizard
+          nodeId={node.nodeId}
+          runtimeType={effective?.runtimeType || 'hermes'}
+          profile={effective?.profile || 'default'}
+          operatorToken={operatorToken}
+          effective={effective}
+          onClose={() => setWizardOpen(false)}
+          onApplied={onApplied}
+        />
+      )}
     </div>
   )
 }
@@ -876,13 +908,13 @@ function DiffRow({ entry }: { entry: ConfigDiffEntry }) {
   )
 }
 
-function DisabledAction({ label, primary = false }: { label: string; primary?: boolean }) {
+function DisabledAction({ label, title, primary = false }: { label: string; title?: string; primary?: boolean }) {
   return (
     <button
       type="button"
       className={`h-9 cursor-not-allowed rounded-lg px-3 text-sm font-medium opacity-55 ${primary ? 'bg-[var(--sp-accent)] text-white' : 'border border-[var(--sp-border-strong)] bg-[var(--sp-surface)] text-[var(--sp-text)]'}`}
       disabled
-      title="Available after the apply path lands"
+      title={title || 'Available after the apply path lands'}
     >
       {label}
     </button>

@@ -51,6 +51,26 @@ export interface DeepProbeResult {
   configSnapshots?: RuntimeConfigSnapshot[]
 }
 
+export interface DesiredConfig {
+  global?: ProviderModelConfig
+  nodeOverrides?: Record<string, ProviderModelConfig>
+  runtimeProfileOverrides?: Record<string, ProviderModelConfig>
+}
+
+export interface ConfigApplyStep {
+  name: string
+  status: string
+  detail?: string
+}
+
+export interface ConfigApplyResult {
+  planId: string
+  dryRun: boolean
+  backupPath?: string
+  tempPath?: string
+  steps: ConfigApplyStep[]
+}
+
 export interface NodeStatus {
   nodeId: string
   hostname?: string
@@ -62,7 +82,7 @@ export interface NodeStatus {
   lastError?: string
 }
 
-export type JobType = 'deep_probe'
+export type JobType = 'deep_probe' | 'config_apply'
 
 export type JobStatus = 'pending' | 'claimed' | 'completed' | 'failed'
 
