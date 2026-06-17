@@ -6,6 +6,7 @@ const ACTIVE_JOB_REFRESH_MS = 2_000
 const ACTIVE_JOB_STATUSES: JobStatus[] = ['pending', 'claimed']
 const MAX_RESULT_CHARS = 1_600
 const SECRET_LIKE_KEY = /(?:secret|token|password|api[_-]?key|credential|authorization)/i
+const OPERATOR_TOKEN_STORAGE_KEY = 'sideplane.operatorToken'
 
 function stateBadgeClasses(state: NodeState): string {
   switch (state) {
@@ -116,6 +117,14 @@ function jobErrorDetails(job: Job) {
   )
 }
 
+function loadStoredOperatorToken(): string {
+  try {
+    return window.localStorage.getItem(OPERATOR_TOKEN_STORAGE_KEY) ?? ''
+  } catch {
+    return ''
+  }
+}
+
 export default function FleetPage() {
   const [nodes, setNodes] = useState<NodeStatus[] | null>(null)
   const [jobsByNode, setJobsByNode] = useState<Record<string, Job[]>>({})
@@ -125,6 +134,7 @@ export default function FleetPage() {
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [operatorToken, setOperatorToken] = useState(loadStoredOperatorToken)
   const mountedRef = useRef(false)
 
   useEffect(() => {
@@ -133,6 +143,19 @@ export default function FleetPage() {
       mountedRef.current = false
     }
   }, [])
+
+  useEffect(() => {
+    try {
+      const token = operatorToken.trim()
+      if (token) {
+        window.localStorage.setItem(OPERATOR_TOKEN_STORAGE_KEY, token)
+      } else {
+        window.localStorage.removeItem(OPERATOR_TOKEN_STORAGE_KEY)
+      }
+    } catch {
+      // Local storage is a convenience only; the API request still works with in-memory state.
+    }
+  }, [operatorToken])
 
   const loadNodeJobs = useCallback(async (nodeId: string, showLoading = true) => {
     if (!mountedRef.current) return
@@ -205,12 +228,21 @@ export default function FleetPage() {
     if (!mountedRef.current) return
     setCreatingByNode((current) => ({ ...current, [nodeId]: true }))
     try {
+      const headers: HeadersInit = { 'Content-Type': 'application/json' }
+      const token = operatorToken.trim()
+      if (token) {
+        headers.Authorization = `Bearer ${token}`
+      }
+
       const res = await fetch(`/api/nodes/${encodeURIComponent(nodeId)}/jobs`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({ type: 'deep_probe' }),
       })
       if (!res.ok) {
+        if (res.status === 401) {
+          throw new Error('Operator token required or invalid')
+        }
         throw new Error(`HTTP ${res.status}: ${res.statusText}`)
       }
       const job: Job = await res.json()
@@ -236,7 +268,7 @@ export default function FleetPage() {
         setCreatingByNode((current) => ({ ...current, [nodeId]: false }))
       }
     }
-  }, [loadNodeJobs])
+  }, [loadNodeJobs, operatorToken])
 
   useEffect(() => {
     refreshFleet(false)
@@ -263,6 +295,29 @@ export default function FleetPage() {
     return () => window.clearInterval(interval)
   }, [jobsByNode, loadNodeJobs])
 
+  const toolbar = (
+    <div className="flex flex-wrap items-center justify-end gap-2">
+      <label className="flex items-center gap-2 text-xs text-gray-500">
+        <span>Operator token</span>
+        <input
+          type="password"
+          className="h-8 w-40 rounded border border-gray-300 bg-white px-2 text-xs text-gray-900 outline-none focus:border-gray-500"
+          value={operatorToken}
+          autoComplete="off"
+          onChange={(event) => setOperatorToken(event.target.value)}
+        />
+      </label>
+      <button
+        type="button"
+        className="rounded border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
+        disabled={refreshing}
+        onClick={() => refreshFleet()}
+      >
+        {refreshing ? 'Refreshing…' : 'Refresh'}
+      </button>
+    </div>
+  )
+
   if (loading) {
     return <div className="text-sm text-gray-500">Loading…</div>
   }
@@ -278,16 +333,7 @@ export default function FleetPage() {
   if (!nodes || nodes.length === 0) {
     return (
       <div className="space-y-4">
-        <div className="flex justify-end">
-          <button
-            type="button"
-            className="rounded border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
-            disabled={refreshing}
-            onClick={() => refreshFleet()}
-          >
-            {refreshing ? 'Refreshing…' : 'Refresh'}
-          </button>
-        </div>
+        {toolbar}
         <div className="rounded border border-gray-200 bg-white px-4 py-8 text-center text-sm text-gray-500">
           No nodes registered yet.
         </div>
@@ -297,16 +343,7 @@ export default function FleetPage() {
 
   return (
     <div className="space-y-4">
-      <div className="flex justify-end">
-        <button
-          type="button"
-          className="rounded border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
-          disabled={refreshing}
-          onClick={() => refreshFleet()}
-        >
-          {refreshing ? 'Refreshing…' : 'Refresh'}
-        </button>
-      </div>
+      {toolbar}
       {nodes.map((node) => {
         const jobs = jobsByNode[node.nodeId] ?? []
         const jobsLoading = jobsLoadingByNode[node.nodeId]
