@@ -1,0 +1,47 @@
+services:
+  server:
+    image: ghcr.io/wucm667/sideplane/server:local
+    build:
+      context: ../..
+      dockerfile: Dockerfile.server
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      # Set SIDEPLANE_OPERATOR_TOKEN in your shell or .env to a secret value before exposing the server.
+      SIDEPLANE_OPERATOR_TOKEN: ${SIDEPLANE_OPERATOR_TOKEN:-}
+      SIDEPLANE_SIGNING_KEY: ${SIDEPLANE_SIGNING_KEY:-/data/signing.key}
+    volumes:
+      - sideplane-data:/data
+
+  sidecar:
+    image: ghcr.io/wucm667/sideplane/sidecar:local
+    build:
+      context: ../..
+      dockerfile: Dockerfile.sidecar
+    depends_on:
+      - server
+    restart: unless-stopped
+    environment:
+      SIDEPLANE_SERVER_URL: ${SIDEPLANE_SERVER_URL:-http://server:8080}
+      SIDEPLANE_SIDECAR_STATE: ${SIDEPLANE_SIDECAR_STATE:-/data/sidecar.json}
+      SIDEPLANE_HERMES_CONFIG_PATHS: ${SIDEPLANE_HERMES_CONFIG_PATHS:-}
+      SIDEPLANE_OPENCLAW_CONFIG_PATHS: ${SIDEPLANE_OPENCLAW_CONFIG_PATHS:-}
+    volumes:
+      - sideplane-sidecar-state:/data
+    # Create an enrollment token in the UI, then run:
+    # docker compose exec sidecar sideplane-sidecar enroll --server http://server:8080 --token <TOKEN> --state /data/sidecar.json
+    command:
+      - /bin/sh
+      - -c
+      - |
+        echo "waiting for sidecar enrollment state at $${SIDEPLANE_SIDECAR_STATE}"
+        echo "run: docker compose exec sidecar sideplane-sidecar enroll --server $${SIDEPLANE_SERVER_URL} --token <TOKEN> --state $${SIDEPLANE_SIDECAR_STATE}"
+        while [ ! -s "$${SIDEPLANE_SIDECAR_STATE}" ]; do
+          sleep 30
+        done
+        exec sideplane-sidecar --server "$${SIDEPLANE_SERVER_URL}" --state "$${SIDEPLANE_SIDECAR_STATE}"
+
+volumes:
+  sideplane-data:
+  sideplane-sidecar-state:

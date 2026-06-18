@@ -231,6 +231,26 @@ browser routes while keeping the API routes on `/api/*`, `/healthz`, `/readyz`,
 and `/metrics`. Unknown browser paths fall back to `index.html` so client-side
 routing works. When `--web-dir` is omitted, the server only serves the API.
 
+## Docker
+
+From the repository root, set an operator token and start the local stack:
+
+```bash
+export SIDEPLANE_OPERATOR_TOKEN='replace-with-a-long-random-token'
+docker compose -f deployments/docker-compose/docker-compose.yml up -d
+```
+
+The server is published on `http://localhost:8080` and stores SQLite data in the
+`sideplane-data` volume. Create an enrollment token in the UI, then enroll the
+compose sidecar:
+
+```bash
+docker compose -f deployments/docker-compose/docker-compose.yml exec sidecar sideplane-sidecar enroll --server http://server:8080 --token TOKEN --state /data/sidecar.json
+```
+
+The sidecar service waits for `/data/sidecar.json`, then starts with outbound
+heartbeats to the server.
+
 The server listens on `:8080` by default, opens `sideplane.db` in the current
 directory, and applies SQLite migrations on startup. Use `--addr` to choose
 another address and `--db` to choose a different SQLite database path:
