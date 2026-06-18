@@ -33,7 +33,40 @@ export function NodeDetailView({
   const snapshots = latestConfigSnapshots(jobs)
   const primarySnapshot = snapshots[0]
   const [wizardOpen, setWizardOpen] = useState(false)
+  const [removing, setRemoving] = useState(false)
+  const [removeError, setRemoveError] = useState<string | null>(null)
   const canEditConfig = Boolean(primarySnapshot?.configPath)
+  const canRemoveNode = operatorToken.trim().length > 0
+
+  const removeNode = async () => {
+    if (!canRemoveNode || removing) return
+    const confirmed = window.confirm(`Remove node ${node.nodeId} from Sideplane? This clears its fleet record, jobs, credentials, and node-scoped audit history.`)
+    if (!confirmed) return
+
+    setRemoving(true)
+    setRemoveError(null)
+    let removed = false
+    try {
+      const res = await fetch(`/api/nodes/${encodeURIComponent(node.nodeId)}`, {
+        method: 'DELETE',
+        headers: {
+          Authorization: `Bearer ${operatorToken.trim()}`,
+        },
+      })
+      if (!res.ok) {
+        if (res.status === 401) throw new Error('Operator token required or invalid')
+        throw new Error(`HTTP ${res.status}: ${res.statusText}`)
+      }
+      removed = true
+      onBack()
+    } catch (e) {
+      setRemoveError(e instanceof Error ? e.message : 'Unknown error')
+    } finally {
+      if (!removed) {
+        setRemoving(false)
+      }
+    }
+  }
 
   return (
     <div className="mx-auto max-w-5xl px-4 py-6 sm:px-6 lg:px-9 lg:py-8">
@@ -76,8 +109,23 @@ export function NodeDetailView({
           >
             Edit config
           </button>
+          <button
+            type="button"
+            className="h-9 rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 text-sm font-medium text-rose-600 hover:bg-rose-500/15 disabled:cursor-not-allowed disabled:opacity-55"
+            disabled={!canRemoveNode || removing}
+            title={canRemoveNode ? 'Remove this node from the fleet inventory' : 'Set an operator token before removing a node'}
+            onClick={removeNode}
+          >
+            {removing ? 'Removing…' : 'Remove node'}
+          </button>
         </div>
       </div>
+
+      {removeError && (
+        <div className="mb-5 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-600">
+          Failed to remove node: {removeError}
+        </div>
+      )}
 
       <div className="mb-5 rounded-xl border border-sky-500/25 bg-sky-500/10 px-4 py-3 text-sm text-[var(--sp-muted)]">
         Edit config opens a signed plan wizard. It defaults to a dry run; a live apply (replace + restart + rollback) requires the sidecar to run with <span className="font-mono">--allow-live-apply</span>.
