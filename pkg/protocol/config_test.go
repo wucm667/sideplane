@@ -57,6 +57,9 @@ func TestDesiredConfigJSONShape(t *testing.T) {
 		RuntimeProfileOverrides: map[string]ProviderModelConfig{
 			"hermes/default": {Provider: "anthropic"},
 		},
+		NodeRuntimeProfileOverrides: map[string]ProviderModelConfig{
+			"node-a/hermes/default": {Model: "claude-sonnet-4"},
+		},
 	}
 
 	payload, err := json.Marshal(desired)
@@ -68,7 +71,7 @@ func TestDesiredConfigJSONShape(t *testing.T) {
 	if err := json.Unmarshal(payload, &got); err != nil {
 		t.Fatalf("unmarshal desired config: %v", err)
 	}
-	for _, key := range []string{"global", "nodeOverrides", "runtimeProfileOverrides"} {
+	for _, key := range []string{"global", "nodeOverrides", "runtimeProfileOverrides", "nodeRuntimeProfileOverrides"} {
 		if _, ok := got[key]; !ok {
 			t.Fatalf("desired config JSON omits %q: %s", key, payload)
 		}

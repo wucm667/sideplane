@@ -54,6 +54,14 @@ export interface DesiredConfig {
   global?: ProviderModelConfig
   nodeOverrides?: Record<string, ProviderModelConfig>
   runtimeProfileOverrides?: Record<string, ProviderModelConfig>
+  nodeRuntimeProfileOverrides?: Record<string, ProviderModelConfig>
+}
+
+export interface EffectiveConfigPreviewRequest {
+  nodeId: string
+  runtimeType?: string
+  profile?: string
+  desired: ProviderModelConfig
 }
 
 export interface ConfigApplyStep {

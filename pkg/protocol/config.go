@@ -21,9 +21,10 @@ type ProviderModelConfig struct {
 
 // DesiredConfig layers desired provider/model settings.
 type DesiredConfig struct {
-	Global                  ProviderModelConfig            `json:"global,omitempty"`
-	NodeOverrides           map[string]ProviderModelConfig `json:"nodeOverrides,omitempty"`
-	RuntimeProfileOverrides map[string]ProviderModelConfig `json:"runtimeProfileOverrides,omitempty"`
+	Global                      ProviderModelConfig            `json:"global,omitempty"`
+	NodeOverrides               map[string]ProviderModelConfig `json:"nodeOverrides,omitempty"`
+	RuntimeProfileOverrides     map[string]ProviderModelConfig `json:"runtimeProfileOverrides,omitempty"`
+	NodeRuntimeProfileOverrides map[string]ProviderModelConfig `json:"nodeRuntimeProfileOverrides,omitempty"`
 }
 
 // EffectiveConfigResponse describes server-computed desired config and diff.
@@ -35,6 +36,15 @@ type EffectiveConfigResponse struct {
 	DesiredHash string                 `json:"desiredHash,omitempty"`
 	Actual      *RuntimeConfigSnapshot `json:"actual,omitempty"`
 	Diff        []ConfigDiffEntry      `json:"diff"`
+}
+
+// EffectiveConfigPreviewRequest asks the server to compute an effective config
+// and diff for a proposed target-specific override without persisting it.
+type EffectiveConfigPreviewRequest struct {
+	NodeID      string              `json:"nodeId"`
+	RuntimeType string              `json:"runtimeType,omitempty"`
+	Profile     string              `json:"profile,omitempty"`
+	Desired     ProviderModelConfig `json:"desired"`
 }
 
 // ConfigDiffEntry describes one read-only desired-vs-actual config difference.

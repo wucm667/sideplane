@@ -312,11 +312,15 @@ func TestMemoryDesiredConfigPersistsCopy(t *testing.T) {
 		NodeOverrides: map[string]protocol.ProviderModelConfig{
 			"node-a": {Model: "gpt-5-mini"},
 		},
+		NodeRuntimeProfileOverrides: map[string]protocol.ProviderModelConfig{
+			"node-a/hermes/default": {Provider: "anthropic", Model: "claude-sonnet-4"},
+		},
 	}
 	if err := store.SetDesiredConfig(ctx, desired, time.Now().UTC()); err != nil {
 		t.Fatalf("set desired config: %v", err)
 	}
 	desired.NodeOverrides["node-a"] = protocol.ProviderModelConfig{Model: "mutated"}
+	desired.NodeRuntimeProfileOverrides["node-a/hermes/default"] = protocol.ProviderModelConfig{Model: "mutated"}
 
 	got, err := store.GetDesiredConfig(ctx)
 	if err != nil {
@@ -324,5 +328,8 @@ func TestMemoryDesiredConfigPersistsCopy(t *testing.T) {
 	}
 	if got.NodeOverrides["node-a"].Model != "gpt-5-mini" {
 		t.Fatalf("stored desired config mutated: %#v", got)
+	}
+	if got.NodeRuntimeProfileOverrides["node-a/hermes/default"].Model != "claude-sonnet-4" {
+		t.Fatalf("stored node runtime profile desired config mutated: %#v", got)
 	}
 }

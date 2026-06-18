@@ -81,6 +81,11 @@ func TestCreateJobAPI(t *testing.T) {
 
 func seedDesiredAndProbe(t *testing.T, nodeStore store.Store, nodeID, configPath string) {
 	t.Helper()
+	seedDesiredAndProfileProbe(t, nodeStore, nodeID, configPath, "")
+}
+
+func seedDesiredAndProfileProbe(t *testing.T, nodeStore store.Store, nodeID, configPath, profile string) {
+	t.Helper()
 	ctx := context.Background()
 	now := time.Now().UTC()
 	if err := nodeStore.SetDesiredConfig(ctx, protocol.DesiredConfig{
@@ -101,6 +106,7 @@ func seedDesiredAndProbe(t *testing.T, nodeStore store.Store, nodeID, configPath
 			RuntimeName: "hermes",
 			RuntimeType: "hermes",
 			ConfigPath:  configPath,
+			Profile:     profile,
 			Provider:    "anthropic",
 			Model:       "claude-3.7-sonnet",
 		}},
@@ -159,6 +165,38 @@ func TestCreateConfigApplyJobDryRun(t *testing.T) {
 	}
 	if err := protocol.VerifySignedConfigPlan(signed, pub); err != nil {
 		t.Errorf("server-signed plan failed verification: %v", err)
+	}
+}
+
+func TestCreateConfigApplyJobUsesNodeRuntimeProfileOverride(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	enrollTestNode(t, nodeStore, "node-apply")
+	seedDesiredAndProfileProbe(t, nodeStore, "node-apply", "/etc/hermes/config.json", "default")
+	if err := nodeStore.SetDesiredConfig(context.Background(), protocol.DesiredConfig{
+		Global: protocol.ProviderModelConfig{Provider: "openai", Model: "gpt-4o"},
+		NodeRuntimeProfileOverrides: map[string]protocol.ProviderModelConfig{
+			"node-apply/hermes/default": {Provider: "local", Model: "qwen3"},
+		},
+	}, time.Now().UTC()); err != nil {
+		t.Fatalf("set desired config: %v", err)
+	}
+	handler := newDevHandlerWithStore(t, nodeStore)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/nodes/node-apply/config-apply", strings.NewReader(`{"runtimeType":"hermes","profile":"default"}`))
+	handler.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusCreated)
+
+	var job protocol.Job
+	if err := json.NewDecoder(rec.Body).Decode(&job); err != nil {
+		t.Fatalf("decode job: %v", err)
+	}
+	var signed protocol.SignedConfigPlan
+	if err := json.Unmarshal([]byte(job.PayloadJSON), &signed); err != nil {
+		t.Fatalf("decode signed plan: %v", err)
+	}
+	if signed.Plan.Body.Desired.Provider != "local" || signed.Plan.Body.Desired.Model != "qwen3" {
+		t.Fatalf("plan desired = %+v, want scoped local/qwen3 override", signed.Plan.Body.Desired)
 	}
 }
 
@@ -375,6 +413,44 @@ func TestDesiredConfigPutWritesAuditEvent(t *testing.T) {
 		if strings.Contains(event.Detail, forbidden) {
 			t.Fatalf("audit detail leaked desired value %q: %s", forbidden, event.Detail)
 		}
+	}
+}
+
+func TestEffectiveConfigPreviewDoesNotPersistDesiredConfig(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	enrollTestNode(t, nodeStore, "node-preview")
+	seedDesiredAndProfileProbe(t, nodeStore, "node-preview", "/etc/hermes/config.json", "default")
+	handler := newDevHandlerWithStore(t, nodeStore)
+
+	beforeRec := httptest.NewRecorder()
+	handler.ServeHTTP(beforeRec, httptest.NewRequest(http.MethodGet, "/api/config/desired", nil))
+	assertStatus(t, beforeRec, http.StatusOK)
+	var before protocol.DesiredConfig
+	if err := json.NewDecoder(beforeRec.Body).Decode(&before); err != nil {
+		t.Fatalf("decode before desired: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/config/effective/preview", strings.NewReader(`{"nodeId":"node-preview","runtimeType":"hermes","profile":"default","desired":{"provider":"local","model":"qwen3"}}`))
+	handler.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusOK)
+	var preview protocol.EffectiveConfigResponse
+	if err := json.NewDecoder(rec.Body).Decode(&preview); err != nil {
+		t.Fatalf("decode preview: %v", err)
+	}
+	if preview.Effective.Provider != "local" || preview.Effective.Model != "qwen3" {
+		t.Fatalf("preview effective = %+v, want local/qwen3", preview.Effective)
+	}
+
+	afterRec := httptest.NewRecorder()
+	handler.ServeHTTP(afterRec, httptest.NewRequest(http.MethodGet, "/api/config/desired", nil))
+	assertStatus(t, afterRec, http.StatusOK)
+	var after protocol.DesiredConfig
+	if err := json.NewDecoder(afterRec.Body).Decode(&after); err != nil {
+		t.Fatalf("decode after desired: %v", err)
+	}
+	if after.Global != before.Global || len(after.NodeOverrides) != len(before.NodeOverrides) || len(after.RuntimeProfileOverrides) != len(before.RuntimeProfileOverrides) || len(after.NodeRuntimeProfileOverrides) != len(before.NodeRuntimeProfileOverrides) {
+		t.Fatalf("preview mutated desired config: before=%#v after=%#v", before, after)
 	}
 }
 

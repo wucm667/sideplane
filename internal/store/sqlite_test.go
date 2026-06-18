@@ -605,6 +605,9 @@ func TestSQLiteDesiredConfigPersistsAcrossReopen(t *testing.T) {
 		NodeOverrides: map[string]protocol.ProviderModelConfig{
 			"node-a": {Model: "gpt-5-mini"},
 		},
+		NodeRuntimeProfileOverrides: map[string]protocol.ProviderModelConfig{
+			"node-a/hermes/default": {Provider: "anthropic", Model: "claude-sonnet-4"},
+		},
 	}
 	if err := first.SetDesiredConfig(ctx, desired, time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)); err != nil {
 		t.Fatalf("set desired config: %v", err)
@@ -622,7 +625,7 @@ func TestSQLiteDesiredConfigPersistsAcrossReopen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get desired config: %v", err)
 	}
-	if got.Global.Provider != "openai" || got.NodeOverrides["node-a"].Model != "gpt-5-mini" {
+	if got.Global.Provider != "openai" || got.NodeOverrides["node-a"].Model != "gpt-5-mini" || got.NodeRuntimeProfileOverrides["node-a/hermes/default"].Model != "claude-sonnet-4" {
 		t.Fatalf("desired config = %#v, want persisted provider/model", got)
 	}
 }

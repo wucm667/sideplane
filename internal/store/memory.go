@@ -479,6 +479,12 @@ func cloneDesiredConfig(desired protocol.DesiredConfig) protocol.DesiredConfig {
 			clone.RuntimeProfileOverrides[key] = value
 		}
 	}
+	if desired.NodeRuntimeProfileOverrides != nil {
+		clone.NodeRuntimeProfileOverrides = make(map[string]protocol.ProviderModelConfig, len(desired.NodeRuntimeProfileOverrides))
+		for key, value := range desired.NodeRuntimeProfileOverrides {
+			clone.NodeRuntimeProfileOverrides[key] = value
+		}
+	}
 	return clone
 }
 

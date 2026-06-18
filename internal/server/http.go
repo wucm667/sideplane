@@ -103,6 +103,7 @@ func NewHandlerWithConfig(cfg HandlerConfig) (http.Handler, error) {
 	mux.HandleFunc("/api/signing-key", handler.publicSigningKey)
 	mux.HandleFunc("/api/config/desired", handler.desiredConfig)
 	mux.HandleFunc("/api/config/effective", handler.effectiveConfig)
+	mux.HandleFunc("/api/config/effective/preview", handler.previewEffectiveConfig)
 	mux.HandleFunc("/api/enrollment-tokens", handler.createEnrollmentToken)
 	mux.HandleFunc("/api/enroll", handler.enrollNode)
 	mux.HandleFunc("/api/heartbeat", handler.heartbeat)
@@ -874,6 +875,51 @@ func (h *handler) effectiveConfig(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "get desired config", http.StatusInternalServerError)
 		return
 	}
+	h.writeEffectiveConfig(w, r, nodeID, runtimeType, profile, desired)
+}
+
+func (h *handler) previewEffectiveConfig(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
+		return
+	}
+	if !h.authorizeOperator(w, r) {
+		return
+	}
+	defer r.Body.Close()
+
+	var req protocol.EffectiveConfigPreviewRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
+		http.Error(w, "invalid config preview JSON", http.StatusBadRequest)
+		return
+	}
+
+	nodeID := strings.TrimSpace(req.NodeID)
+	if nodeID == "" {
+		http.Error(w, "nodeId is required", http.StatusBadRequest)
+		return
+	}
+	runtimeType := strings.TrimSpace(req.RuntimeType)
+	profile := strings.TrimSpace(req.Profile)
+
+	desired, err := h.store.GetDesiredConfig(r.Context())
+	if err != nil {
+		http.Error(w, "get desired config", http.StatusInternalServerError)
+		return
+	}
+	target := spconfig.EffectiveConfigTarget{
+		NodeID:      nodeID,
+		RuntimeType: runtimeType,
+		Profile:     profile,
+	}
+	previewDesired := spconfig.DesiredConfigWithTargetOverride(desired, target, req.Desired)
+	h.writeEffectiveConfig(w, r, nodeID, runtimeType, profile, previewDesired)
+}
+
+func (h *handler) writeEffectiveConfig(w http.ResponseWriter, r *http.Request, nodeID string, runtimeType string, profile string, desired protocol.DesiredConfig) {
 	effective := spconfig.EffectiveProviderModelConfig(desired, spconfig.EffectiveConfigTarget{
 		NodeID:      nodeID,
 		RuntimeType: runtimeType,

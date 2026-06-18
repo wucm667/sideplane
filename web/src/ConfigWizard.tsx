@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { ConfigApplyResult, ConfigApplyStep, DesiredConfig, EffectiveConfigResponse, Job } from './types.ts'
+import type { ConfigApplyResult, ConfigApplyStep, DesiredConfig, EffectiveConfigPreviewRequest, EffectiveConfigResponse, Job } from './types.ts'
 
 const WIZARD_STEPS = ['Edit', 'Review', 'Apply', 'Done'] as const
 type WizardStep = (typeof WIZARD_STEPS)[number]
@@ -83,23 +83,13 @@ export default function ConfigWizard({
     setBusy(true)
     setError(null)
     try {
-      const current: DesiredConfig = await fetch('/api/config/desired').then((res) => {
-        if (!res.ok) throw new Error(failMessage(res))
-        return res.json()
-      })
-      const next: DesiredConfig = {
-        global: current.global,
-        runtimeProfileOverrides: current.runtimeProfileOverrides,
-        nodeOverrides: {
-          ...(current.nodeOverrides ?? {}),
-          [nodeId]: { provider: provider.trim(), model: model.trim() },
-        },
+      const previewReq: EffectiveConfigPreviewRequest = {
+        nodeId,
+        runtimeType,
+        profile,
+        desired: { provider: provider.trim(), model: model.trim() },
       }
-      const putRes = await authedFetch('/api/config/desired', { method: 'PUT', body: JSON.stringify(next) })
-      if (!putRes.ok) throw new Error(failMessage(putRes))
-
-      const params = new URLSearchParams({ nodeId, runtimeType, profile })
-      const effRes = await fetch(`/api/config/effective?${params.toString()}`)
+      const effRes = await authedFetch('/api/config/effective/preview', { method: 'POST', body: JSON.stringify(previewReq) })
       if (!effRes.ok) throw new Error(failMessage(effRes))
       const effData: EffectiveConfigResponse = await effRes.json()
       if (!mountedRef.current) return
@@ -153,6 +143,22 @@ export default function ConfigWizard({
     setApplyStatus(null)
     setStep('Apply')
     try {
+      const current: DesiredConfig = await fetch('/api/config/desired').then((res) => {
+        if (!res.ok) throw new Error(failMessage(res))
+        return res.json()
+      })
+      const next: DesiredConfig = {
+        global: current.global,
+        nodeOverrides: current.nodeOverrides,
+        runtimeProfileOverrides: current.runtimeProfileOverrides,
+        nodeRuntimeProfileOverrides: {
+          ...(current.nodeRuntimeProfileOverrides ?? {}),
+          [nodeRuntimeProfileKey(nodeId, runtimeType, profile)]: { provider: provider.trim(), model: model.trim() },
+        },
+      }
+      const putRes = await authedFetch('/api/config/desired', { method: 'PUT', body: JSON.stringify(next) })
+      if (!putRes.ok) throw new Error(failMessage(putRes))
+
       const res = await authedFetch(`/api/nodes/${encodeURIComponent(nodeId)}/config-apply`, {
         method: 'POST',
         body: JSON.stringify({ runtimeType, profile, dryRun }),
@@ -170,7 +176,7 @@ export default function ConfigWizard({
     } finally {
       if (mountedRef.current) setBusy(false)
     }
-  }, [activeConfigApply, authedFetch, dryRun, nodeId, pollApply, profile, runtimeType])
+  }, [activeConfigApply, authedFetch, dryRun, model, nodeId, pollApply, profile, provider, runtimeType])
 
   const terminal = applyStatus === 'completed' || applyStatus === 'failed'
   const rollback = rollbackStep(applyResult)
@@ -222,7 +228,7 @@ export default function ConfigWizard({
           {step === 'Review' && (
             <div className="grid gap-4">
               <div className="text-sm text-[var(--sp-muted)]">
-                The plan below is built from the desired config and signed by the server before the sidecar receives it.
+                Preview only. Desired state is saved when you run apply, then the server signs the plan for the sidecar.
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <Readout label="Desired provider" value={review?.effective.provider || '-'} />
@@ -278,12 +284,12 @@ export default function ConfigWizard({
           </button>
           <div className="flex gap-2">
             {step === 'Edit' && (
-              <PrimaryButton disabled={busy} label={busy ? 'Loading…' : 'Review'} onClick={goReview} />
+              <PrimaryButton disabled={busy} label={busy ? 'Loading…' : 'Preview'} onClick={goReview} />
             )}
             {step === 'Review' && (
               <>
                 <SecondaryButton disabled={busy} label="Back" onClick={() => setStep('Edit')} />
-                <PrimaryButton disabled={busy || activeConfigApply} label={activeConfigApply ? 'Apply in progress' : dryRun ? 'Run dry-run apply' : 'Run live apply'} onClick={startApply} />
+                <PrimaryButton disabled={busy || activeConfigApply} label={activeConfigApply ? 'Apply in progress' : dryRun ? 'Save and run dry-run' : 'Save and run live apply'} onClick={startApply} />
               </>
             )}
             {step === 'Apply' && terminal && (
@@ -295,6 +301,22 @@ export default function ConfigWizard({
       </div>
     </div>
   )
+}
+
+function nodeRuntimeProfileKey(nodeId: string, runtimeType: string, profile: string): string {
+  const trimmedNodeId = nodeId.trim()
+  const target = runtimeProfileKey(runtimeType, profile)
+  if (!trimmedNodeId) return target
+  if (!target) return trimmedNodeId
+  return `${trimmedNodeId}/${target}`
+}
+
+function runtimeProfileKey(runtimeType: string, profile: string): string {
+  const trimmedRuntimeType = runtimeType.trim()
+  const trimmedProfile = profile.trim()
+  if (!trimmedRuntimeType) return trimmedProfile
+  if (!trimmedProfile) return trimmedRuntimeType
+  return `${trimmedRuntimeType}/${trimmedProfile}`
 }
 
 function stepStatus(result: ConfigApplyResult | null, name: string): string {
