@@ -8,14 +8,19 @@ import (
 // OperatorTokenEnv is the environment variable used to configure operator auth.
 const OperatorTokenEnv = "SIDEPLANE_OPERATOR_TOKEN"
 
+// AllowUnauthenticatedOperatorAPIEnv explicitly enables unauthenticated
+// mutating operator APIs for local development.
+const AllowUnauthenticatedOperatorAPIEnv = "SIDEPLANE_ALLOW_UNAUTHENTICATED_OPERATOR_API"
+
 // OperatorToken authorizes mutating operator API requests.
 type OperatorToken struct {
-	token string
+	token                string
+	allowUnauthenticated bool
 }
 
-// NewOperatorToken returns an optional operator token authorizer.
-func NewOperatorToken(token string) OperatorToken {
-	return OperatorToken{token: strings.TrimSpace(token)}
+// NewOperatorToken returns an operator token authorizer.
+func NewOperatorToken(token string, allowUnauthenticated bool) OperatorToken {
+	return OperatorToken{token: strings.TrimSpace(token), allowUnauthenticated: allowUnauthenticated}
 }
 
 // Configured reports whether operator auth should be enforced.
@@ -26,7 +31,7 @@ func (t OperatorToken) Configured() bool {
 // AuthorizeHeader reports whether an Authorization header matches the token.
 func (t OperatorToken) AuthorizeHeader(authorization string) bool {
 	if !t.Configured() {
-		return true
+		return t.allowUnauthenticated
 	}
 	credential, ok := BearerToken(authorization)
 	if !ok {

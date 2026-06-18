@@ -16,6 +16,24 @@ import (
 	"github.com/wucm667/sideplane/pkg/protocol"
 )
 
+func newDevHandlerWithStore(t *testing.T, nodeStore store.Store) http.Handler {
+	t.Helper()
+	handler, err := NewHandlerWithConfig(HandlerConfig{
+		Store:                           nodeStore,
+		Freshness:                       DefaultFreshnessPolicy(),
+		AllowUnauthenticatedOperatorAPI: true,
+	})
+	if err != nil {
+		t.Fatalf("build dev handler: %v", err)
+	}
+	return handler
+}
+
+func newDevHandler(t *testing.T) http.Handler {
+	t.Helper()
+	return newDevHandlerWithStore(t, store.NewMemoryNodeStore())
+}
+
 func TestCreateJobAPI(t *testing.T) {
 	nodeStore := store.NewMemoryNodeStore()
 	enrollTestNode(t, nodeStore, "node-jobs")
@@ -24,7 +42,7 @@ func TestCreateJobAPI(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/nodes/node-jobs/jobs", body)
 
-	NewHandlerWithStore(nodeStore).ServeHTTP(rec, req)
+	newDevHandlerWithStore(t, nodeStore).ServeHTTP(rec, req)
 
 	assertStatus(t, rec, http.StatusCreated)
 
@@ -81,7 +99,7 @@ func TestCreateConfigApplyJobDryRun(t *testing.T) {
 	nodeStore := store.NewMemoryNodeStore()
 	enrollTestNode(t, nodeStore, "node-apply")
 	seedDesiredAndProbe(t, nodeStore, "node-apply", "/etc/hermes/config.json")
-	handler := NewHandlerWithStore(nodeStore)
+	handler := newDevHandlerWithStore(t, nodeStore)
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/nodes/node-apply/config-apply", strings.NewReader(`{}`))
@@ -137,7 +155,7 @@ func TestCreateConfigApplyJobRequiresConfigPath(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/nodes/node-apply/config-apply", strings.NewReader(`{}`))
-	NewHandlerWithStore(nodeStore).ServeHTTP(rec, req)
+	newDevHandlerWithStore(t, nodeStore).ServeHTTP(rec, req)
 	assertStatus(t, rec, http.StatusBadRequest)
 }
 
@@ -147,7 +165,7 @@ func TestCreateConfigApplyJobRequiresDesired(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/nodes/node-apply/config-apply", strings.NewReader(`{}`))
-	NewHandlerWithStore(nodeStore).ServeHTTP(rec, req)
+	newDevHandlerWithStore(t, nodeStore).ServeHTTP(rec, req)
 	assertStatus(t, rec, http.StatusBadRequest)
 }
 
@@ -155,8 +173,99 @@ func TestCreateConfigApplyJobUnknownNode(t *testing.T) {
 	nodeStore := store.NewMemoryNodeStore()
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/nodes/missing/config-apply", strings.NewReader(`{}`))
-	NewHandlerWithStore(nodeStore).ServeHTTP(rec, req)
+	newDevHandlerWithStore(t, nodeStore).ServeHTTP(rec, req)
 	assertStatus(t, rec, http.StatusNotFound)
+}
+
+func TestMutatingOperatorAPIsRejectWhenOperatorTokenNotConfigured(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(t *testing.T, nodeStore store.Store)
+		req   *http.Request
+	}{
+		{
+			name: "enrollment token",
+			req:  httptest.NewRequest(http.MethodPost, "/api/enrollment-tokens", strings.NewReader(`{}`)),
+		},
+		{
+			name: "node job",
+			setup: func(t *testing.T, nodeStore store.Store) {
+				t.Helper()
+				enrollTestNode(t, nodeStore, "node-jobs")
+			},
+			req: httptest.NewRequest(http.MethodPost, "/api/nodes/node-jobs/jobs", strings.NewReader(`{"type":"deep_probe"}`)),
+		},
+		{
+			name: "config apply",
+			setup: func(t *testing.T, nodeStore store.Store) {
+				t.Helper()
+				enrollTestNode(t, nodeStore, "node-apply")
+				seedDesiredAndProbe(t, nodeStore, "node-apply", "/etc/hermes/config.json")
+			},
+			req: httptest.NewRequest(http.MethodPost, "/api/nodes/node-apply/config-apply", strings.NewReader(`{}`)),
+		},
+		{
+			name: "desired config",
+			req:  httptest.NewRequest(http.MethodPut, "/api/config/desired", strings.NewReader(`{}`)),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			nodeStore := store.NewMemoryNodeStore()
+			if tt.setup != nil {
+				tt.setup(t, nodeStore)
+			}
+
+			rec := httptest.NewRecorder()
+			NewHandlerWithStore(nodeStore).ServeHTTP(rec, tt.req)
+
+			assertStatus(t, rec, http.StatusUnauthorized)
+		})
+	}
+}
+
+func TestCreateEnrollmentTokenRequiresConfiguredOperatorToken(t *testing.T) {
+	tests := []struct {
+		name          string
+		authorization string
+		wantStatus    int
+	}{
+		{
+			name:       "missing",
+			wantStatus: http.StatusUnauthorized,
+		},
+		{
+			name:          "wrong",
+			authorization: "Bearer wrong-token",
+			wantStatus:    http.StatusUnauthorized,
+		},
+		{
+			name:          "correct",
+			authorization: "Bearer dev-token",
+			wantStatus:    http.StatusCreated,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			nodeStore := store.NewMemoryNodeStore()
+			handler, err := NewHandlerWithStoreAndFreshnessPolicyAndOperatorToken(nodeStore, DefaultFreshnessPolicy(), "dev-token")
+			if err != nil {
+				t.Fatalf("build handler: %v", err)
+			}
+
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/api/enrollment-tokens", strings.NewReader(`{}`))
+			if tt.authorization != "" {
+				req.Header.Set("Authorization", tt.authorization)
+			}
+
+			handler.ServeHTTP(rec, req)
+
+			assertStatus(t, rec, tt.wantStatus)
+		})
+	}
 }
 
 func TestCreateJobAPIAllowsLocalDevWhenOperatorTokenNotConfigured(t *testing.T) {
@@ -166,9 +275,21 @@ func TestCreateJobAPIAllowsLocalDevWhenOperatorTokenNotConfigured(t *testing.T) 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/nodes/node-jobs/jobs", strings.NewReader(`{"type":"deep_probe"}`))
 
-	NewHandlerWithStore(nodeStore).ServeHTTP(rec, req)
+	newDevHandlerWithStore(t, nodeStore).ServeHTTP(rec, req)
 
 	assertStatus(t, rec, http.StatusCreated)
+}
+
+func TestCreateJobAPIRejectsWhenOperatorTokenNotConfigured(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	enrollTestNode(t, nodeStore, "node-jobs")
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/nodes/node-jobs/jobs", strings.NewReader(`{"type":"deep_probe"}`))
+
+	NewHandlerWithStore(nodeStore).ServeHTTP(rec, req)
+
+	assertStatus(t, rec, http.StatusUnauthorized)
 }
 
 func TestCreateJobAPIRequiresConfiguredOperatorToken(t *testing.T) {
@@ -300,7 +421,7 @@ func TestCreateJobAPIRejectsMalformedJSON(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/nodes/node-jobs/jobs", strings.NewReader(`{"type":`))
 
-	NewHandlerWithStore(nodeStore).ServeHTTP(rec, req)
+	newDevHandlerWithStore(t, nodeStore).ServeHTTP(rec, req)
 
 	assertStatus(t, rec, http.StatusBadRequest)
 }
@@ -312,7 +433,7 @@ func TestCreateJobAPIRejectsUnsupportedType(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/nodes/node-jobs/jobs", strings.NewReader(`{"type":"bad"}`))
 
-	NewHandlerWithStore(nodeStore).ServeHTTP(rec, req)
+	newDevHandlerWithStore(t, nodeStore).ServeHTTP(rec, req)
 
 	assertStatus(t, rec, http.StatusBadRequest)
 }
@@ -323,7 +444,7 @@ func TestCreateJobAPIRejectsUnknownNode(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/nodes/missing-node/jobs", strings.NewReader(`{"type":"deep_probe"}`))
 
-	NewHandlerWithStore(nodeStore).ServeHTTP(rec, req)
+	newDevHandlerWithStore(t, nodeStore).ServeHTTP(rec, req)
 
 	assertStatus(t, rec, http.StatusNotFound)
 }
@@ -332,7 +453,7 @@ func TestCreateJobAPIRejectsDuplicatePendingDeepProbe(t *testing.T) {
 	nodeStore := store.NewMemoryNodeStore()
 	enrollTestNode(t, nodeStore, "node-jobs")
 
-	handler := NewHandlerWithStore(nodeStore)
+	handler := newDevHandlerWithStore(t, nodeStore)
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/nodes/node-jobs/jobs", strings.NewReader(`{"type":"deep_probe"}`))
@@ -363,7 +484,7 @@ func TestCreateJobAPIRejectsDuplicateClaimedDeepProbe(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/nodes/node-jobs/jobs", strings.NewReader(`{"type":"deep_probe"}`))
 
-	NewHandlerWithStore(nodeStore).ServeHTTP(rec, req)
+	newDevHandlerWithStore(t, nodeStore).ServeHTTP(rec, req)
 
 	assertStatus(t, rec, http.StatusConflict)
 }
@@ -490,7 +611,7 @@ func TestListNodeJobsAPIIncludesFinishedTimestamps(t *testing.T) {
 
 func TestAuditAPIRecordsFleetOperations(t *testing.T) {
 	nodeStore := store.NewMemoryNodeStore()
-	handler := NewHandlerWithStore(nodeStore)
+	handler := newDevHandlerWithStore(t, nodeStore)
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/enrollment-tokens", strings.NewReader(`{}`))
@@ -729,7 +850,7 @@ func TestMetricsCountsConfigApplyCreation(t *testing.T) {
 	nodeStore := store.NewMemoryNodeStore()
 	enrollTestNode(t, nodeStore, "node-apply")
 	seedDesiredAndProbe(t, nodeStore, "node-apply", "/etc/hermes/config.json")
-	handler := NewHandlerWithStore(nodeStore)
+	handler := newDevHandlerWithStore(t, nodeStore)
 
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/nodes/node-apply/config-apply", strings.NewReader(`{}`)))
@@ -913,7 +1034,7 @@ func TestHeartbeatRejectsCredentialNodeMismatch(t *testing.T) {
 }
 
 func TestEnrollmentAPIsCreateTokenAndEnrollNode(t *testing.T) {
-	handler := NewHandler()
+	handler := newDevHandler(t)
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/enrollment-tokens", strings.NewReader(`{}`))

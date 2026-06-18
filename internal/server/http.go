@@ -54,12 +54,13 @@ func NewHandlerWithStoreAndFreshnessPolicyAndOperatorToken(nodeStore store.Store
 
 // HandlerConfig configures the Sideplane server HTTP handler.
 type HandlerConfig struct {
-	Store             store.Store
-	Freshness         FreshnessPolicy
-	OperatorToken     string
-	SigningKeyPath    string
-	SigningKeyPair    spcrypto.KeyPair
-	DisableSigningKey bool
+	Store                           store.Store
+	Freshness                       FreshnessPolicy
+	OperatorToken                   string
+	AllowUnauthenticatedOperatorAPI bool
+	SigningKeyPath                  string
+	SigningKeyPair                  spcrypto.KeyPair
+	DisableSigningKey               bool
 }
 
 // NewHandlerWithConfig returns a server HTTP handler with explicit dependencies.
@@ -87,7 +88,7 @@ func NewHandlerWithConfig(cfg HandlerConfig) (http.Handler, error) {
 	handler := &handler{
 		store:        cfg.Store,
 		freshness:    freshness,
-		operatorAuth: auth.NewOperatorToken(cfg.OperatorToken),
+		operatorAuth: auth.NewOperatorToken(cfg.OperatorToken, cfg.AllowUnauthenticatedOperatorAPI),
 		signingKey:   keyPair,
 		metrics:      NewMetrics(),
 	}
@@ -151,7 +152,9 @@ func (h *handler) createEnrollmentToken(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// TODO(auth): require an authenticated operator before issuing enrollment tokens.
+	if !h.authorizeOperator(w, r) {
+		return
+	}
 	defer r.Body.Close()
 
 	var req protocol.CreateEnrollmentTokenRequest

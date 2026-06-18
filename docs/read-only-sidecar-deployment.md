@@ -37,7 +37,9 @@ Do not expose an unauthenticated Sideplane server on the public internet. If the
 Create a one-time enrollment token from the server host or a trusted operator machine:
 
 ```bash
-bin/sideplane enrollment create --server http://SERVER_HOST:8080
+bin/sideplane enrollment create \
+  --server http://SERVER_HOST:8080 \
+  --operator-token "$SIDEPLANE_OPERATOR_TOKEN"
 ```
 
 On the test node, enroll the sidecar:

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wucm667/sideplane/internal/auth"
 	"github.com/wucm667/sideplane/pkg/protocol"
 )
 
@@ -49,11 +50,17 @@ func runEnrollmentCreate(args []string, stdout io.Writer, stderr io.Writer) int 
 
 	serverURL := flags.String("server", "", "Sideplane server URL")
 	expiresIn := flags.Duration("expires-in", 0, "optional duration before the token expires")
+	operatorTokenFlag := flags.String("operator-token", "", "operator bearer token; can also be set with SIDEPLANE_OPERATOR_TOKEN")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
 
-	resp, err := createEnrollmentToken(context.Background(), *serverURL, *expiresIn)
+	operatorToken := strings.TrimSpace(*operatorTokenFlag)
+	if operatorToken == "" {
+		operatorToken = strings.TrimSpace(os.Getenv(auth.OperatorTokenEnv))
+	}
+
+	resp, err := createEnrollmentToken(context.Background(), *serverURL, *expiresIn, operatorToken)
 	if err != nil {
 		fmt.Fprintf(stderr, "create enrollment token: %v\n", err)
 		return 1
@@ -64,7 +71,7 @@ func runEnrollmentCreate(args []string, stdout io.Writer, stderr io.Writer) int 
 	return 0
 }
 
-func createEnrollmentToken(ctx context.Context, serverURL string, expiresIn time.Duration) (protocol.CreateEnrollmentTokenResponse, error) {
+func createEnrollmentToken(ctx context.Context, serverURL string, expiresIn time.Duration, operatorToken string) (protocol.CreateEnrollmentTokenResponse, error) {
 	endpoint, err := apiEndpoint(serverURL, "/api/enrollment-tokens")
 	if err != nil {
 		return protocol.CreateEnrollmentTokenResponse{}, err
@@ -87,6 +94,9 @@ func createEnrollmentToken(ctx context.Context, serverURL string, expiresIn time
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
+	if token := strings.TrimSpace(operatorToken); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 
 	httpClient := &http.Client{Timeout: 10 * time.Second}
 	httpResp, err := httpClient.Do(req)

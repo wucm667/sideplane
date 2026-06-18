@@ -222,6 +222,7 @@ To run the server and serve the built Web UI from `web/dist/`:
 
 ```bash
 npm --prefix web run build
+export SIDEPLANE_OPERATOR_TOKEN='replace-with-a-long-random-token'
 go run ./cmd/sideplane-server --web-dir ./web/dist
 ```
 
@@ -255,7 +256,7 @@ Available endpoints:
 - `GET /healthz` returns `{"status":"ok"}`
 - `GET /readyz` returns `{"status":"ready"}`
 - `GET /metrics` returns a placeholder Prometheus-compatible endpoint
-- `POST /api/enrollment-tokens` creates a one-time sidecar enrollment token
+- `POST /api/enrollment-tokens` creates a one-time sidecar enrollment token and requires `Authorization: Bearer <operatorToken>`
 - `POST /api/enroll` exchanges an enrollment token for a node credential
 - `POST /api/heartbeat` records the latest heartbeat-derived node status and
   requires `Authorization: Bearer <nodeCredential>`
@@ -263,7 +264,7 @@ Available endpoints:
   `offline` state
 - `GET /api/nodes/{nodeId}/jobs` lists that node's jobs by newest `createdAt`
   first
-- `POST /api/nodes/{nodeId}/jobs` creates a `deep_probe` job for a node
+- `POST /api/nodes/{nodeId}/jobs` creates a `deep_probe` job for a node and requires `Authorization: Bearer <operatorToken>`
 - `GET /api/sidecar/jobs/next?nodeId=...` lets an enrolled sidecar claim its
   next pending job and requires `Authorization: Bearer <nodeCredential>`
 - `POST /api/sidecar/jobs/{jobId}/result` lets the owning sidecar submit a job
@@ -272,13 +273,13 @@ Available endpoints:
 Create a sidecar enrollment token with the CLI:
 
 ```bash
-go run ./cmd/sideplane enrollment create --server http://localhost:8080
+go run ./cmd/sideplane enrollment create --server http://localhost:8080 --operator-token "$SIDEPLANE_OPERATOR_TOKEN"
 ```
 
 The response prints the plaintext token once and its expiry. The server stores
-only a hash of the token. The endpoint is intentionally unauthenticated for the
-first development slice; authentication/RBAC still needs to be added before
-production use.
+only a hash of the token. Mutating operator endpoints reject requests unless
+`SIDEPLANE_OPERATOR_TOKEN` is configured and supplied, or the server is started
+with the explicit development-only `--allow-unauthenticated-operator-api` flag.
 
 Enroll a sidecar with the one-time token:
 

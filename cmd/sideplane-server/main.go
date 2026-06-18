@@ -32,6 +32,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	staleAfter := flags.Duration("stale-after", server.DefaultStaleAfter, "duration after last heartbeat before a node is stale")
 	offlineAfter := flags.Duration("offline-after", server.DefaultOfflineAfter, "duration after last heartbeat before a node is offline")
 	operatorTokenFlag := flags.String("operator-token", "", "bearer token required for mutating operator API requests; can also be set with SIDEPLANE_OPERATOR_TOKEN")
+	allowUnauthenticatedOperatorAPIFlag := flags.Bool("allow-unauthenticated-operator-api", false, "DEVELOPMENT ONLY: allow mutating operator API requests without an operator token; can also be set with SIDEPLANE_ALLOW_UNAUTHENTICATED_OPERATOR_API=true")
 	signingKeyPath := flags.String("signing-key", "", "path to server config-plan signing key; can also be set with SIDEPLANE_SIGNING_KEY")
 	showVersion := flags.Bool("version", false, "print version and exit")
 	if err := flags.Parse(args); err != nil {
@@ -57,8 +58,13 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	if operatorToken == "" {
 		operatorToken = strings.TrimSpace(os.Getenv(auth.OperatorTokenEnv))
 	}
+	allowUnauthenticatedOperatorAPI := *allowUnauthenticatedOperatorAPIFlag || truthyEnv(os.Getenv(auth.AllowUnauthenticatedOperatorAPIEnv))
 	if operatorToken == "" {
-		logger.Warn("operator token not configured; mutating operator endpoints are unauthenticated")
+		if allowUnauthenticatedOperatorAPI {
+			logger.Warn("operator token not configured; explicit development mode allows unauthenticated mutating operator endpoints")
+		} else {
+			logger.Warn("operator token not configured; mutating operator endpoints will reject requests")
+		}
 	}
 	keyPath := strings.TrimSpace(*signingKeyPath)
 	if keyPath == "" {
@@ -73,10 +79,11 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	defer nodeStore.Close()
 
 	handler, err := server.NewHandlerWithConfig(server.HandlerConfig{
-		Store:          nodeStore,
-		Freshness:      freshness,
-		OperatorToken:  operatorToken,
-		SigningKeyPath: keyPath,
+		Store:                           nodeStore,
+		Freshness:                       freshness,
+		OperatorToken:                   operatorToken,
+		AllowUnauthenticatedOperatorAPI: allowUnauthenticatedOperatorAPI,
+		SigningKeyPath:                  keyPath,
 	})
 	if err != nil {
 		logger.Error("configure freshness policy", "error", err)
@@ -110,4 +117,13 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+func truthyEnv(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "t", "true", "y", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
