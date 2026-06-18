@@ -9,6 +9,7 @@ export default function FleetPage() {
   const {
     auditError,
     auditEvents,
+    auditFilters,
     auditLoading,
     bannerText,
     changeView,
@@ -30,6 +31,7 @@ export default function FleetPage() {
     refreshSelectedNodeAfterApply,
     refreshing,
     selectedNode,
+    setAuditFilters,
     setOperatorToken,
     stats,
     theme,
@@ -88,7 +90,9 @@ export default function FleetPage() {
             <ActivityView
               error={auditError}
               events={auditEvents}
+              filters={auditFilters}
               loading={auditLoading}
+              onFiltersChange={setAuditFilters}
               onRefresh={loadAuditEvents}
             />
           )}

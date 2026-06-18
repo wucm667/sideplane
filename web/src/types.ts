@@ -122,6 +122,13 @@ export interface AuditEvent {
   createdAt: string
 }
 
+export type AuditAction = 'enrollment.token.create' | 'node.enroll' | 'node.delete' | 'job.create' | 'job.complete' | 'job.fail' | 'config.apply' | 'config.desired.update'
+
+export interface AuditFilters {
+  nodeId: string
+  action: AuditAction | ''
+}
+
 export interface ListAuditEventsResponse {
   events: AuditEvent[]
 }

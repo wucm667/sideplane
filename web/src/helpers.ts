@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { AuditEvent, DeepProbeResult, EffectiveConfigResponse, Job, JobStatus, ListAuditEventsResponse, NodeState, NodeStatus, RuntimeConfigSnapshot, RuntimeStatus } from './types.ts'
+import type { AuditEvent, AuditFilters, DeepProbeResult, EffectiveConfigResponse, Job, JobStatus, ListAuditEventsResponse, NodeState, NodeStatus, RuntimeConfigSnapshot, RuntimeStatus } from './types.ts'
 
 const NODE_REFRESH_MS = 10_000
 const ACTIVE_JOB_REFRESH_MS = 2_000
@@ -163,6 +163,7 @@ export function useFleetPageController() {
   const [error, setError] = useState<string | null>(null)
   const [operatorToken, setOperatorToken] = useState(loadStoredOperatorToken)
   const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([])
+  const [auditFilters, setAuditFilters] = useState<AuditFilters>({ nodeId: '', action: '' })
   const [auditLoading, setAuditLoading] = useState(true)
   const [auditError, setAuditError] = useState<string | null>(null)
   const [effectiveByNode, setEffectiveByNode] = useState<Record<string, EffectiveConfigResponse>>({})
@@ -320,7 +321,16 @@ export function useFleetPageController() {
 
   const loadAuditEvents = useCallback(async () => {
     try {
-      const res = await fetch('/api/audit')
+      const params = new URLSearchParams()
+      const nodeId = auditFilters.nodeId.trim()
+      if (nodeId) {
+        params.set('nodeId', nodeId)
+      }
+      if (auditFilters.action) {
+        params.set('action', auditFilters.action)
+      }
+      const query = params.toString()
+      const res = await fetch(query ? `/api/audit?${query}` : '/api/audit')
       if (!res.ok) {
         throw new Error(`HTTP ${res.status}: ${res.statusText}`)
       }
@@ -336,7 +346,7 @@ export function useFleetPageController() {
         setAuditLoading(false)
       }
     }
-  }, [])
+  }, [auditFilters])
 
   const loadEffectiveConfig = useCallback(async (nodeId: string, runtimeType = 'hermes', profile = 'default') => {
     try {
@@ -442,6 +452,7 @@ export function useFleetPageController() {
   return {
     auditError,
     auditEvents,
+    auditFilters,
     auditLoading,
     bannerText,
     changeView,
@@ -464,6 +475,7 @@ export function useFleetPageController() {
     refreshing,
     selectedNode,
     setOperatorToken,
+    setAuditFilters,
     stats,
     theme,
     toggleTheme,
