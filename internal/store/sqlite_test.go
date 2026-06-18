@@ -4,8 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -849,6 +851,173 @@ func TestSQLiteDesiredConfigPersistsAcrossReopen(t *testing.T) {
 	}
 	if got.Global.Provider != "openai" || got.NodeOverrides["node-a"].Model != "gpt-5-mini" || got.NodeRuntimeProfileOverrides["node-a/hermes/default"].Model != "claude-sonnet-4" {
 		t.Fatalf("desired config = %#v, want persisted provider/model", got)
+	}
+}
+
+func TestSQLiteConcurrentHeartbeatWrites(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := OpenSQLiteNodeStore(ctx, filepath.Join(t.TempDir(), "sideplane.db"))
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer store.Close()
+
+	const workers = 24
+	now := time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)
+	errCh := make(chan error, workers)
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		i := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			nodeID := fmt.Sprintf("node-%02d", i)
+			_, err := store.RecordHeartbeat(ctx, protocol.HeartbeatRequest{
+				NodeID:         nodeID,
+				Hostname:       fmt.Sprintf("worker-%02d", i),
+				SidecarVersion: "test",
+			}, now.Add(time.Duration(i)*time.Millisecond))
+			errCh <- err
+		}()
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		if err != nil {
+			t.Fatalf("record heartbeat: %v", err)
+		}
+	}
+
+	nodes, err := store.ListNodes(ctx)
+	if err != nil {
+		t.Fatalf("list nodes: %v", err)
+	}
+	if len(nodes) != workers {
+		t.Fatalf("nodes length = %d, want %d", len(nodes), workers)
+	}
+	var heartbeatCount int
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM heartbeats`).Scan(&heartbeatCount); err != nil {
+		t.Fatalf("count heartbeats: %v", err)
+	}
+	if heartbeatCount != workers {
+		t.Fatalf("heartbeat count = %d, want %d", heartbeatCount, workers)
+	}
+}
+
+func TestSQLiteConcurrentClaimNextJobOnlyClaimsOnce(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := OpenSQLiteNodeStore(ctx, filepath.Join(t.TempDir(), "sideplane.db"))
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer store.Close()
+
+	now := time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)
+	if _, err := store.RecordHeartbeat(ctx, protocol.HeartbeatRequest{NodeID: "node-race"}, now); err != nil {
+		t.Fatalf("record heartbeat: %v", err)
+	}
+	job, err := store.CreateJob(ctx, protocol.CreateJobRequest{Type: protocol.JobTypeDeepProbe}, "node-race", now)
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	const workers = 20
+	type claimResult struct {
+		job *protocol.Job
+		err error
+	}
+	resultCh := make(chan claimResult, workers)
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		i := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			claimed, err := store.ClaimNextJob(ctx, "node-race", now.Add(time.Duration(i)*time.Millisecond))
+			resultCh <- claimResult{job: claimed, err: err}
+		}()
+	}
+	wg.Wait()
+	close(resultCh)
+
+	claimedCount := 0
+	for result := range resultCh {
+		if result.err != nil {
+			t.Fatalf("claim job: %v", result.err)
+		}
+		if result.job != nil {
+			claimedCount++
+			if result.job.ID != job.ID {
+				t.Fatalf("claimed job ID = %q, want %q", result.job.ID, job.ID)
+			}
+		}
+	}
+	if claimedCount != 1 {
+		t.Fatalf("claimed count = %d, want 1", claimedCount)
+	}
+	got, err := store.GetJob(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("get job: %v", err)
+	}
+	if got == nil || got.Status != protocol.JobStatusClaimed {
+		t.Fatalf("job after race = %#v, want claimed", got)
+	}
+}
+
+func TestSQLiteConcurrentAuditAppends(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := OpenSQLiteNodeStore(ctx, filepath.Join(t.TempDir(), "sideplane.db"))
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer store.Close()
+
+	const workers = 40
+	now := time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)
+	errCh := make(chan error, workers)
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		i := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := store.AppendAuditEvent(ctx, protocol.AuditEvent{
+				Actor:      "operator",
+				Action:     "job.create",
+				TargetNode: fmt.Sprintf("node-%02d", i%5),
+				Detail:     fmt.Sprintf("event-%02d", i),
+				CreatedAt:  now.Add(time.Duration(i) * time.Second),
+			})
+			errCh <- err
+		}()
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		if err != nil {
+			t.Fatalf("append audit event: %v", err)
+		}
+	}
+
+	events, err := store.ListAuditEvents(ctx, workers)
+	if err != nil {
+		t.Fatalf("list audit events: %v", err)
+	}
+	if len(events) != workers {
+		t.Fatalf("events length = %d, want %d", len(events), workers)
+	}
+	ids := map[string]bool{}
+	for _, event := range events {
+		if ids[event.ID] {
+			t.Fatalf("duplicate audit event ID %q", event.ID)
+		}
+		ids[event.ID] = true
 	}
 }
 
