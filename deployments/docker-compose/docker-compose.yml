@@ -36,11 +36,10 @@ services:
       - -c
       - |
         echo "waiting for sidecar enrollment state at $${SIDEPLANE_SIDECAR_STATE}"
-        echo "run: docker compose exec sidecar sideplane-sidecar enroll --server $${SIDEPLANE_SERVER_URL} --token <TOKEN> --state $${SIDEPLANE_SIDECAR_STATE}"
         while [ ! -s "$${SIDEPLANE_SIDECAR_STATE}" ]; do
           sleep 30
         done
-        exec sideplane-sidecar --server "$${SIDEPLANE_SERVER_URL}" --state "$${SIDEPLANE_SIDECAR_STATE}"
+        exec sideplane-sidecar
 
 volumes:
   sideplane-data:

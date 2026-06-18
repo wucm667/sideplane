@@ -56,6 +56,24 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 0
 	}
 
+	setFlags := visitedFlags(flags)
+	if err := applySidecarEnvFallbacks(setFlags, sidecarFlagValues{
+		serverURL:             serverURL,
+		nodeID:                nodeID,
+		statePath:             statePath,
+		heartbeatInterval:     heartbeatInterval,
+		jobPollInterval:       jobPollInterval,
+		hermesConfigPaths:     hermesConfigPaths,
+		openclawConfigPaths:   openclawConfigPaths,
+		hermesDockerContainer: hermesDockerContainer,
+		hermesServiceUnit:     hermesServiceUnit,
+		serverPublicKey:       serverPublicKey,
+		applyWorkDir:          applyWorkDir,
+	}); err != nil {
+		fmt.Fprintf(stderr, "invalid environment configuration: %v\n", err)
+		return 1
+	}
+
 	runtimeConfig, err := resolveRuntimeConfig(*serverURL, *nodeID, *nodeCredential, *statePath)
 	if err != nil {
 		fmt.Fprintf(stderr, "load sidecar state: %v\n", err)
@@ -149,6 +167,72 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+type sidecarFlagValues struct {
+	serverURL             *string
+	nodeID                *string
+	statePath             *string
+	heartbeatInterval     *time.Duration
+	jobPollInterval       *time.Duration
+	hermesConfigPaths     *string
+	openclawConfigPaths   *string
+	hermesDockerContainer *string
+	hermesServiceUnit     *string
+	serverPublicKey       *string
+	applyWorkDir          *string
+}
+
+func visitedFlags(flags *flag.FlagSet) map[string]bool {
+	visited := map[string]bool{}
+	flags.Visit(func(f *flag.Flag) {
+		visited[f.Name] = true
+	})
+	return visited
+}
+
+func applySidecarEnvFallbacks(setFlags map[string]bool, values sidecarFlagValues) error {
+	applyStringEnvFallback(setFlags, "server", "SIDEPLANE_SERVER_URL", values.serverURL)
+	applyStringEnvFallback(setFlags, "node-id", "SIDEPLANE_NODE_ID", values.nodeID)
+	applyStringEnvFallback(setFlags, "state", "SIDEPLANE_SIDECAR_STATE", values.statePath)
+	applyStringEnvFallback(setFlags, "hermes-config-paths", "SIDEPLANE_HERMES_CONFIG_PATHS", values.hermesConfigPaths)
+	applyStringEnvFallback(setFlags, "openclaw-config-paths", "SIDEPLANE_OPENCLAW_CONFIG_PATHS", values.openclawConfigPaths)
+	applyStringEnvFallback(setFlags, "hermes-docker-container", "SIDEPLANE_HERMES_DOCKER_CONTAINER", values.hermesDockerContainer)
+	applyStringEnvFallback(setFlags, "hermes-service-unit", "SIDEPLANE_HERMES_SERVICE_UNIT", values.hermesServiceUnit)
+	applyStringEnvFallback(setFlags, "server-public-key", "SIDEPLANE_SERVER_PUBLIC_KEY", values.serverPublicKey)
+	applyStringEnvFallback(setFlags, "apply-work-dir", "SIDEPLANE_APPLY_WORK_DIR", values.applyWorkDir)
+	if err := applyDurationEnvFallback(setFlags, "heartbeat-interval", "SIDEPLANE_HEARTBEAT_INTERVAL", values.heartbeatInterval); err != nil {
+		return err
+	}
+	if err := applyDurationEnvFallback(setFlags, "job-poll-interval", "SIDEPLANE_JOB_POLL_INTERVAL", values.jobPollInterval); err != nil {
+		return err
+	}
+	return nil
+}
+
+func applyStringEnvFallback(setFlags map[string]bool, flagName string, envName string, value *string) {
+	if value == nil || setFlags[flagName] || strings.TrimSpace(*value) != "" {
+		return
+	}
+	if envValue := strings.TrimSpace(os.Getenv(envName)); envValue != "" {
+		*value = envValue
+	}
+}
+
+func applyDurationEnvFallback(setFlags map[string]bool, flagName string, envName string, value *time.Duration) error {
+	if value == nil || setFlags[flagName] {
+		return nil
+	}
+	envValue := strings.TrimSpace(os.Getenv(envName))
+	if envValue == "" {
+		return nil
+	}
+	parsed, err := time.ParseDuration(envValue)
+	if err != nil {
+		return fmt.Errorf("%s: %w", envName, err)
+	}
+	*value = parsed
+	return nil
 }
 
 func splitPathList(raw string) []string {
