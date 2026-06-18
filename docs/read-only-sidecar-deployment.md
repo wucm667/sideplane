@@ -2,7 +2,10 @@
 
 This guide is for the first real-machine read-only test stage.
 
-Sideplane at this stage can enroll a sidecar, receive heartbeats, run deep probes, and report redacted config snapshot placeholders. It must not write runtime config files, restart services, upgrade runtimes, or roll back anything yet.
+Sideplane at this stage can enroll a sidecar, receive heartbeats, run deep
+probes, and report redacted read-only config snapshots. It must not write
+runtime config files, restart services, upgrade runtimes, or roll back anything
+yet.
 
 Use a disposable or low-risk node first. Do not start with a production machine that runs critical agent workloads.
 
@@ -83,6 +86,9 @@ SIDEPLANE_NODE_ID=test-node-1
 SIDEPLANE_STATE_PATH=/var/lib/sideplane/sidecar.json
 SIDEPLANE_HEARTBEAT_INTERVAL=30s
 SIDEPLANE_JOB_POLL_INTERVAL=30s
+# Optional path lists for read-only config discovery:
+# SIDEPLANE_HERMES_CONFIG_PATHS=/etc/hermes/config.json
+# SIDEPLANE_OPENCLAW_CONFIG_PATHS=/etc/openclaw/config.json
 ```
 
 Then start the service:
@@ -94,6 +100,18 @@ sudo systemctl status sideplane-sidecar
 ```
 
 If the service user cannot see expected runtime commands or future read-only config paths, stop and record the permission/path issue. Do not loosen permissions broadly on a production node during this stage.
+
+## OpenClaw Scope
+
+OpenClaw read-only support reports the config file path and `sha256:` hash of
+the file bytes when a readable config file is found. Those two fields are the
+authoritative snapshot for OpenClaw until this repository confirms the real
+OpenClaw config format.
+
+Provider/model extraction for OpenClaw is best-effort. The adapter scans generic
+provider/model keys only; if it cannot determine both values, it leaves both
+empty and adds a warning. Do not treat missing OpenClaw provider/model fields as
+drift by themselves, and do not infer a schema from this early adapter.
 
 ## Read-Only Checks
 

@@ -40,6 +40,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	heartbeatInterval := flags.Duration("heartbeat-interval", 30*time.Second, "heartbeat interval")
 	jobPollInterval := flags.Duration("job-poll-interval", 30*time.Second, "job poll interval")
 	hermesConfigPaths := flags.String("hermes-config-paths", "", "path-list of read-only Hermes config files to inspect; can also be set with SIDEPLANE_HERMES_CONFIG_PATHS")
+	openclawConfigPaths := flags.String("openclaw-config-paths", "", "path-list of read-only OpenClaw config files to inspect; can also be set with SIDEPLANE_OPENCLAW_CONFIG_PATHS")
 	hermesDockerContainer := flags.String("hermes-docker-container", "", "optional read-only Docker container name for Hermes status/log inspection; can also be set with SIDEPLANE_HERMES_DOCKER_CONTAINER")
 	hermesServiceUnit := flags.String("hermes-service-unit", "", "optional systemd unit used as the Hermes restart target when no docker container is set; can also be set with SIDEPLANE_HERMES_SERVICE_UNIT")
 	serverPublicKey := flags.String("server-public-key", "", "base64 ed25519 server public key for signed config plans")
@@ -82,7 +83,12 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 	hermesOptions = append(hermesOptions, hermes.WithAllowLiveApply(*allowLiveApply))
 	hermesAdapter := hermes.NewAdapter(hermesOptions...)
-	reg := registry.New(hermesAdapter, openclaw.NewAdapter())
+
+	openclawOptions := []openclaw.Option{}
+	if value := strings.TrimSpace(*openclawConfigPaths); value != "" {
+		openclawOptions = append(openclawOptions, openclaw.WithConfigPaths(splitPathList(value)...))
+	}
+	reg := registry.New(hermesAdapter, openclaw.NewAdapter(openclawOptions...))
 
 	client, err := sidecar.NewHeartbeatClient(sidecar.HeartbeatClientConfig{
 		ServerURL:      runtimeConfig.ServerURL,

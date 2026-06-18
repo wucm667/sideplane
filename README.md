@@ -323,7 +323,31 @@ The runtime `--server` and `--node-id` flags override values loaded from state.
 The node credential is read from state first; `--node-credential` is available
 for tests and temporary runs when no state credential exists.
 
-The sidecar heartbeat now includes lightweight runtime discovery. During each heartbeat, the sidecar checks whether `hermes` and `openclaw` commands are available on the local `PATH`. Detected runtimes are reported in the heartbeat payload; missing runtimes are silently omitted. This is intentionally lightweight—no configuration is read, no dangerous commands are executed, and discovery failures do not break the heartbeat.
+The sidecar heartbeat includes lightweight runtime discovery. During each
+heartbeat, the sidecar checks whether `hermes` and `openclaw` commands are
+available on the local `PATH`. Detected runtimes are reported in the heartbeat
+payload; missing runtimes are silently omitted. Runtime adapters may also read
+known local config files to report provider/model and config hash, but they do
+not write config, restart services, SSH, or execute arbitrary commands.
+
+For explicit read-only config discovery, pass path lists to the sidecar:
+
+```bash
+go run ./cmd/sideplane-sidecar \
+  --hermes-config-paths /etc/hermes/config.json \
+  --openclaw-config-paths /etc/openclaw/config.json
+```
+
+The same values can be supplied with `SIDEPLANE_HERMES_CONFIG_PATHS` and
+`SIDEPLANE_OPENCLAW_CONFIG_PATHS`. Path lists accept the platform path-list
+separator, commas, or newlines.
+
+OpenClaw support is intentionally conservative because this repository does not
+yet record the real OpenClaw config format. For OpenClaw snapshots, the config
+path and `sha256:` hash of the file bytes are authoritative for any file format.
+Provider/model extraction is best-effort from generic config keys only; when the
+adapter cannot determine both values, it leaves them empty and emits a warning
+instead of guessing. Full config contents and secret-like fields are not reported.
 
 For a read-only real-machine sidecar test using systemd, see
 [docs/read-only-sidecar-deployment.md](docs/read-only-sidecar-deployment.md)
@@ -341,8 +365,8 @@ rollback controls yet.
 
 Expected next steps:
 
-1. Extend runtime adapters to read current model and provider configuration.
-2. Implement config diff and safe apply planning.
+1. Confirm the real OpenClaw config format through read-only discovery on a low-risk node.
+2. Add finer per-runtime drift visibility after the node-level signal is stable.
 3. Add rollback and health-check integration after config changes.
 
 ## License
