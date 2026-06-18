@@ -323,8 +323,8 @@ func (s *MemoryNodeStore) CompleteJob(_ context.Context, jobID string, result pr
 	return nil
 }
 
-// FailJob marks a job as failed with an error message.
-func (s *MemoryNodeStore) FailJob(_ context.Context, jobID string, errMsg string, now time.Time) error {
+// FailJob marks a job as failed with an error message and optional result JSON.
+func (s *MemoryNodeStore) FailJob(_ context.Context, jobID string, result protocol.JobResultRequest, now time.Time) error {
 	jobID = strings.TrimSpace(jobID)
 	if jobID == "" {
 		return errors.New("job ID is required")
@@ -342,7 +342,8 @@ func (s *MemoryNodeStore) FailJob(_ context.Context, jobID string, errMsg string
 	}
 
 	job.Status = protocol.JobStatusFailed
-	job.Error = errMsg
+	job.Error = result.Error
+	job.ResultJSON = result.ResultJSON
 	job.FinishedAt = now.UTC()
 	job.ClaimExpiresAt = time.Time{}
 	s.jobs[jobID] = job

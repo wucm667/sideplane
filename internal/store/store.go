@@ -46,7 +46,7 @@ type JobStore interface {
 	GetJob(ctx context.Context, jobID string) (*protocol.Job, error)
 	ClaimNextJob(ctx context.Context, nodeID string, now time.Time) (*protocol.Job, error)
 	CompleteJob(ctx context.Context, jobID string, result protocol.JobResultRequest, now time.Time) error
-	FailJob(ctx context.Context, jobID string, errMsg string, now time.Time) error
+	FailJob(ctx context.Context, jobID string, result protocol.JobResultRequest, now time.Time) error
 	ListNodeJobs(ctx context.Context, nodeID string) ([]protocol.Job, error)
 }
 

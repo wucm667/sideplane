@@ -660,8 +660,8 @@ WHERE id = ? AND status = ?
 	return nil
 }
 
-// FailJob marks a job as failed with an error message.
-func (s *SQLiteNodeStore) FailJob(ctx context.Context, jobID string, errMsg string, now time.Time) error {
+// FailJob marks a job as failed with an error message and optional result JSON.
+func (s *SQLiteNodeStore) FailJob(ctx context.Context, jobID string, result protocol.JobResultRequest, now time.Time) error {
 	if s == nil || s.db == nil {
 		return errors.New("sqlite node store is closed")
 	}
@@ -673,9 +673,9 @@ func (s *SQLiteNodeStore) FailJob(ctx context.Context, jobID string, errMsg stri
 	finishedAt := now.UTC()
 	res, err := s.db.ExecContext(ctx, `
 UPDATE jobs
-SET status = ?, error = ?, finished_at = ?, claim_expires_at = NULL
+SET status = ?, result_json = ?, error = ?, finished_at = ?, claim_expires_at = NULL
 WHERE id = ? AND status = ?
-`, string(protocol.JobStatusFailed), errMsg, formatDBTime(finishedAt), jobID, string(protocol.JobStatusClaimed))
+`, string(protocol.JobStatusFailed), result.ResultJSON, result.Error, formatDBTime(finishedAt), jobID, string(protocol.JobStatusClaimed))
 	if err != nil {
 		return fmt.Errorf("update job to failed: %w", err)
 	}

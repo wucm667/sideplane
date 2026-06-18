@@ -311,6 +311,52 @@ func TestSQLiteJobLifecycle(t *testing.T) {
 	}
 }
 
+func TestSQLiteFailJobPersistsResultJSON(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenSQLiteNodeStore(ctx, filepath.Join(t.TempDir(), "sideplane.db"))
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer store.Close()
+
+	now := time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)
+	if _, err := store.RecordHeartbeat(ctx, protocol.HeartbeatRequest{NodeID: "node-failed"}, now); err != nil {
+		t.Fatalf("record heartbeat: %v", err)
+	}
+	job, err := store.CreateJob(ctx, protocol.CreateJobRequest{Type: protocol.JobTypeConfigApply}, "node-failed", now)
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+	if _, err := store.ClaimNextJob(ctx, "node-failed", now.Add(time.Second)); err != nil {
+		t.Fatalf("claim job: %v", err)
+	}
+	resultJSON := `{"steps":[{"name":"rolled_back","status":"failed"}]}`
+	if err := store.FailJob(ctx, job.ID, protocol.JobResultRequest{
+		Status:     protocol.JobStatusFailed,
+		ResultJSON: resultJSON,
+		Error:      "apply failed",
+	}, now.Add(2*time.Second)); err != nil {
+		t.Fatalf("fail job: %v", err)
+	}
+
+	jobs, err := store.ListNodeJobs(ctx, "node-failed")
+	if err != nil {
+		t.Fatalf("list node jobs: %v", err)
+	}
+	if len(jobs) != 1 {
+		t.Fatalf("jobs length = %d, want 1", len(jobs))
+	}
+	if jobs[0].Status != protocol.JobStatusFailed {
+		t.Fatalf("job status = %q, want failed", jobs[0].Status)
+	}
+	if jobs[0].ResultJSON != resultJSON {
+		t.Fatalf("result JSON = %q, want %q", jobs[0].ResultJSON, resultJSON)
+	}
+	if jobs[0].Error != "apply failed" {
+		t.Fatalf("job error = %q, want apply failed", jobs[0].Error)
+	}
+}
+
 func TestSQLiteNodeStoreTimesOutExpiredClaimedJob(t *testing.T) {
 	ctx := context.Background()
 	store, err := OpenSQLiteNodeStore(ctx, filepath.Join(t.TempDir(), "sideplane.db"))

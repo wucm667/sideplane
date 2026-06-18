@@ -7,10 +7,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/wucm667/sideplane/internal/audit"
 	"github.com/wucm667/sideplane/internal/store"
 	spcrypto "github.com/wucm667/sideplane/pkg/crypto"
 	"github.com/wucm667/sideplane/pkg/protocol"
@@ -265,6 +267,45 @@ func TestCreateEnrollmentTokenRequiresConfiguredOperatorToken(t *testing.T) {
 
 			assertStatus(t, rec, tt.wantStatus)
 		})
+	}
+}
+
+func TestDesiredConfigPutWritesAuditEvent(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	handler, err := NewHandlerWithStoreAndFreshnessPolicyAndOperatorToken(nodeStore, DefaultFreshnessPolicy(), "dev-token")
+	if err != nil {
+		t.Fatalf("build handler: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/config/desired", strings.NewReader(`{"global":{"provider":"openai","model":"gpt-5"}}`))
+	req.Header.Set("Authorization", "Bearer dev-token")
+	handler.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusOK)
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/audit", nil)
+	handler.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusOK)
+
+	var resp protocol.ListAuditEventsResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode audit response: %v", err)
+	}
+	if len(resp.Events) != 1 {
+		t.Fatalf("audit event count = %d, want 1: %#v", len(resp.Events), resp.Events)
+	}
+	event := resp.Events[0]
+	if event.Actor != audit.ActorOperator || event.Action != audit.ActionDesiredConfigUpdate {
+		t.Fatalf("audit event = %#v, want operator desired update", event)
+	}
+	if !strings.HasPrefix(event.Detail, "desiredHash=sha256:") {
+		t.Fatalf("audit detail = %q, want desired hash", event.Detail)
+	}
+	for _, forbidden := range []string{"openai", "gpt-5"} {
+		if strings.Contains(event.Detail, forbidden) {
+			t.Fatalf("audit detail leaked desired value %q: %s", forbidden, event.Detail)
+		}
 	}
 }
 
@@ -803,6 +844,52 @@ func TestSidecarJobResultRejectsWrongCredential(t *testing.T) {
 	assertStatus(t, rec, http.StatusUnauthorized)
 }
 
+func TestSidecarFailedConfigApplyResultPersistsResultJSON(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	credential := enrollTestNode(t, nodeStore, "node-result")
+	job, err := nodeStore.CreateJob(context.Background(), protocol.CreateJobRequest{Type: protocol.JobTypeConfigApply}, "node-result", time.Now().UTC())
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+	if _, err := nodeStore.ClaimNextJob(context.Background(), "node-result", time.Now().UTC()); err != nil {
+		t.Fatalf("claim job: %v", err)
+	}
+
+	handler, err := NewHandlerWithStoreAndFreshnessPolicyAndOperatorToken(nodeStore, DefaultFreshnessPolicy(), "dev-token")
+	if err != nil {
+		t.Fatalf("build handler: %v", err)
+	}
+	resultJSON := `{"steps":[{"name":"rolled_back","status":"completed"}]}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/sidecar/jobs/"+job.ID+"/result", strings.NewReader(`{"status":"failed","error":"apply failed","resultJson":`+strconv.Quote(resultJSON)+`}`))
+	req.Header.Set("Authorization", "Bearer "+credential)
+	handler.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusOK)
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/nodes/node-result/jobs", nil)
+	req.Header.Set("Authorization", "Bearer dev-token")
+	handler.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusOK)
+
+	var jobs []protocol.Job
+	if err := json.NewDecoder(rec.Body).Decode(&jobs); err != nil {
+		t.Fatalf("decode jobs: %v", err)
+	}
+	if len(jobs) != 1 {
+		t.Fatalf("jobs length = %d, want 1", len(jobs))
+	}
+	if jobs[0].Status != protocol.JobStatusFailed {
+		t.Fatalf("job status = %q, want failed", jobs[0].Status)
+	}
+	if jobs[0].ResultJSON != resultJSON {
+		t.Fatalf("result JSON = %q, want %q", jobs[0].ResultJSON, resultJSON)
+	}
+	if !configApplyRolledBack(jobs[0].ResultJSON) {
+		t.Fatalf("result JSON did not expose rollback completion: %s", jobs[0].ResultJSON)
+	}
+}
+
 func TestHealthz(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
@@ -1327,7 +1414,7 @@ func (s staticNodeStore) CompleteJob(context.Context, string, protocol.JobResult
 	return nil
 }
 
-func (s staticNodeStore) FailJob(context.Context, string, string, time.Time) error {
+func (s staticNodeStore) FailJob(context.Context, string, protocol.JobResultRequest, time.Time) error {
 	return nil
 }
 

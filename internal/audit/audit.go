@@ -21,4 +21,6 @@ const (
 	ActionJobFail = "job.fail"
 	// ActionConfigApply records operator creation of a signed config apply plan.
 	ActionConfigApply = "config.apply"
+	// ActionDesiredConfigUpdate records operator updates to desired config.
+	ActionDesiredConfigUpdate = "config.desired.update"
 )

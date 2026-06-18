@@ -670,7 +670,7 @@ func (h *handler) submitJobResult(w http.ResponseWriter, r *http.Request) {
 	if req.Status == protocol.JobStatusCompleted {
 		err = h.store.CompleteJob(r.Context(), jobID, req, now)
 	} else if req.Status == protocol.JobStatusFailed {
-		err = h.store.FailJob(r.Context(), jobID, req.Error, now)
+		err = h.store.FailJob(r.Context(), jobID, req, now)
 	} else {
 		http.Error(w, "status must be completed or failed", http.StatusBadRequest)
 		return
@@ -771,10 +771,17 @@ func (h *handler) desiredConfig(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "invalid desired config JSON", http.StatusBadRequest)
 			return
 		}
-		if err := h.store.SetDesiredConfig(r.Context(), desired, time.Now().UTC()); err != nil {
+		now := time.Now().UTC()
+		if err := h.store.SetDesiredConfig(r.Context(), desired, now); err != nil {
 			http.Error(w, "set desired config", http.StatusInternalServerError)
 			return
 		}
+		h.audit(r.Context(), protocol.AuditEvent{
+			Actor:     audit.ActorOperator,
+			Action:    audit.ActionDesiredConfigUpdate,
+			Detail:    "desiredHash=" + hashDesiredConfig(desired),
+			CreatedAt: now,
+		})
 		writeJSON(w, http.StatusOK, desired)
 	default:
 		w.Header().Set("Allow", http.MethodGet+", "+http.MethodPut)
@@ -851,6 +858,12 @@ func (h *handler) latestActualSnapshot(ctx context.Context, nodeID string, runti
 
 func hashDesired(effective protocol.ProviderModelConfig) string {
 	payload, _ := json.Marshal(effective)
+	sum := sha256.Sum256(payload)
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+func hashDesiredConfig(desired protocol.DesiredConfig) string {
+	payload, _ := json.Marshal(desired)
 	sum := sha256.Sum256(payload)
 	return "sha256:" + hex.EncodeToString(sum[:])
 }

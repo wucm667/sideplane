@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { ConfigApplyResult, DesiredConfig, EffectiveConfigResponse, Job } from './types.ts'
+import type { ConfigApplyResult, ConfigApplyStep, DesiredConfig, EffectiveConfigResponse, Job } from './types.ts'
 
 const WIZARD_STEPS = ['Edit', 'Review', 'Apply', 'Done'] as const
 type WizardStep = (typeof WIZARD_STEPS)[number]
@@ -165,6 +165,8 @@ export default function ConfigWizard({
   }, [authedFetch, dryRun, nodeId, pollApply, profile, runtimeType])
 
   const terminal = applyStatus === 'completed' || applyStatus === 'failed'
+  const rollback = rollbackStep(applyResult)
+  const terminalCopy = terminal ? applyTerminalMessage(applyStatus, applyResult) : ''
 
   return (
     <div className="fixed inset-0 z-50 flex justify-end bg-black/40" role="dialog" aria-modal="true">
@@ -251,15 +253,11 @@ export default function ConfigWizard({
                 {PIPELINE_STEPS.map((entry) => (
                   <PipelineRow key={entry.name} label={entry.label} status={stepStatus(applyResult, entry.name)} />
                 ))}
-                {rolledBack(applyResult) && <PipelineRow label="Rolled back to backup" status="completed" />}
+                {rollback && <PipelineRow label="Rollback" status={rollback.status} />}
               </div>
               {terminal && (
                 <div className={`rounded-lg border px-3 py-2 text-sm ${applyStatus === 'completed' ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700' : 'border-rose-500/30 bg-rose-500/10 text-rose-600'}`}>
-                  {applyStatus === 'completed'
-                    ? applyResult?.dryRun
-                      ? 'Dry run completed. No live change was made.'
-                      : 'Live apply completed.'
-                    : 'Apply failed. The runtime was left on its previous config.'}
+                  {terminalCopy}
                 </div>
               )}
             </div>
@@ -296,8 +294,34 @@ function stepStatus(result: ConfigApplyResult | null, name: string): string {
   return step?.status ?? 'pending'
 }
 
-function rolledBack(result: ConfigApplyResult | null): boolean {
-  return Boolean(result?.steps.some((entry) => entry.name === 'rolled_back'))
+function rollbackStep(result: ConfigApplyResult | null): ConfigApplyStep | undefined {
+  return result?.steps.find((entry) => entry.name === 'rolled_back')
+}
+
+function rollbackOutcome(result: ConfigApplyResult | null): 'completed' | 'failed' | 'not_recorded' | 'unknown' {
+  if (!result) return 'unknown'
+  const step = rollbackStep(result)
+  if (!step) return 'not_recorded'
+  if (step.status === 'completed') return 'completed'
+  if (step.status === 'failed') return 'failed'
+  return 'unknown'
+}
+
+function applyTerminalMessage(status: Job['status'] | null, result: ConfigApplyResult | null): string {
+  if (status === 'completed') {
+    return result?.dryRun ? 'Dry run completed. No live change was made.' : 'Live apply completed.'
+  }
+  if (status !== 'failed') return ''
+  switch (rollbackOutcome(result)) {
+    case 'completed':
+      return 'Apply failed. Rollback completed and the previous config was restored.'
+    case 'failed':
+      return 'Apply failed. Rollback failed; inspect the job result before retrying.'
+    case 'not_recorded':
+      return 'Apply failed before rollback was recorded.'
+    case 'unknown':
+      return 'Apply failed. Rollback status is unknown because no result was returned.'
+  }
 }
 
 function StepIndicator({ current }: { current: WizardStep }) {

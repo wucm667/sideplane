@@ -109,6 +109,48 @@ func TestMemoryNodeStoreTimesOutExpiredClaimedJob(t *testing.T) {
 	}
 }
 
+func TestMemoryNodeStoreFailJobPersistsResultJSON(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryNodeStore()
+	now := time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)
+
+	if _, err := store.RecordHeartbeat(ctx, protocol.HeartbeatRequest{NodeID: "node-failed"}, now); err != nil {
+		t.Fatalf("record heartbeat: %v", err)
+	}
+	job, err := store.CreateJob(ctx, protocol.CreateJobRequest{Type: protocol.JobTypeConfigApply}, "node-failed", now)
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+	if _, err := store.ClaimNextJob(ctx, "node-failed", now.Add(time.Second)); err != nil {
+		t.Fatalf("claim job: %v", err)
+	}
+	resultJSON := `{"steps":[{"name":"rolled_back","status":"completed"}]}`
+	if err := store.FailJob(ctx, job.ID, protocol.JobResultRequest{
+		Status:     protocol.JobStatusFailed,
+		ResultJSON: resultJSON,
+		Error:      "apply failed",
+	}, now.Add(2*time.Second)); err != nil {
+		t.Fatalf("fail job: %v", err)
+	}
+
+	got, err := store.GetJob(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("get job: %v", err)
+	}
+	if got == nil {
+		t.Fatalf("failed job not found")
+	}
+	if got.Status != protocol.JobStatusFailed {
+		t.Fatalf("job status = %q, want failed", got.Status)
+	}
+	if got.ResultJSON != resultJSON {
+		t.Fatalf("result JSON = %q, want %q", got.ResultJSON, resultJSON)
+	}
+	if got.Error != "apply failed" {
+		t.Fatalf("job error = %q, want apply failed", got.Error)
+	}
+}
+
 func TestMemoryAuditEventsInsertAndListNewestFirst(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemoryNodeStore()
