@@ -13,6 +13,8 @@ const (
 	ActionEnrollmentTokenCreate = "enrollment.token.create"
 	// ActionNodeEnroll records successful node enrollment.
 	ActionNodeEnroll = "node.enroll"
+	// ActionNodeDelete records operator removal of a node from inventory.
+	ActionNodeDelete = "node.delete"
 	// ActionJobCreate records operator job creation.
 	ActionJobCreate = "job.create"
 	// ActionJobComplete records sidecar job completion.

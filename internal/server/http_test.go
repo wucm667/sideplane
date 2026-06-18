@@ -570,6 +570,63 @@ func TestCreateJobAPIAllowsLocalDevWhenOperatorTokenNotConfigured(t *testing.T) 
 	assertStatus(t, rec, http.StatusCreated)
 }
 
+func TestDeleteNodeAPIRequiresOperatorAndRemovesNode(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	enrollTestNode(t, nodeStore, "node-delete")
+	if _, err := nodeStore.CreateJob(context.Background(), protocol.CreateJobRequest{Type: protocol.JobTypeDeepProbe}, "node-delete", time.Now().UTC()); err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+	handler, err := NewHandlerWithStoreAndFreshnessPolicyAndOperatorToken(nodeStore, DefaultFreshnessPolicy(), "dev-token")
+	if err != nil {
+		t.Fatalf("build handler: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/nodes/node-delete", nil)
+	handler.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusUnauthorized)
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodDelete, "/api/nodes/node-delete", nil)
+	req.Header.Set("Authorization", "Bearer dev-token")
+	handler.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusNoContent)
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/nodes", nil)
+	handler.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusOK)
+	var nodes []nodeStatusResponse
+	if err := json.NewDecoder(rec.Body).Decode(&nodes); err != nil {
+		t.Fatalf("decode nodes: %v", err)
+	}
+	if len(nodes) != 0 {
+		t.Fatalf("nodes length = %d, want 0: %#v", len(nodes), nodes)
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/audit", nil)
+	handler.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusOK)
+	var auditResp protocol.ListAuditEventsResponse
+	if err := json.NewDecoder(rec.Body).Decode(&auditResp); err != nil {
+		t.Fatalf("decode audit response: %v", err)
+	}
+	if len(auditResp.Events) != 1 {
+		t.Fatalf("audit event count = %d, want 1: %#v", len(auditResp.Events), auditResp.Events)
+	}
+	event := auditResp.Events[0]
+	if event.Action != audit.ActionNodeDelete || event.TargetNode != "node-delete" {
+		t.Fatalf("audit event = %#v, want node.delete for node-delete", event)
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodDelete, "/api/nodes/node-delete", nil)
+	req.Header.Set("Authorization", "Bearer dev-token")
+	handler.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusNotFound)
+}
+
 func TestCreateJobAPIRejectsWhenOperatorTokenNotConfigured(t *testing.T) {
 	nodeStore := store.NewMemoryNodeStore()
 	enrollTestNode(t, nodeStore, "node-jobs")
@@ -1910,6 +1967,10 @@ func (s staticNodeStore) ListNodes(context.Context) ([]protocol.NodeStatus, erro
 
 func (s staticNodeStore) NodeExists(context.Context, string) (bool, error) {
 	return false, nil
+}
+
+func (s staticNodeStore) DeleteNode(context.Context, string) error {
+	return nil
 }
 
 func (s staticNodeStore) CreateEnrollmentToken(context.Context, time.Time, time.Time) (protocol.CreateEnrollmentTokenResponse, error) {

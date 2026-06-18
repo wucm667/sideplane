@@ -52,6 +52,79 @@ func TestMemoryNodeStoreRecordsAndListsNodes(t *testing.T) {
 	}
 }
 
+func TestMemoryNodeStoreDeleteNodeRemovesAssociatedData(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryNodeStore()
+	now := time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)
+
+	tokenResp, err := store.CreateEnrollmentToken(ctx, now.Add(time.Hour), now)
+	if err != nil {
+		t.Fatalf("create enrollment token: %v", err)
+	}
+	enrollResp, err := store.EnrollNode(ctx, protocol.EnrollNodeRequest{Token: tokenResp.Token, NodeID: "node-delete"}, now.Add(time.Second))
+	if err != nil {
+		t.Fatalf("enroll node-delete: %v", err)
+	}
+	if _, err := store.RecordHeartbeat(ctx, protocol.HeartbeatRequest{
+		NodeID:   "node-delete",
+		Runtimes: []protocol.RuntimeStatus{{Name: "default", Type: "hermes"}},
+	}, now.Add(2*time.Second)); err != nil {
+		t.Fatalf("record heartbeat: %v", err)
+	}
+	if _, err := store.RecordHeartbeat(ctx, protocol.HeartbeatRequest{NodeID: "node-keep"}, now); err != nil {
+		t.Fatalf("record keep heartbeat: %v", err)
+	}
+	if _, err := store.CreateJob(ctx, protocol.CreateJobRequest{Type: protocol.JobTypeDeepProbe}, "node-delete", now); err != nil {
+		t.Fatalf("create delete job: %v", err)
+	}
+	if _, err := store.CreateJob(ctx, protocol.CreateJobRequest{Type: protocol.JobTypeDeepProbe}, "node-keep", now); err != nil {
+		t.Fatalf("create keep job: %v", err)
+	}
+	if _, err := store.AppendAuditEvent(ctx, protocol.AuditEvent{Actor: "operator", Action: "job.create", TargetNode: "node-delete", CreatedAt: now}); err != nil {
+		t.Fatalf("append delete audit: %v", err)
+	}
+	if _, err := store.AppendAuditEvent(ctx, protocol.AuditEvent{Actor: "operator", Action: "job.create", TargetNode: "node-keep", CreatedAt: now}); err != nil {
+		t.Fatalf("append keep audit: %v", err)
+	}
+
+	if err := store.DeleteNode(ctx, "node-delete"); err != nil {
+		t.Fatalf("delete node: %v", err)
+	}
+	exists, err := store.NodeExists(ctx, "node-delete")
+	if err != nil {
+		t.Fatalf("node exists: %v", err)
+	}
+	if exists {
+		t.Fatalf("node-delete still exists")
+	}
+	ok, err := store.VerifyNodeCredential(ctx, "node-delete", enrollResp.NodeCredential)
+	if err != nil {
+		t.Fatalf("verify deleted credential: %v", err)
+	}
+	if ok {
+		t.Fatalf("deleted node credential still verifies")
+	}
+	jobs, err := store.ListNodeJobs(ctx, "node-delete")
+	if err != nil {
+		t.Fatalf("list deleted jobs: %v", err)
+	}
+	if len(jobs) != 0 {
+		t.Fatalf("deleted jobs length = %d, want 0", len(jobs))
+	}
+	events, err := store.ListAuditEvents(ctx, 100)
+	if err != nil {
+		t.Fatalf("list audit events: %v", err)
+	}
+	for _, event := range events {
+		if event.TargetNode == "node-delete" {
+			t.Fatalf("audit event for deleted node remains: %#v", event)
+		}
+	}
+	if err := store.DeleteNode(ctx, "node-delete"); err != ErrNodeNotFound {
+		t.Fatalf("delete missing node error = %v, want ErrNodeNotFound", err)
+	}
+}
+
 func TestMemoryNodeStoreTimesOutExpiredClaimedJob(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemoryNodeStore()

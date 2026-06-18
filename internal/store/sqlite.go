@@ -270,6 +270,45 @@ func (s *SQLiteNodeStore) NodeExists(ctx context.Context, nodeID string) (bool, 
 	return true, nil
 }
 
+// DeleteNode removes a node and all node-scoped associated data.
+func (s *SQLiteNodeStore) DeleteNode(ctx context.Context, nodeID string) error {
+	if s == nil || s.db == nil {
+		return errors.New("sqlite node store is closed")
+	}
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" {
+		return errors.New("node ID is required")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin delete node transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM node_credentials WHERE node_id = ?`, nodeID); err != nil {
+		return fmt.Errorf("delete node credentials: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM audit_events WHERE target_node = ?`, nodeID); err != nil {
+		return fmt.Errorf("delete node audit events: %w", err)
+	}
+	result, err := tx.ExecContext(ctx, `DELETE FROM nodes WHERE node_id = ?`, nodeID)
+	if err != nil {
+		return fmt.Errorf("delete node: %w", err)
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("count deleted nodes: %w", err)
+	}
+	if rowsAffected == 0 {
+		return ErrNodeNotFound
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit delete node transaction: %w", err)
+	}
+	return nil
+}
+
 // CreateEnrollmentToken creates a one-time enrollment token and stores only its hash.
 func (s *SQLiteNodeStore) CreateEnrollmentToken(ctx context.Context, expiresAt time.Time, now time.Time) (protocol.CreateEnrollmentTokenResponse, error) {
 	if s == nil || s.db == nil {

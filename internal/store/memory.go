@@ -92,6 +92,35 @@ func (s *MemoryNodeStore) NodeExists(_ context.Context, nodeID string) (bool, er
 	return ok, nil
 }
 
+// DeleteNode removes a node and all node-scoped associated data.
+func (s *MemoryNodeStore) DeleteNode(_ context.Context, nodeID string) error {
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" {
+		return errors.New("node ID is required")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.nodes[nodeID]; !ok {
+		return ErrNodeNotFound
+	}
+	delete(s.nodes, nodeID)
+	delete(s.nodeCredentials, nodeID)
+	for jobID, job := range s.jobs {
+		if job.NodeID == nodeID {
+			delete(s.jobs, jobID)
+		}
+	}
+	events := s.auditEvents[:0]
+	for _, event := range s.auditEvents {
+		if event.TargetNode != nodeID {
+			events = append(events, event)
+		}
+	}
+	s.auditEvents = events
+	return nil
+}
+
 // CreateEnrollmentToken creates a one-time enrollment token and stores only its hash.
 func (s *MemoryNodeStore) CreateEnrollmentToken(_ context.Context, expiresAt time.Time, now time.Time) (protocol.CreateEnrollmentTokenResponse, error) {
 	if expiresAt.IsZero() {

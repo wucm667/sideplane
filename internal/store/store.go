@@ -24,6 +24,8 @@ var (
 	ErrEnrollmentTokenUsed = errors.New("enrollment token has already been used")
 	// ErrNodeAlreadyEnrolled means the node already has a long-lived credential.
 	ErrNodeAlreadyEnrolled = errors.New("node is already enrolled")
+	// ErrNodeNotFound means the requested node does not exist.
+	ErrNodeNotFound = errors.New("node not found")
 	// ErrActiveJobExists means the node already has an active job of that type.
 	ErrActiveJobExists = errors.New("active job already exists")
 	// ErrLateJobResultRecorded means a sidecar submitted a result after the
@@ -61,6 +63,7 @@ type NodeStore interface {
 	RecordHeartbeat(ctx context.Context, req protocol.HeartbeatRequest, observedAt time.Time) (protocol.NodeStatus, error)
 	ListNodes(ctx context.Context) ([]protocol.NodeStatus, error)
 	NodeExists(ctx context.Context, nodeID string) (bool, error)
+	DeleteNode(ctx context.Context, nodeID string) error
 }
 
 // EnrollmentStore persists one-time enrollment tokens and node credentials.

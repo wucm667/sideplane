@@ -432,17 +432,27 @@ func hasKnownProviderModel(value protocol.ProviderModelConfig) bool {
 	return strings.TrimSpace(value.Provider) != "" && strings.TrimSpace(value.Model) != ""
 }
 
-// nodeJobsRouter handles GET and POST /api/nodes/{nodeId}/jobs
+// nodeJobsRouter handles node-scoped API routes under /api/nodes/{nodeId}.
 func (h *handler) nodeJobsRouter(w http.ResponseWriter, r *http.Request) {
 	// Parse path: /api/nodes/{nodeId}/{jobs|config-apply}
 	path := strings.TrimPrefix(r.URL.Path, "/api/nodes/")
 	parts := strings.Split(path, "/")
-	if len(parts) != 2 {
+	nodeID := strings.TrimSpace(parts[0])
+	if nodeID == "" {
 		http.NotFound(w, r)
 		return
 	}
-	nodeID := strings.TrimSpace(parts[0])
-	if nodeID == "" {
+
+	if len(parts) == 1 {
+		if r.Method != http.MethodDelete {
+			w.Header().Set("Allow", http.MethodDelete)
+			http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
+			return
+		}
+		h.deleteNode(w, r, nodeID)
+		return
+	}
+	if len(parts) != 2 {
 		http.NotFound(w, r)
 		return
 	}
@@ -468,6 +478,30 @@ func (h *handler) nodeJobsRouter(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+func (h *handler) deleteNode(w http.ResponseWriter, r *http.Request, nodeID string) {
+	if !h.authorizeOperator(w, r) {
+		return
+	}
+
+	if err := h.store.DeleteNode(r.Context(), nodeID); err != nil {
+		if errors.Is(err, store.ErrNodeNotFound) {
+			http.Error(w, "node not found", http.StatusNotFound)
+			return
+		}
+		http.Error(w, "delete node", http.StatusInternalServerError)
+		return
+	}
+
+	h.audit(r.Context(), protocol.AuditEvent{
+		Actor:      audit.ActorOperator,
+		Action:     audit.ActionNodeDelete,
+		TargetNode: nodeID,
+		Detail:     "node removed from inventory",
+		CreatedAt:  time.Now().UTC(),
+	})
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *handler) listNodeJobs(w http.ResponseWriter, r *http.Request, nodeID string) {

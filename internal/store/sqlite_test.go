@@ -248,6 +248,81 @@ func TestSQLiteNodeStoreUpdatesLatestNodeSnapshot(t *testing.T) {
 	}
 }
 
+func TestSQLiteDeleteNodeRemovesAssociatedData(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenSQLiteNodeStore(ctx, filepath.Join(t.TempDir(), "sideplane.db"))
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer store.Close()
+
+	now := time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)
+	tokenResp, err := store.CreateEnrollmentToken(ctx, now.Add(time.Hour), now)
+	if err != nil {
+		t.Fatalf("create enrollment token: %v", err)
+	}
+	enrollResp, err := store.EnrollNode(ctx, protocol.EnrollNodeRequest{Token: tokenResp.Token, NodeID: "node-delete"}, now.Add(time.Second))
+	if err != nil {
+		t.Fatalf("enroll node-delete: %v", err)
+	}
+	if _, err := store.RecordHeartbeat(ctx, protocol.HeartbeatRequest{
+		NodeID:   "node-delete",
+		Runtimes: []protocol.RuntimeStatus{{Name: "default", Type: "hermes"}},
+	}, now.Add(2*time.Second)); err != nil {
+		t.Fatalf("record heartbeat: %v", err)
+	}
+	if _, err := store.RecordHeartbeat(ctx, protocol.HeartbeatRequest{NodeID: "node-keep"}, now); err != nil {
+		t.Fatalf("record keep heartbeat: %v", err)
+	}
+	if _, err := store.CreateJob(ctx, protocol.CreateJobRequest{Type: protocol.JobTypeDeepProbe}, "node-delete", now); err != nil {
+		t.Fatalf("create delete job: %v", err)
+	}
+	if _, err := store.AppendAuditEvent(ctx, protocol.AuditEvent{Actor: "operator", Action: "job.create", TargetNode: "node-delete", CreatedAt: now}); err != nil {
+		t.Fatalf("append delete audit: %v", err)
+	}
+	if _, err := store.AppendAuditEvent(ctx, protocol.AuditEvent{Actor: "operator", Action: "job.create", TargetNode: "node-keep", CreatedAt: now}); err != nil {
+		t.Fatalf("append keep audit: %v", err)
+	}
+
+	if err := store.DeleteNode(ctx, "node-delete"); err != nil {
+		t.Fatalf("delete node: %v", err)
+	}
+	exists, err := store.NodeExists(ctx, "node-delete")
+	if err != nil {
+		t.Fatalf("node exists: %v", err)
+	}
+	if exists {
+		t.Fatalf("node-delete still exists")
+	}
+	ok, err := store.VerifyNodeCredential(ctx, "node-delete", enrollResp.NodeCredential)
+	if err != nil {
+		t.Fatalf("verify deleted credential: %v", err)
+	}
+	if ok {
+		t.Fatalf("deleted node credential still verifies")
+	}
+	for _, tt := range []struct {
+		table  string
+		column string
+	}{
+		{table: "node_credentials", column: "node_id"},
+		{table: "node_runtimes", column: "node_id"},
+		{table: "heartbeats", column: "node_id"},
+		{table: "jobs", column: "node_id"},
+		{table: "audit_events", column: "target_node"},
+	} {
+		if got := countSQLiteRowsForValue(t, ctx, store.db, tt.table, tt.column, "node-delete"); got != 0 {
+			t.Fatalf("%s rows for deleted node = %d, want 0", tt.table, got)
+		}
+	}
+	if got := countSQLiteRowsForValue(t, ctx, store.db, "nodes", "node_id", "node-keep"); got != 1 {
+		t.Fatalf("node-keep rows = %d, want 1", got)
+	}
+	if err := store.DeleteNode(ctx, "node-delete"); !errors.Is(err, ErrNodeNotFound) {
+		t.Fatalf("delete missing node error = %v, want ErrNodeNotFound", err)
+	}
+}
+
 func TestSQLiteJobLifecycle(t *testing.T) {
 	ctx := context.Background()
 	store, err := OpenSQLiteNodeStore(ctx, filepath.Join(t.TempDir(), "sideplane.db"))
@@ -718,4 +793,14 @@ func assertSQLiteDoesNotContainPlaintext(t *testing.T, ctx context.Context, db *
 	if err := rows.Err(); err != nil {
 		t.Fatalf("iterate %s: %v", table, err)
 	}
+}
+
+func countSQLiteRowsForValue(t *testing.T, ctx context.Context, db *sql.DB, table string, column string, value string) int {
+	t.Helper()
+	var count int
+	err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+table+` WHERE `+column+` = ?`, value).Scan(&count)
+	if err != nil {
+		t.Fatalf("count %s.%s: %v", table, column, err)
+	}
+	return count
 }
