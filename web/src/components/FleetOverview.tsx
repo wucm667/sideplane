@@ -37,7 +37,9 @@ export function FleetOverview({
   onRefresh,
 }: FleetOverviewProps) {
   const [sort, setSort] = useState<{ key: SortKey; direction: SortDirection }>({ key: 'state', direction: 'asc' })
-  const sortedNodes = useMemo(() => sortNodes(nodes, sort.key, sort.direction), [nodes, sort])
+  const [searchQuery, setSearchQuery] = useState('')
+  const filteredNodes = useMemo(() => filterNodes(nodes, searchQuery), [nodes, searchQuery])
+  const sortedNodes = useMemo(() => sortNodes(filteredNodes, sort.key, sort.direction), [filteredNodes, sort])
 
   const toggleSort = (key: SortKey) => {
     setSort((current) => ({
@@ -83,6 +85,15 @@ export function FleetOverview({
         </div>
       )}
 
+      <div className="mb-3">
+        <input
+          className="h-9 w-full rounded-lg border border-[var(--sp-border)] bg-[var(--sp-surface)] px-3 font-mono text-xs text-[var(--sp-text)] outline-none focus:border-[var(--sp-accent)] sm:max-w-sm"
+          value={searchQuery}
+          placeholder="Filter nodes..."
+          onChange={(event) => setSearchQuery(event.target.value)}
+        />
+      </div>
+
       <div className="overflow-hidden rounded-xl border border-[var(--sp-border)] bg-[var(--sp-surface)] shadow-sm">
         <div className="hidden grid-cols-[2fr_1fr_1.4fr_1fr_1fr_2.5rem] gap-4 border-b border-[var(--sp-border)] px-5 py-3 text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--sp-faint)] lg:grid">
           <SortHeader active={sort.key === 'node'} direction={sort.direction} label="Node" onClick={() => toggleSort('node')} />
@@ -95,6 +106,7 @@ export function FleetOverview({
 
         {loading && <TableMessage message="Loading nodes…" />}
         {!loading && nodes.length === 0 && <TableMessage message="No nodes registered yet." />}
+        {!loading && nodes.length > 0 && sortedNodes.length === 0 && <TableMessage message="No nodes match the current filter." />}
         {!loading && sortedNodes.map((node) => (
           <FleetRow
             key={node.nodeId}
@@ -106,6 +118,31 @@ export function FleetOverview({
       </div>
     </div>
   )
+}
+
+function filterNodes(nodes: NodeStatus[], query: string): NodeStatus[] {
+  const normalized = query.trim().toLowerCase()
+  if (!normalized) return nodes
+  return nodes.filter((node) => nodeSearchText(node).includes(normalized))
+}
+
+function nodeSearchText(node: NodeStatus): string {
+  const runtimeText = (node.runtimes ?? [])
+    .flatMap((runtime) => [
+      runtime.name,
+      runtime.type,
+      runtime.state,
+      runtime.provider,
+      runtime.model,
+    ])
+    .filter(Boolean)
+    .join(' ')
+  return [
+    node.nodeId,
+    node.hostname,
+    node.state,
+    runtimeText,
+  ].filter(Boolean).join(' ').toLowerCase()
 }
 
 function sortNodes(nodes: NodeStatus[], key: SortKey, direction: SortDirection): NodeStatus[] {
