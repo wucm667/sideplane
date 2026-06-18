@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -948,7 +949,21 @@ func (h *handler) auditEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	events, err := h.store.ListAuditEvents(r.Context(), 100)
+	limit := 100
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil {
+			http.Error(w, "invalid limit query parameter", http.StatusBadRequest)
+			return
+		}
+		limit = parsed
+	}
+
+	events, err := h.store.ListAuditEventsFiltered(r.Context(), store.AuditFilter{
+		NodeID: strings.TrimSpace(r.URL.Query().Get("nodeId")),
+		Action: strings.TrimSpace(r.URL.Query().Get("action")),
+		Limit:  limit,
+	})
 	if err != nil {
 		http.Error(w, "list audit events", http.StatusInternalServerError)
 		return

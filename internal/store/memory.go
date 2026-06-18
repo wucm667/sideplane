@@ -460,10 +460,31 @@ func (s *MemoryNodeStore) ListAuditEvents(_ context.Context, limit int) ([]proto
 	if limit <= 0 || limit > 100 {
 		limit = 100
 	}
+	return s.listAuditEvents(AuditFilter{Limit: limit}, 100), nil
+}
+
+// ListAuditEventsFiltered returns recent audit events matching all filters.
+func (s *MemoryNodeStore) ListAuditEventsFiltered(_ context.Context, filter AuditFilter) ([]protocol.AuditEvent, error) {
+	return s.listAuditEvents(filter, 500), nil
+}
+
+func (s *MemoryNodeStore) listAuditEvents(filter AuditFilter, maxLimit int) []protocol.AuditEvent {
+	limit := normalizeAuditLimit(filter.Limit, maxLimit)
+	nodeID := strings.TrimSpace(filter.NodeID)
+	action := strings.TrimSpace(filter.Action)
 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	events := append([]protocol.AuditEvent(nil), s.auditEvents...)
+	events := make([]protocol.AuditEvent, 0, len(s.auditEvents))
+	for _, event := range s.auditEvents {
+		if nodeID != "" && event.TargetNode != nodeID {
+			continue
+		}
+		if action != "" && event.Action != action {
+			continue
+		}
+		events = append(events, event)
+	}
 	slices.SortStableFunc(events, func(a, b protocol.AuditEvent) int {
 		if a.CreatedAt.Equal(b.CreatedAt) {
 			return strings.Compare(b.ID, a.ID)
@@ -476,7 +497,7 @@ func (s *MemoryNodeStore) ListAuditEvents(_ context.Context, limit int) ([]proto
 	if len(events) > limit {
 		events = events[:limit]
 	}
-	return events, nil
+	return events
 }
 
 // GetDesiredConfig returns the layered desired runtime config.

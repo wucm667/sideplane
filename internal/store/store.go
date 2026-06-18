@@ -87,6 +87,14 @@ type JobStore interface {
 type AuditStore interface {
 	AppendAuditEvent(ctx context.Context, event protocol.AuditEvent) (protocol.AuditEvent, error)
 	ListAuditEvents(ctx context.Context, limit int) ([]protocol.AuditEvent, error)
+	ListAuditEventsFiltered(ctx context.Context, filter AuditFilter) ([]protocol.AuditEvent, error)
+}
+
+// AuditFilter constrains audit event listing.
+type AuditFilter struct {
+	NodeID string
+	Action string
+	Limit  int
 }
 
 // DesiredConfigStore persists the layered desired runtime config.

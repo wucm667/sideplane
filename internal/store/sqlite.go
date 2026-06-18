@@ -880,13 +880,29 @@ func (s *SQLiteNodeStore) ListAuditEvents(ctx context.Context, limit int) ([]pro
 	if limit <= 0 || limit > 100 {
 		limit = 100
 	}
+	return s.listAuditEvents(ctx, AuditFilter{Limit: limit}, 100)
+}
 
+// ListAuditEventsFiltered returns recent audit events matching all filters.
+func (s *SQLiteNodeStore) ListAuditEventsFiltered(ctx context.Context, filter AuditFilter) ([]protocol.AuditEvent, error) {
+	if s == nil || s.db == nil {
+		return nil, errors.New("sqlite node store is closed")
+	}
+	return s.listAuditEvents(ctx, filter, 500)
+}
+
+func (s *SQLiteNodeStore) listAuditEvents(ctx context.Context, filter AuditFilter, maxLimit int) ([]protocol.AuditEvent, error) {
+	limit := normalizeAuditLimit(filter.Limit, maxLimit)
+	nodeID := strings.TrimSpace(filter.NodeID)
+	action := strings.TrimSpace(filter.Action)
 	rows, err := s.db.QueryContext(ctx, `
 SELECT id, actor, action, target_node, detail, created_at
 FROM audit_events
+WHERE (? = '' OR target_node = ?)
+AND (? = '' OR action = ?)
 ORDER BY created_at DESC, id DESC
 LIMIT ?
-`, limit)
+`, nodeID, nodeID, action, action, limit)
 	if err != nil {
 		return nil, fmt.Errorf("query audit events: %w", err)
 	}
@@ -910,6 +926,19 @@ LIMIT ?
 		return nil, fmt.Errorf("iterate audit events: %w", err)
 	}
 	return events, nil
+}
+
+func normalizeAuditLimit(limit int, maxLimit int) int {
+	if maxLimit <= 0 {
+		maxLimit = 100
+	}
+	if limit <= 0 {
+		return 100
+	}
+	if limit > maxLimit {
+		return maxLimit
+	}
+	return limit
 }
 
 // GetDesiredConfig returns the layered desired runtime config.

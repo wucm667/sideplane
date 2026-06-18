@@ -1038,6 +1038,45 @@ func TestAuditAPIRecordsFleetOperations(t *testing.T) {
 	}
 }
 
+func TestAuditAPIFiltersByNodeActionAndLimit(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	now := time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)
+	for _, event := range []protocol.AuditEvent{
+		{Actor: audit.ActorOperator, Action: audit.ActionJobCreate, TargetNode: "node-a", CreatedAt: now},
+		{Actor: audit.ActorOperator, Action: audit.ActionJobCreate, TargetNode: "node-b", CreatedAt: now.Add(time.Minute)},
+		{Actor: audit.ActorSidecar, Action: audit.ActionJobFail, TargetNode: "node-a", CreatedAt: now.Add(2 * time.Minute)},
+	} {
+		if _, err := nodeStore.AppendAuditEvent(context.Background(), event); err != nil {
+			t.Fatalf("append audit: %v", err)
+		}
+	}
+	handler := newDevHandlerWithStore(t, nodeStore)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/audit?nodeId=node-a&action=job.create", nil)
+	handler.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusOK)
+	var resp protocol.ListAuditEventsResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode audit response: %v", err)
+	}
+	if len(resp.Events) != 1 || resp.Events[0].TargetNode != "node-a" || resp.Events[0].Action != audit.ActionJobCreate {
+		t.Fatalf("filtered events = %#v, want node-a job.create only", resp.Events)
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/audit?action=job.create&limit=1", nil)
+	handler.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusOK)
+	resp = protocol.ListAuditEventsResponse{}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode limited audit response: %v", err)
+	}
+	if len(resp.Events) != 1 || resp.Events[0].TargetNode != "node-b" {
+		t.Fatalf("limited events = %#v, want newest job.create event", resp.Events)
+	}
+}
+
 func TestListNodeJobsAPISurfacesTimedOutJob(t *testing.T) {
 	nodeStore := store.NewMemoryNodeStore()
 	enrollTestNode(t, nodeStore, "node-timeout")
@@ -2014,6 +2053,10 @@ func (s staticNodeStore) AppendAuditEvent(context.Context, protocol.AuditEvent) 
 }
 
 func (s staticNodeStore) ListAuditEvents(context.Context, int) ([]protocol.AuditEvent, error) {
+	return nil, nil
+}
+
+func (s staticNodeStore) ListAuditEventsFiltered(context.Context, store.AuditFilter) ([]protocol.AuditEvent, error) {
 	return nil, nil
 }
 

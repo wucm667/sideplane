@@ -377,6 +377,10 @@ func TestMemoryAuditEventsInsertAndListNewestFirst(t *testing.T) {
 	}
 }
 
+func TestMemoryAuditEventsFilteredByNodeActionAndLimit(t *testing.T) {
+	assertAuditFiltering(t, NewMemoryNodeStore())
+}
+
 func TestMemoryDesiredConfigPersistsCopy(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemoryNodeStore()
@@ -404,5 +408,59 @@ func TestMemoryDesiredConfigPersistsCopy(t *testing.T) {
 	}
 	if got.NodeRuntimeProfileOverrides["node-a/hermes/default"].Model != "claude-sonnet-4" {
 		t.Fatalf("stored node runtime profile desired config mutated: %#v", got)
+	}
+}
+
+func assertAuditFiltering(t *testing.T, auditStore AuditStore) {
+	t.Helper()
+	ctx := context.Background()
+	now := time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)
+
+	events := []protocol.AuditEvent{
+		{Actor: "operator", Action: "job.create", TargetNode: "node-a", CreatedAt: now},
+		{Actor: "operator", Action: "job.create", TargetNode: "node-b", CreatedAt: now.Add(time.Minute)},
+		{Actor: "sidecar", Action: "job.fail", TargetNode: "node-a", CreatedAt: now.Add(2 * time.Minute)},
+	}
+	for _, event := range events {
+		if _, err := auditStore.AppendAuditEvent(ctx, event); err != nil {
+			t.Fatalf("append audit event: %v", err)
+		}
+	}
+
+	got, err := auditStore.ListAuditEventsFiltered(ctx, AuditFilter{NodeID: "node-a"})
+	if err != nil {
+		t.Fatalf("filter by node: %v", err)
+	}
+	assertAuditEventKeys(t, got, []string{"node-a/job.fail", "node-a/job.create"})
+
+	got, err = auditStore.ListAuditEventsFiltered(ctx, AuditFilter{Action: "job.create"})
+	if err != nil {
+		t.Fatalf("filter by action: %v", err)
+	}
+	assertAuditEventKeys(t, got, []string{"node-b/job.create", "node-a/job.create"})
+
+	got, err = auditStore.ListAuditEventsFiltered(ctx, AuditFilter{NodeID: "node-a", Action: "job.create"})
+	if err != nil {
+		t.Fatalf("filter by node and action: %v", err)
+	}
+	assertAuditEventKeys(t, got, []string{"node-a/job.create"})
+
+	got, err = auditStore.ListAuditEventsFiltered(ctx, AuditFilter{NodeID: "node-a", Limit: 1})
+	if err != nil {
+		t.Fatalf("filter with limit: %v", err)
+	}
+	assertAuditEventKeys(t, got, []string{"node-a/job.fail"})
+}
+
+func assertAuditEventKeys(t *testing.T, events []protocol.AuditEvent, want []string) {
+	t.Helper()
+	if len(events) != len(want) {
+		t.Fatalf("event length = %d, want %d: %#v", len(events), len(want), events)
+	}
+	for i, event := range events {
+		got := event.TargetNode + "/" + event.Action
+		if got != want[i] {
+			t.Fatalf("event[%d] = %q, want %q; events=%#v", i, got, want[i], events)
+		}
 	}
 }

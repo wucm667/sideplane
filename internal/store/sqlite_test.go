@@ -668,6 +668,17 @@ func TestSQLiteAuditEventsInsertAndListNewestFirst(t *testing.T) {
 	assertSQLiteDoesNotContainPlaintext(t, ctx, store.db, "audit_events", "secret-token-value")
 }
 
+func TestSQLiteAuditEventsFilteredByNodeActionAndLimit(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenSQLiteNodeStore(ctx, filepath.Join(t.TempDir(), "sideplane.db"))
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer store.Close()
+
+	assertAuditFiltering(t, store)
+}
+
 func TestSQLiteDesiredConfigPersistsAcrossReopen(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "sideplane.db")
