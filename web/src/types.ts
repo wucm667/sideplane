@@ -64,6 +64,11 @@ export interface EffectiveConfigPreviewRequest {
   desired: ProviderModelConfig
 }
 
+export interface CreateEnrollmentTokenResponse {
+  token: string
+  expiresAt: string
+}
+
 export interface ConfigApplyStep {
   name: string
   status: string
