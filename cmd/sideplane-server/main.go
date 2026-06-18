@@ -9,7 +9,10 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/wucm667/sideplane/internal/auth"
 	"github.com/wucm667/sideplane/internal/server"
@@ -17,6 +20,7 @@ import (
 )
 
 const version = "dev"
+const shutdownTimeout = 10 * time.Second
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
@@ -79,7 +83,11 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		logger.Error("open sqlite store", "db", *dbPath, "error", err)
 		return 1
 	}
-	defer nodeStore.Close()
+	defer func() {
+		if err := nodeStore.Close(); err != nil {
+			logger.Error("close sqlite store", "db", *dbPath, "error", err)
+		}
+	}()
 
 	handler, err := server.NewHandlerWithConfig(server.HandlerConfig{
 		Store:                           nodeStore,
@@ -115,10 +123,35 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		"stale_after", staleAfter.String(),
 		"offline_after", offlineAfter.String(),
 	)
-	if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		logger.Error("sideplane-server stopped", "error", err)
-		return 1
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- httpServer.ListenAndServe()
+	}()
+
+	select {
+	case err := <-errCh:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Error("sideplane-server stopped", "error", err)
+			return 1
+		}
+	case <-ctx.Done():
+		logger.Info("shutting down sideplane-server", "timeout", shutdownTimeout.String())
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+		defer cancel()
+		if err := httpServer.Shutdown(shutdownCtx); err != nil {
+			logger.Error("shutdown sideplane-server", "error", err)
+			return 1
+		}
+		if err := <-errCh; err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Error("sideplane-server stopped", "error", err)
+			return 1
+		}
 	}
+	logger.Info("sideplane-server stopped")
 	return 0
 }
 
