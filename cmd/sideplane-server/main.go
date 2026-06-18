@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"github.com/wucm667/sideplane/internal/auth"
 	"github.com/wucm667/sideplane/internal/server"
 	"github.com/wucm667/sideplane/internal/store"
+	webassets "github.com/wucm667/sideplane/web"
 )
 
 const version = "dev"
@@ -32,7 +34,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 
 	addr := flags.String("addr", ":8080", "HTTP listen address")
 	dbPath := flags.String("db", "sideplane.db", "SQLite database path")
-	webDir := flags.String("web-dir", "", "directory of built Web UI static assets to serve; when empty, only the API is served")
+	webDir := flags.String("web-dir", "", "directory of built Web UI static assets to serve; overrides embedded assets when set")
 	staleAfter := flags.Duration("stale-after", server.DefaultStaleAfter, "duration after last heartbeat before a node is stale")
 	offlineAfter := flags.Duration("offline-after", server.DefaultOfflineAfter, "duration after last heartbeat before a node is offline")
 	operatorTokenFlag := flags.String("operator-token", "", "bearer token required for mutating operator API requests; can also be set with SIDEPLANE_OPERATOR_TOKEN")
@@ -114,6 +116,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 1
 	}
 
+	webMode := "embedded"
 	if *webDir != "" {
 		webHandler, err := server.NewWebHandler(*webDir, handler)
 		if err != nil {
@@ -121,6 +124,14 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 			return 1
 		}
 		handler = webHandler
+		webMode = *webDir
+	} else {
+		distFS, err := fs.Sub(webassets.Assets, "dist")
+		if err != nil {
+			logger.Error("configure embedded web assets", "error", err)
+			return 1
+		}
+		handler = server.NewEmbeddedWebHandler(distFS, handler)
 	}
 
 	httpServer := &http.Server{
@@ -132,7 +143,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		"starting sideplane-server",
 		"addr", *addr,
 		"db", *dbPath,
-		"web_dir", *webDir,
+		"web", webMode,
 		"stale_after", staleAfter.String(),
 		"offline_after", offlineAfter.String(),
 	)

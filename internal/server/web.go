@@ -1,8 +1,10 @@
 package server
 
 import (
+	"io/fs"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 )
@@ -57,6 +59,22 @@ func NewWebHandler(webDir string, api http.Handler) (http.Handler, error) {
 	return securityHeaders(webHandler), nil
 }
 
+// NewEmbeddedWebHandler wraps api with a static-file handler that serves assets
+// from an embedded filesystem for non-API requests.
+func NewEmbeddedWebHandler(assets fs.FS, api http.Handler) http.Handler {
+	fileServer := http.FileServer(http.FS(assets))
+
+	webHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isAPIPath(r.URL.Path) {
+			api.ServeHTTP(w, r)
+			return
+		}
+
+		serveEmbeddedWebAsset(w, r, assets, fileServer)
+	})
+	return securityHeaders(webHandler)
+}
+
 // serveWebAsset serves a static asset from root, falling back to index.html
 // for unknown SPA routes. Paths that look like static assets (have a file
 // extension) return 404 when the file is missing, so broken asset references
@@ -94,6 +112,27 @@ func serveWebAsset(w http.ResponseWriter, r *http.Request, root string, fileServ
 	serveIndex(w, r, cleanRoot)
 }
 
+func serveEmbeddedWebAsset(w http.ResponseWriter, r *http.Request, assets fs.FS, fileServer http.Handler) {
+	requestPath := path.Clean("/" + r.URL.Path)
+	assetPath := strings.TrimPrefix(requestPath, "/")
+	if assetPath == "" {
+		assetPath = "."
+	}
+
+	info, err := fs.Stat(assets, assetPath)
+	if err == nil && !info.IsDir() {
+		fileServer.ServeHTTP(w, r)
+		return
+	}
+
+	if hasFileExtension(requestPath) {
+		http.NotFound(w, r)
+		return
+	}
+
+	serveEmbeddedIndex(w, r, assets)
+}
+
 // hasFileExtension reports whether the last path segment has a file
 // extension. Go's filepath.Ext treats leading-dot names like ".hidden" as
 // having extension ".hidden", so hidden files are handled as static assets.
@@ -109,6 +148,24 @@ func serveIndex(w http.ResponseWriter, r *http.Request, root string) {
 		return
 	}
 	http.ServeFile(w, r, index)
+}
+
+func serveEmbeddedIndex(w http.ResponseWriter, r *http.Request, assets fs.FS) {
+	info, err := fs.Stat(assets, "index.html")
+	if err != nil || info.IsDir() {
+		http.NotFound(w, r)
+		return
+	}
+	data, err := fs.ReadFile(assets, "index.html")
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	if r.Method != http.MethodHead {
+		w.Write(data)
+	}
 }
 
 // errNotADirectory is returned when --web-dir points at something other than a

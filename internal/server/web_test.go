@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/fstest"
 )
 
 // writeWebFixture creates a temporary web directory containing index.html and
@@ -40,6 +41,14 @@ func newWebFixtureHandler(t *testing.T) http.Handler {
 		t.Fatalf("NewWebHandler: %v", err)
 	}
 	return handler
+}
+
+func newEmbeddedWebFixtureHandler(t *testing.T) http.Handler {
+	t.Helper()
+	return NewEmbeddedWebHandler(fstest.MapFS{
+		"index.html":    {Data: []byte("<!doctype html><html><body>Embedded SPA root</body></html>")},
+		"assets/app.js": {Data: []byte("// embedded app js")},
+	}, NewHandler())
 }
 
 func TestWebAPIRoutesTakePrecedence(t *testing.T) {
@@ -76,6 +85,21 @@ func TestWebAPIRoutesTakePrecedence(t *testing.T) {
 	}
 }
 
+func TestEmbeddedWebAPIRoutesTakePrecedence(t *testing.T) {
+	handler := newEmbeddedWebFixtureHandler(t)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/nodes", nil)
+	handler.ServeHTTP(rec, req)
+
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Fatalf("Content-Type = %q, want application/json", ct)
+	}
+	if body := rec.Body.String(); strings.Contains(body, "Embedded SPA root") {
+		t.Fatalf("/api/nodes was served by embedded web assets; body: %s", body)
+	}
+}
+
 func TestWebRootServesIndexHTML(t *testing.T) {
 	handler := newWebFixtureHandler(t)
 
@@ -89,6 +113,21 @@ func TestWebRootServesIndexHTML(t *testing.T) {
 	}
 	if got := rec.Body.String(); !strings.Contains(got, "SPA root") {
 		t.Fatalf("body = %q, want index.html content", got)
+	}
+}
+
+func TestEmbeddedWebRootServesIndexHTML(t *testing.T) {
+	handler := newEmbeddedWebFixtureHandler(t)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if got := rec.Body.String(); !strings.Contains(got, "Embedded SPA root") {
+		t.Fatalf("body = %q, want embedded index.html content", got)
 	}
 }
 
@@ -110,6 +149,21 @@ func TestWebSPARouteFallsBackToIndexHTML(t *testing.T) {
 	}
 }
 
+func TestEmbeddedWebSPARouteFallsBackToIndexHTML(t *testing.T) {
+	handler := newEmbeddedWebFixtureHandler(t)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/nodes/worker-a", nil)
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if got := rec.Body.String(); !strings.Contains(got, "Embedded SPA root") {
+		t.Fatalf("body = %q, want embedded index.html content", got)
+	}
+}
+
 func TestWebServesRealAsset(t *testing.T) {
 	handler := newWebFixtureHandler(t)
 
@@ -123,6 +177,21 @@ func TestWebServesRealAsset(t *testing.T) {
 	}
 	if got := rec.Body.String(); got != "// app js" {
 		t.Fatalf("body = %q, want app.js content", got)
+	}
+}
+
+func TestEmbeddedWebServesRealAsset(t *testing.T) {
+	handler := newEmbeddedWebFixtureHandler(t)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/assets/app.js", nil)
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if got := rec.Body.String(); got != "// embedded app js" {
+		t.Fatalf("body = %q, want embedded app js", got)
 	}
 }
 
