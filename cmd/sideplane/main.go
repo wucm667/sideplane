@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"text/tabwriter"
 	"time"
 
 	"github.com/wucm667/sideplane/internal/auth"
@@ -18,12 +19,21 @@ import (
 )
 
 const version = "dev"
+const serverURLEnv = "SIDEPLANE_SERVER_URL"
+
+type cliNodeStatus struct {
+	protocol.NodeStatus
+	Drift bool `json:"drift"`
+}
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
 
 func run(args []string, stdout io.Writer, stderr io.Writer) int {
+	if len(args) >= 2 && args[0] == "fleet" && args[1] == "status" {
+		return runFleetStatus(args[2:], stdout, stderr)
+	}
 	if len(args) >= 2 && args[0] == "enrollment" && args[1] == "create" {
 		return runEnrollmentCreate(args[2:], stdout, stderr)
 	}
@@ -42,6 +52,164 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 
 	fmt.Fprintln(stdout, "sideplane CLI skeleton")
 	return 0
+}
+
+func runFleetStatus(args []string, stdout io.Writer, stderr io.Writer) int {
+	flags := flag.NewFlagSet("sideplane fleet status", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+
+	serverURL := flags.String("server", "", "Sideplane server URL; can also be set with SIDEPLANE_SERVER_URL")
+	jsonOutput := flags.Bool("json", false, "print raw JSON response")
+	if err := flags.Parse(args); err != nil {
+		return 2
+	}
+	if flags.NArg() != 0 {
+		fmt.Fprintln(stderr, "sideplane fleet status: unexpected positional arguments")
+		return 1
+	}
+
+	server := serverURLValue(*serverURL)
+	nodes, body, err := getJSON[[]cliNodeStatus](context.Background(), server, "/api/nodes", "")
+	if err != nil {
+		fmt.Fprintf(stderr, "fleet status: %v\n", err)
+		return 1
+	}
+
+	if *jsonOutput {
+		if _, err := stdout.Write(body); err != nil {
+			fmt.Fprintf(stderr, "write JSON: %v\n", err)
+			return 1
+		}
+		if len(body) == 0 || body[len(body)-1] != '\n' {
+			fmt.Fprintln(stdout)
+		}
+		return 0
+	}
+
+	printFleetStatusTable(stdout, nodes)
+	return 0
+}
+
+func serverURLValue(flagValue string) string {
+	if strings.TrimSpace(flagValue) != "" {
+		return strings.TrimSpace(flagValue)
+	}
+	return strings.TrimSpace(os.Getenv(serverURLEnv))
+}
+
+func getJSON[T any](ctx context.Context, serverURL string, path string, operatorToken string) (T, []byte, error) {
+	var value T
+	body, err := apiJSONRequest(ctx, http.MethodGet, serverURL, path, nil, operatorToken)
+	if err != nil {
+		return value, nil, err
+	}
+	if err := json.Unmarshal(body, &value); err != nil {
+		return value, nil, fmt.Errorf("decode response JSON: %w", err)
+	}
+	return value, body, nil
+}
+
+func apiJSONRequest(ctx context.Context, method string, serverURL string, path string, body io.Reader, operatorToken string) ([]byte, error) {
+	endpoint, err := apiEndpoint(serverURL, path)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, method, endpoint, body)
+	if err != nil {
+		return nil, fmt.Errorf("create %s request: %w", method, err)
+	}
+	req.Header.Set("Accept", "application/json")
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if token := strings.TrimSpace(operatorToken); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+
+	httpClient := &http.Client{Timeout: 10 * time.Second}
+	httpResp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("%s request: %w", strings.ToLower(method), err)
+	}
+	defer httpResp.Body.Close()
+
+	respBody, readErr := io.ReadAll(io.LimitReader(httpResp.Body, 1<<20))
+	if httpResp.StatusCode < http.StatusOK || httpResp.StatusCode >= http.StatusMultipleChoices {
+		if readErr != nil {
+			return nil, fmt.Errorf("server returned status %d and response body could not be read: %w", httpResp.StatusCode, readErr)
+		}
+		return nil, fmt.Errorf("server returned status %d: %s", httpResp.StatusCode, strings.TrimSpace(string(respBody)))
+	}
+	if readErr != nil {
+		return nil, fmt.Errorf("read response body: %w", readErr)
+	}
+	return respBody, nil
+}
+
+func printFleetStatusTable(w io.Writer, nodes []cliNodeStatus) {
+	table := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(table, "NODE ID\tSTATE\tRUNTIMES\tDRIFT\tHEARTBEAT")
+	for _, node := range nodes {
+		fmt.Fprintf(
+			table,
+			"%s\t%s\t%s\t%s\t%s\n",
+			node.NodeID,
+			node.State,
+			runtimeSummary(node.Runtimes),
+			yesNo(node.Drift),
+			ageLabel(node.LastHeartbeatAt),
+		)
+	}
+	table.Flush()
+}
+
+func runtimeSummary(runtimes []protocol.RuntimeStatus) string {
+	if len(runtimes) == 0 {
+		return "-"
+	}
+	parts := make([]string, 0, len(runtimes))
+	for _, runtime := range runtimes {
+		name := strings.TrimSpace(runtime.Name)
+		if name == "" {
+			name = strings.TrimSpace(runtime.Type)
+		}
+		if name == "" {
+			name = "runtime"
+		}
+		if model := strings.TrimSpace(runtime.Model); model != "" {
+			name += ":" + model
+		}
+		parts = append(parts, name)
+	}
+	return strings.Join(parts, ",")
+}
+
+func yesNo(value bool) string {
+	if value {
+		return "yes"
+	}
+	return "no"
+}
+
+func ageLabel(ts time.Time) string {
+	if ts.IsZero() {
+		return "-"
+	}
+	elapsed := time.Since(ts)
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	switch {
+	case elapsed < time.Minute:
+		return fmt.Sprintf("%ds ago", int(elapsed.Seconds()))
+	case elapsed < time.Hour:
+		return fmt.Sprintf("%dm ago", int(elapsed.Minutes()))
+	case elapsed < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(elapsed.Hours()))
+	default:
+		return fmt.Sprintf("%dd ago", int(elapsed.Hours()/24))
+	}
 }
 
 func runEnrollmentCreate(args []string, stdout io.Writer, stderr io.Writer) int {
