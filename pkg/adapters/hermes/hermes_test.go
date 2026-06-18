@@ -149,15 +149,72 @@ func TestAdapterConfigSnapshotsPresentWarningAndNoSecrets(t *testing.T) {
 	if len(snapshots[0].Warnings) == 0 {
 		t.Fatalf("snapshot warnings empty")
 	}
-	if len(snapshots[0].RedactedValues) != 0 {
-		t.Fatalf("redacted values = %#v, want empty placeholder snapshot", snapshots[0].RedactedValues)
-	}
 	payload, err := json.Marshal(snapshots)
 	if err != nil {
 		t.Fatalf("marshal snapshots: %v", err)
 	}
 	if strings.Contains(strings.ToLower(string(payload)), "secret") {
 		t.Fatalf("snapshot payload contains secret-like value: %s", payload)
+	}
+}
+
+func TestAdapterConfigSnapshotsAllowlistUnsafeConfigValues(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "hermes.yaml")
+	contents := []byte(`
+model:
+  provider: openai
+  default: gpt-5
+key: sk-test-plain-key
+openai_key: sk-test-openai-key
+anthropic_key: sk-test-anthropic-key
+xai_key: xai-test-key
+base_url: https://user:pass@example.test/v1
+authorization: Bearer sk-test-bearer-token
+session: api-token-test-value
+`)
+	if err := os.WriteFile(path, contents, 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	a := &Adapter{
+		lookup:      func(string) (string, error) { return "", errors.New("not found") },
+		configPaths: []string{path},
+		getenv:      func(string) string { return "" },
+	}
+	snapshots, err := a.ConfigSnapshots(context.Background())
+	if err != nil {
+		t.Fatalf("ConfigSnapshots error = %v, want nil", err)
+	}
+	if len(snapshots) != 1 {
+		t.Fatalf("len(snapshots) = %d, want 1", len(snapshots))
+	}
+	if snapshots[0].Provider != "openai" || snapshots[0].Model != "gpt-5" {
+		t.Fatalf("snapshot provider/model = %q/%q, want openai/gpt-5", snapshots[0].Provider, snapshots[0].Model)
+	}
+
+	payload, err := json.Marshal(protocol.DeepProbeResult{ConfigSnapshots: snapshots})
+	if err != nil {
+		t.Fatalf("marshal probe result: %v", err)
+	}
+	for _, forbidden := range []string{
+		`"key"`,
+		"openai_key",
+		"anthropic_key",
+		"xai_key",
+		"base_url",
+		"user:pass@",
+		"sk-test-plain-key",
+		"sk-test-openai-key",
+		"sk-test-anthropic-key",
+		"xai-test-key",
+		"Bearer sk-test-bearer-token",
+		"api-token-test-value",
+		"redactedValues",
+	} {
+		if strings.Contains(string(payload), forbidden) {
+			t.Fatalf("snapshot result JSON contains unsafe config material %q: %s", forbidden, payload)
+		}
 	}
 }
 

@@ -824,7 +824,6 @@ func (h *handler) latestActualSnapshot(ctx context.Context, nodeID string, runti
 				continue
 			}
 			matched := snapshot
-			matched.RedactedValues = nil
 			return &matched, nil
 		}
 	}

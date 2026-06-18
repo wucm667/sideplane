@@ -21,7 +21,6 @@ export interface RuntimeConfigSnapshot {
   model?: string
   configHash?: string
   warnings?: string[]
-  redactedValues?: Record<string, string>
 }
 
 export interface ProviderModelConfig {

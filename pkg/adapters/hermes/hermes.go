@@ -190,7 +190,6 @@ func (a *Adapter) snapshot(ctx context.Context) (*protocol.RuntimeConfigSnapshot
 		Model:       model,
 		ConfigHash:  "sha256:" + hex.EncodeToString(sum[:]),
 		Warnings:    warnings,
-		Values:      values,
 	})
 	fileSnapshot = &snapshot
 	if fileSnapshot.Provider != "" && fileSnapshot.Model != "" {
@@ -234,10 +233,6 @@ func (a *Adapter) snapshotFromDocker(ctx context.Context) (*protocol.RuntimeConf
 		Model:       model,
 		ConfigHash:  configHash,
 		Warnings:    warnings,
-		Values: map[string]string{
-			"provider": provider,
-			"model":    model,
-		},
 	})
 	return &snapshot, nil
 }

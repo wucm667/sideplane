@@ -8,7 +8,6 @@ const AUDIT_REFRESH_MS = 10_000
 const ACTIVE_JOB_STATUSES: JobStatus[] = ['pending', 'claimed']
 const OPERATOR_TOKEN_STORAGE_KEY = 'sideplane.operatorToken'
 const THEME_STORAGE_KEY = 'sideplane.theme'
-const SECRET_LIKE_KEY = /(?:secret|token|password|api[_-]?key|credential|authorization)/i
 
 type View = 'fleet' | 'node' | 'activity' | 'enrollment'
 type Theme = 'light' | 'dark'
@@ -125,13 +124,6 @@ function latestConfigSnapshots(jobs: Job[]): RuntimeConfigSnapshot[] {
     if (snapshots.length > 0) return snapshots
   }
   return []
-}
-
-function redactedEntries(snapshot: RuntimeConfigSnapshot): Array<[string, string]> {
-  return Object.entries(snapshot.redactedValues ?? {})
-    .map(([key, value]) => [key, SECRET_LIKE_KEY.test(key) ? '[redacted]' : value] as [string, string])
-    .filter(([key]) => !SECRET_LIKE_KEY.test(key))
-    .slice(0, 8)
 }
 
 function groupRows(nodes: NodeStatus[]) {
@@ -938,7 +930,6 @@ function MetricCard({ label, value, title, monospace = false, muted = false, ton
 function RuntimeCard({ runtime, snapshot }: { runtime: RuntimeStatus; snapshot?: RuntimeConfigSnapshot }) {
   const warnings = [...(snapshot?.warnings ?? [])]
   if (runtime.lastError) warnings.unshift(runtime.lastError)
-  const entries = snapshot ? redactedEntries(snapshot) : []
 
   return (
     <div className="overflow-hidden rounded-xl border border-[var(--sp-border)] bg-[var(--sp-surface)]">
@@ -961,19 +952,6 @@ function RuntimeCard({ runtime, snapshot }: { runtime: RuntimeStatus; snapshot?:
             <RuntimeField label="Snapshot source" value={snapshot.configPath || snapshot.source || '-'} />
             <RuntimeField label="Profile" value={snapshot.profile || '-'} />
           </div>
-          {entries.length > 0 && (
-            <div className="mt-4 rounded-lg border border-[var(--sp-border)] bg-[var(--sp-surface)] p-3">
-              <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--sp-faint)]">Read-only snapshot</div>
-              <div className="grid gap-2 text-xs sm:grid-cols-2">
-                {entries.map(([key, value]) => (
-                  <div key={key} className="min-w-0">
-                    <div className="truncate font-mono text-[var(--sp-faint)]">{key}</div>
-                    <div className="truncate font-mono text-[var(--sp-muted)]">{value || '-'}</div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
         </div>
       )}
       {warnings.length > 0 && (

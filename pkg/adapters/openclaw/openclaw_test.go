@@ -102,9 +102,6 @@ func TestAdapterConfigSnapshotsPresentWarningAndNoSecrets(t *testing.T) {
 	if len(snapshots[0].Warnings) == 0 {
 		t.Fatalf("snapshot warnings empty")
 	}
-	if len(snapshots[0].RedactedValues) != 0 {
-		t.Fatalf("redacted values = %#v, want empty placeholder snapshot", snapshots[0].RedactedValues)
-	}
 	payload, err := json.Marshal(snapshots)
 	if err != nil {
 		t.Fatalf("marshal snapshots: %v", err)

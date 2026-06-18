@@ -77,9 +77,6 @@ func TestDiffProviderModelConfigNeverEmitsSecrets(t *testing.T) {
 	actual := &protocol.RuntimeConfigSnapshot{
 		Provider: "openai",
 		Model:    "gpt-5",
-		RedactedValues: map[string]string{
-			"apiKey": "sk-secret",
-		},
 	}
 	desired := protocol.ProviderModelConfig{Provider: "anthropic", Model: "claude-sonnet-4"}
 

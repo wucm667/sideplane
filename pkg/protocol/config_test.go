@@ -16,9 +16,6 @@ func TestRuntimeConfigSnapshotJSONShape(t *testing.T) {
 		Model:       "gpt-5",
 		ConfigHash:  "sha256:abc",
 		Warnings:    []string{"provider key redacted"},
-		RedactedValues: map[string]string{
-			"apiKey": "[redacted]",
-		},
 	}
 
 	payload, err := json.Marshal(snapshot)
@@ -41,11 +38,13 @@ func TestRuntimeConfigSnapshotJSONShape(t *testing.T) {
 		"model",
 		"configHash",
 		"warnings",
-		"redactedValues",
 	} {
 		if _, ok := got[key]; !ok {
 			t.Fatalf("snapshot JSON omits %q: %s", key, payload)
 		}
+	}
+	if _, ok := got["redactedValues"]; ok {
+		t.Fatalf("snapshot JSON includes broad config values: %s", payload)
 	}
 }
 
