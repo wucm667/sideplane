@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -37,6 +38,12 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	if len(args) >= 1 && args[0] == "probe" {
 		return runProbe(args[1:], stdout, stderr)
 	}
+	if len(args) >= 2 && args[0] == "config" && args[1] == "get" {
+		return runConfigGet(args[2:], stdout, stderr)
+	}
+	if len(args) >= 2 && args[0] == "config" && args[1] == "set" {
+		return runConfigSet(args[2:], stdout, stderr)
+	}
 	if len(args) >= 2 && args[0] == "enrollment" && args[1] == "create" {
 		return runEnrollmentCreate(args[2:], stdout, stderr)
 	}
@@ -54,6 +61,74 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 
 	fmt.Fprintln(stdout, "sideplane CLI skeleton")
+	return 0
+}
+
+func runConfigGet(args []string, stdout io.Writer, stderr io.Writer) int {
+	flags := flag.NewFlagSet("sideplane config get", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+
+	serverURL := flags.String("server", "", "Sideplane server URL; can also be set with SIDEPLANE_SERVER_URL")
+	jsonOutput := flags.Bool("json", false, "print raw JSON response")
+	if err := parseCommandFlags(flags, args, "json"); err != nil {
+		return 2
+	}
+	if flags.NArg() != 0 {
+		fmt.Fprintln(stderr, "sideplane config get: unexpected positional arguments")
+		return 1
+	}
+
+	desired, body, err := getJSON[protocol.DesiredConfig](context.Background(), serverURLValue(*serverURL), "/api/config/desired", "")
+	if err != nil {
+		fmt.Fprintf(stderr, "config get: %v\n", err)
+		return 1
+	}
+	if *jsonOutput {
+		writeRawJSON(stdout, body)
+		return 0
+	}
+	printDesiredConfigSummary(stdout, desired)
+	return 0
+}
+
+func runConfigSet(args []string, stdout io.Writer, stderr io.Writer) int {
+	flags := flag.NewFlagSet("sideplane config set", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+
+	serverURL := flags.String("server", "", "Sideplane server URL; can also be set with SIDEPLANE_SERVER_URL")
+	operatorTokenFlag := flags.String("operator-token", "", "operator bearer token; can also be set with SIDEPLANE_OPERATOR_TOKEN")
+	provider := flags.String("provider", "", "global provider")
+	model := flags.String("model", "", "global model")
+	if err := parseCommandFlags(flags, args); err != nil {
+		return 2
+	}
+	if flags.NArg() != 0 {
+		fmt.Fprintln(stderr, "sideplane config set: unexpected positional arguments")
+		return 1
+	}
+	if strings.TrimSpace(*provider) == "" || strings.TrimSpace(*model) == "" {
+		fmt.Fprintln(stderr, "config set: --provider and --model are required")
+		return 1
+	}
+
+	server := serverURLValue(*serverURL)
+	operatorToken := operatorTokenValue(*operatorTokenFlag)
+	desired, _, err := getJSON[protocol.DesiredConfig](context.Background(), server, "/api/config/desired", operatorToken)
+	if err != nil {
+		fmt.Fprintf(stderr, "config set: %v\n", err)
+		return 1
+	}
+	desired.Global = protocol.ProviderModelConfig{
+		Provider: strings.TrimSpace(*provider),
+		Model:    strings.TrimSpace(*model),
+	}
+
+	updated, _, err := putJSON[protocol.DesiredConfig](context.Background(), server, "/api/config/desired", desired, operatorToken)
+	if err != nil {
+		fmt.Fprintf(stderr, "config set: %v\n", err)
+		return 1
+	}
+	printDesiredConfigSummary(stdout, updated)
 	return 0
 }
 
@@ -225,6 +300,22 @@ func postJSON[T any](ctx context.Context, serverURL string, path string, payload
 	return value, respBody, nil
 }
 
+func putJSON[T any](ctx context.Context, serverURL string, path string, payload any, operatorToken string) (T, []byte, error) {
+	var value T
+	var body bytes.Buffer
+	if err := json.NewEncoder(&body).Encode(payload); err != nil {
+		return value, nil, fmt.Errorf("encode request JSON: %w", err)
+	}
+	respBody, err := apiJSONRequest(ctx, http.MethodPut, serverURL, path, &body, operatorToken)
+	if err != nil {
+		return value, nil, err
+	}
+	if err := json.Unmarshal(respBody, &value); err != nil {
+		return value, nil, fmt.Errorf("decode response JSON: %w", err)
+	}
+	return value, respBody, nil
+}
+
 func apiJSONRequest(ctx context.Context, method string, serverURL string, path string, body io.Reader, operatorToken string) ([]byte, error) {
 	endpoint, err := apiEndpoint(serverURL, path)
 	if err != nil {
@@ -319,6 +410,44 @@ func writeJSONValue(w io.Writer, value any) {
 	encoder := json.NewEncoder(w)
 	encoder.SetIndent("", "  ")
 	encoder.Encode(value)
+}
+
+func printDesiredConfigSummary(w io.Writer, desired protocol.DesiredConfig) {
+	fmt.Fprintf(w, "Global: %s\n", providerModelLabel(desired.Global))
+	printConfigMapSummary(w, "Node overrides", desired.NodeOverrides)
+	printConfigMapSummary(w, "Runtime profile overrides", desired.RuntimeProfileOverrides)
+	printConfigMapSummary(w, "Node runtime profile overrides", desired.NodeRuntimeProfileOverrides)
+}
+
+func printConfigMapSummary(w io.Writer, label string, values map[string]protocol.ProviderModelConfig) {
+	fmt.Fprintf(w, "%s:\n", label)
+	if len(values) == 0 {
+		fmt.Fprintln(w, "  (none)")
+		return
+	}
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		fmt.Fprintf(w, "  %s: %s\n", key, providerModelLabel(values[key]))
+	}
+}
+
+func providerModelLabel(value protocol.ProviderModelConfig) string {
+	provider := strings.TrimSpace(value.Provider)
+	model := strings.TrimSpace(value.Model)
+	if provider == "" && model == "" {
+		return "(unset)"
+	}
+	if provider == "" {
+		provider = "-"
+	}
+	if model == "" {
+		model = "-"
+	}
+	return provider + " / " + model
 }
 
 func printFleetStatusTable(w io.Writer, nodes []cliNodeStatus) {
