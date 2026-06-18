@@ -87,6 +87,7 @@ export interface NodeStatus {
   runtimes?: RuntimeStatus[]
   configHash?: string
   lastError?: string
+  drift?: boolean
 }
 
 export type JobType = 'deep_probe' | 'config_apply'

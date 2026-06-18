@@ -119,6 +119,36 @@ func seedDesiredAndProfileProbe(t *testing.T, nodeStore store.Store, nodeID, con
 	}
 }
 
+func seedRuntimeConfigSnapshot(t *testing.T, nodeStore store.Store, nodeID, provider, model string) {
+	t.Helper()
+	ctx := context.Background()
+	now := time.Now().UTC()
+	probe, err := nodeStore.CreateJob(ctx, protocol.CreateJobRequest{Type: protocol.JobTypeDeepProbe}, nodeID, now)
+	if err != nil {
+		t.Fatalf("create probe for %s: %v", nodeID, err)
+	}
+	if _, err := nodeStore.ClaimNextJob(ctx, nodeID, now); err != nil {
+		t.Fatalf("claim probe for %s: %v", nodeID, err)
+	}
+	resJSON, _ := json.Marshal(protocol.DeepProbeResult{
+		ConfigSnapshots: []protocol.RuntimeConfigSnapshot{{
+			RuntimeName: "hermes",
+			RuntimeType: "hermes",
+			ConfigPath:  "/etc/sideplane-test/runtime.json",
+			Source:      "file",
+			Provider:    provider,
+			Model:       model,
+			ConfigHash:  "sha256:test",
+		}},
+	})
+	if err := nodeStore.CompleteJob(ctx, probe.ID, protocol.JobResultRequest{
+		Status:     protocol.JobStatusCompleted,
+		ResultJSON: string(resJSON),
+	}, now); err != nil {
+		t.Fatalf("complete probe for %s: %v", nodeID, err)
+	}
+}
+
 func TestCreateConfigApplyJobDryRun(t *testing.T) {
 	nodeStore := store.NewMemoryNodeStore()
 	enrollTestNode(t, nodeStore, "node-apply")
@@ -1565,6 +1595,51 @@ func TestNodesApplyFreshnessPolicy(t *testing.T) {
 	for nodeID, wantState := range want {
 		if got[nodeID] != wantState {
 			t.Fatalf("node %s state = %q, want %q", nodeID, got[nodeID], wantState)
+		}
+	}
+}
+
+func TestNodesReportConfigDrift(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	for _, nodeID := range []string{"node-drift", "node-match", "node-nosnapshot", "node-unknown"} {
+		enrollTestNode(t, nodeStore, nodeID)
+	}
+	if err := nodeStore.SetDesiredConfig(context.Background(), protocol.DesiredConfig{
+		Global: protocol.ProviderModelConfig{Provider: "openai", Model: "gpt-4o"},
+	}, time.Now().UTC()); err != nil {
+		t.Fatalf("set desired config: %v", err)
+	}
+	seedRuntimeConfigSnapshot(t, nodeStore, "node-drift", "anthropic", "claude-3-7-sonnet")
+	seedRuntimeConfigSnapshot(t, nodeStore, "node-match", "openai", "gpt-4o")
+	seedRuntimeConfigSnapshot(t, nodeStore, "node-unknown", "", "")
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/nodes", nil)
+
+	newDevHandlerWithStore(t, nodeStore).ServeHTTP(rec, req)
+
+	assertStatus(t, rec, http.StatusOK)
+
+	var nodes []struct {
+		NodeID string `json:"nodeId"`
+		Drift  bool   `json:"drift"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&nodes); err != nil {
+		t.Fatalf("decode nodes response: %v", err)
+	}
+	got := make(map[string]bool, len(nodes))
+	for _, node := range nodes {
+		got[node.NodeID] = node.Drift
+	}
+	want := map[string]bool{
+		"node-drift":      true,
+		"node-match":      false,
+		"node-nosnapshot": false,
+		"node-unknown":    false,
+	}
+	for nodeID, wantDrift := range want {
+		if got[nodeID] != wantDrift {
+			t.Fatalf("node %s drift = %t, want %t", nodeID, got[nodeID], wantDrift)
 		}
 	}
 }

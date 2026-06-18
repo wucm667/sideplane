@@ -403,7 +403,7 @@ export default function FleetPage() {
     const healthy = safeNodes.filter((node) => node.state === 'fresh').length
     const stale = safeNodes.filter((node) => node.state === 'stale').length
     const offline = safeNodes.filter((node) => node.state === 'offline').length
-    const drift = 0
+    const drift = safeNodes.filter((node) => node.drift).length
     return { healthy, stale, offline, drift }
   }, [safeNodes])
   const groups = useMemo(() => groupRows(safeNodes), [safeNodes])

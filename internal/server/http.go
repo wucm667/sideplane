@@ -306,13 +306,68 @@ func (h *handler) nodes(w http.ResponseWriter, r *http.Request) {
 	}
 	h.applyFreshness(nodes)
 
-	writeJSON(w, http.StatusOK, nodes)
+	desired, err := h.store.GetDesiredConfig(r.Context())
+	if err != nil {
+		http.Error(w, "get desired config", http.StatusInternalServerError)
+		return
+	}
+
+	response := make([]nodeStatusResponse, len(nodes))
+	for i, node := range nodes {
+		drift, err := h.nodeHasConfigDrift(r.Context(), node.NodeID, desired)
+		if err != nil {
+			http.Error(w, "get actual config", http.StatusInternalServerError)
+			return
+		}
+		response[i] = nodeStatusResponse{
+			NodeStatus: node,
+			Drift:      drift,
+		}
+	}
+
+	writeJSON(w, http.StatusOK, response)
+}
+
+type nodeStatusResponse struct {
+	protocol.NodeStatus
+	Drift bool `json:"drift"`
 }
 
 func (h *handler) applyFreshness(nodes []protocol.NodeStatus) {
 	for i := range nodes {
 		nodes[i].State = h.freshness.StateFor(nodes[i].LastHeartbeatAt)
 	}
+}
+
+func (h *handler) nodeHasConfigDrift(ctx context.Context, nodeID string, desired protocol.DesiredConfig) (bool, error) {
+	effective := spconfig.EffectiveProviderModelConfig(desired, spconfig.EffectiveConfigTarget{NodeID: nodeID})
+	if !hasKnownProviderModel(effective) {
+		return false, nil
+	}
+
+	actual, err := h.latestActualSnapshot(ctx, nodeID, "", "")
+	if err != nil {
+		return false, err
+	}
+	if actual == nil || !hasKnownProviderModel(protocol.ProviderModelConfig{
+		Provider: actual.Provider,
+		Model:    actual.Model,
+	}) {
+		return false, nil
+	}
+
+	for _, entry := range spconfig.DiffProviderModelConfig(actual, effective) {
+		if entry.Change == protocol.ConfigDiffChangeUpdate &&
+			strings.TrimSpace(entry.Actual) != "" &&
+			strings.TrimSpace(entry.Desired) != "" {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func hasKnownProviderModel(value protocol.ProviderModelConfig) bool {
+	return strings.TrimSpace(value.Provider) != "" && strings.TrimSpace(value.Model) != ""
 }
 
 // nodeJobsRouter handles GET and POST /api/nodes/{nodeId}/jobs
