@@ -52,6 +52,48 @@ func TestMemoryNodeStoreRecordsAndListsNodes(t *testing.T) {
 	}
 }
 
+func TestMemoryNodeStorePruneHeartbeatsKeepsLatestPerNode(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryNodeStore()
+	now := time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)
+
+	for i := 0; i < 5; i++ {
+		if _, err := store.RecordHeartbeat(ctx, protocol.HeartbeatRequest{NodeID: "node-a"}, now.Add(time.Duration(i)*time.Minute)); err != nil {
+			t.Fatalf("record node-a heartbeat %d: %v", i, err)
+		}
+	}
+	for i := 0; i < 3; i++ {
+		if _, err := store.RecordHeartbeat(ctx, protocol.HeartbeatRequest{NodeID: "node-b"}, now.Add(time.Duration(i)*time.Minute)); err != nil {
+			t.Fatalf("record node-b heartbeat %d: %v", i, err)
+		}
+	}
+
+	deleted, err := store.PruneHeartbeats(ctx, 2)
+	if err != nil {
+		t.Fatalf("prune heartbeats: %v", err)
+	}
+	if deleted != 4 {
+		t.Fatalf("deleted = %d, want 4", deleted)
+	}
+
+	gotA := store.heartbeats["node-a"]
+	if len(gotA) != 2 || !gotA[0].Equal(now.Add(4*time.Minute)) || !gotA[1].Equal(now.Add(3*time.Minute)) {
+		t.Fatalf("node-a heartbeats = %v, want latest two", gotA)
+	}
+	gotB := store.heartbeats["node-b"]
+	if len(gotB) != 2 || !gotB[0].Equal(now.Add(2*time.Minute)) || !gotB[1].Equal(now.Add(time.Minute)) {
+		t.Fatalf("node-b heartbeats = %v, want latest two", gotB)
+	}
+
+	deleted, err = store.PruneHeartbeats(ctx, 2)
+	if err != nil {
+		t.Fatalf("second prune heartbeats: %v", err)
+	}
+	if deleted != 0 {
+		t.Fatalf("second deleted = %d, want 0", deleted)
+	}
+}
+
 func TestMemoryNodeStoreDeleteNodeRemovesAssociatedData(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemoryNodeStore()

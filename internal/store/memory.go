@@ -16,6 +16,7 @@ import (
 type MemoryNodeStore struct {
 	mu               sync.RWMutex
 	nodes            map[string]protocol.NodeStatus
+	heartbeats       map[string][]time.Time
 	enrollmentTokens map[string]memoryEnrollmentToken
 	nodeCredentials  map[string]string
 	jobs             map[string]protocol.Job
@@ -32,6 +33,7 @@ type memoryEnrollmentToken struct {
 func NewMemoryNodeStore() *MemoryNodeStore {
 	return &MemoryNodeStore{
 		nodes:            make(map[string]protocol.NodeStatus),
+		heartbeats:       make(map[string][]time.Time),
 		enrollmentTokens: make(map[string]memoryEnrollmentToken),
 		nodeCredentials:  make(map[string]string),
 		jobs:             make(map[string]protocol.Job),
@@ -57,6 +59,10 @@ func (s *MemoryNodeStore) RecordHeartbeat(_ context.Context, req protocol.Heartb
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.nodes[req.NodeID] = node
+	if s.heartbeats == nil {
+		s.heartbeats = make(map[string][]time.Time)
+	}
+	s.heartbeats[req.NodeID] = append(s.heartbeats[req.NodeID], observedAt.UTC())
 
 	return node, nil
 }
@@ -105,6 +111,7 @@ func (s *MemoryNodeStore) DeleteNode(_ context.Context, nodeID string) error {
 		return ErrNodeNotFound
 	}
 	delete(s.nodes, nodeID)
+	delete(s.heartbeats, nodeID)
 	delete(s.nodeCredentials, nodeID)
 	for jobID, job := range s.jobs {
 		if job.NodeID == nodeID {
@@ -119,6 +126,30 @@ func (s *MemoryNodeStore) DeleteNode(_ context.Context, nodeID string) error {
 	}
 	s.auditEvents = events
 	return nil
+}
+
+// PruneHeartbeats keeps the latest keep heartbeat observations per node.
+func (s *MemoryNodeStore) PruneHeartbeats(_ context.Context, keep int) (int64, error) {
+	if keep <= 0 {
+		return 0, errors.New("heartbeat keep count must be positive")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var deleted int64
+	for nodeID, observed := range s.heartbeats {
+		sort.Slice(observed, func(i, j int) bool {
+			return observed[i].After(observed[j])
+		})
+		if len(observed) <= keep {
+			s.heartbeats[nodeID] = observed
+			continue
+		}
+		deleted += int64(len(observed) - keep)
+		s.heartbeats[nodeID] = append([]time.Time(nil), observed[:keep]...)
+	}
+	return deleted, nil
 }
 
 // CreateEnrollmentToken creates a one-time enrollment token and stores only its hash.

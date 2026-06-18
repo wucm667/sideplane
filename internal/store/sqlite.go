@@ -309,6 +309,41 @@ func (s *SQLiteNodeStore) DeleteNode(ctx context.Context, nodeID string) error {
 	return nil
 }
 
+// PruneHeartbeats keeps the latest keep heartbeat rows per node.
+func (s *SQLiteNodeStore) PruneHeartbeats(ctx context.Context, keep int) (int64, error) {
+	if s == nil || s.db == nil {
+		return 0, errors.New("sqlite node store is closed")
+	}
+	if keep <= 0 {
+		return 0, errors.New("heartbeat keep count must be positive")
+	}
+
+	result, err := s.db.ExecContext(ctx, `
+DELETE FROM heartbeats
+WHERE id IN (
+	SELECT id
+	FROM (
+		SELECT
+			id,
+			ROW_NUMBER() OVER (
+				PARTITION BY node_id
+				ORDER BY observed_at DESC, id DESC
+			) AS row_number
+		FROM heartbeats
+	)
+	WHERE row_number > ?
+)
+`, keep)
+	if err != nil {
+		return 0, fmt.Errorf("prune heartbeats: %w", err)
+	}
+	deleted, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("count pruned heartbeats: %w", err)
+	}
+	return deleted, nil
+}
+
 // CreateEnrollmentToken creates a one-time enrollment token and stores only its hash.
 func (s *SQLiteNodeStore) CreateEnrollmentToken(ctx context.Context, expiresAt time.Time, now time.Time) (protocol.CreateEnrollmentTokenResponse, error) {
 	if s == nil || s.db == nil {

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -23,6 +24,7 @@ import (
 
 const version = "dev"
 const shutdownTimeout = 10 * time.Second
+const heartbeatPruneInterval = 10 * time.Minute
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
@@ -37,6 +39,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	webDir := flags.String("web-dir", "", "directory of built Web UI static assets to serve; overrides embedded assets when set")
 	staleAfter := flags.Duration("stale-after", server.DefaultStaleAfter, "duration after last heartbeat before a node is stale")
 	offlineAfter := flags.Duration("offline-after", server.DefaultOfflineAfter, "duration after last heartbeat before a node is offline")
+	heartbeatRetention := flags.Int("heartbeat-retention", store.DefaultHeartbeatRetention, "number of recent heartbeats to keep per node")
 	operatorTokenFlag := flags.String("operator-token", "", "bearer token required for mutating operator API requests; can also be set with SIDEPLANE_OPERATOR_TOKEN")
 	allowUnauthenticatedOperatorAPIFlag := flags.Bool("allow-unauthenticated-operator-api", false, "DEVELOPMENT ONLY: allow mutating operator API requests without an operator token; can also be set with SIDEPLANE_ALLOW_UNAUTHENTICATED_OPERATOR_API=true")
 	signingKeyPath := flags.String("signing-key", "", "path to server config-plan signing key; can also be set with SIDEPLANE_SIGNING_KEY")
@@ -52,11 +55,12 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 
 	setFlags := visitedFlags(flags)
 	if err := applyServerEnvFallbacks(setFlags, serverFlagValues{
-		addr:         addr,
-		dbPath:       dbPath,
-		webDir:       webDir,
-		staleAfter:   staleAfter,
-		offlineAfter: offlineAfter,
+		addr:               addr,
+		dbPath:             dbPath,
+		webDir:             webDir,
+		staleAfter:         staleAfter,
+		offlineAfter:       offlineAfter,
+		heartbeatRetention: heartbeatRetention,
 	}); err != nil {
 		fmt.Fprintf(stderr, "invalid environment configuration: %v\n", err)
 		return 1
@@ -68,6 +72,10 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 	if err := freshness.Validate(); err != nil {
 		fmt.Fprintf(stderr, "invalid freshness policy: %v\n", err)
+		return 1
+	}
+	if *heartbeatRetention <= 0 {
+		fmt.Fprintln(stderr, "invalid heartbeat retention: heartbeat-retention must be positive")
 		return 1
 	}
 
@@ -139,6 +147,10 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		Handler: handler,
 	}
 
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	startHeartbeatPruner(ctx, nodeStore, *heartbeatRetention, heartbeatPruneInterval, logger)
+
 	logger.Info(
 		"starting sideplane-server",
 		"addr", *addr,
@@ -146,10 +158,8 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		"web", webMode,
 		"stale_after", staleAfter.String(),
 		"offline_after", offlineAfter.String(),
+		"heartbeat_retention", *heartbeatRetention,
 	)
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -180,11 +190,37 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 }
 
 type serverFlagValues struct {
-	addr         *string
-	dbPath       *string
-	webDir       *string
-	staleAfter   *time.Duration
-	offlineAfter *time.Duration
+	addr               *string
+	dbPath             *string
+	webDir             *string
+	staleAfter         *time.Duration
+	offlineAfter       *time.Duration
+	heartbeatRetention *int
+}
+
+func startHeartbeatPruner(ctx context.Context, nodeStore store.NodeStore, keep int, interval time.Duration, logger *slog.Logger) {
+	if nodeStore == nil || interval <= 0 {
+		return
+	}
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				deleted, err := nodeStore.PruneHeartbeats(ctx, keep)
+				if err != nil {
+					logger.Warn("prune heartbeats failed", "error", err)
+					continue
+				}
+				if deleted > 0 {
+					logger.Info("pruned old heartbeats", "deleted", deleted, "keep_per_node", keep)
+				}
+			}
+		}
+	}()
 }
 
 func visitedFlags(flags *flag.FlagSet) map[string]bool {
@@ -203,6 +239,9 @@ func applyServerEnvFallbacks(setFlags map[string]bool, values serverFlagValues) 
 		return err
 	}
 	if err := applyDurationEnvFallback(setFlags, "offline-after", "SIDEPLANE_OFFLINE_AFTER", values.offlineAfter); err != nil {
+		return err
+	}
+	if err := applyIntEnvFallback(setFlags, "heartbeat-retention", "SIDEPLANE_HEARTBEAT_RETENTION", values.heartbeatRetention); err != nil {
 		return err
 	}
 	return nil
@@ -226,6 +265,22 @@ func applyDurationEnvFallback(setFlags map[string]bool, flagName string, envName
 		return nil
 	}
 	parsed, err := time.ParseDuration(envValue)
+	if err != nil {
+		return fmt.Errorf("%s: %w", envName, err)
+	}
+	*value = parsed
+	return nil
+}
+
+func applyIntEnvFallback(setFlags map[string]bool, flagName string, envName string, value *int) error {
+	if value == nil || setFlags[flagName] {
+		return nil
+	}
+	envValue := strings.TrimSpace(os.Getenv(envName))
+	if envValue == "" {
+		return nil
+	}
+	parsed, err := strconv.Atoi(envValue)
 	if err != nil {
 		return fmt.Errorf("%s: %w", envName, err)
 	}

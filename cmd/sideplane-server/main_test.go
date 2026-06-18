@@ -57,19 +57,22 @@ func TestServerEnvFallbacksApplyWhenFlagsUnset(t *testing.T) {
 	t.Setenv("SIDEPLANE_WEB_DIR", "/usr/share/sideplane/web")
 	t.Setenv("SIDEPLANE_STALE_AFTER", "90s")
 	t.Setenv("SIDEPLANE_OFFLINE_AFTER", "6m")
+	t.Setenv("SIDEPLANE_HEARTBEAT_RETENTION", "250")
 
 	addr := ":8080"
 	dbPath := "sideplane.db"
 	webDir := ""
 	staleAfter := 2 * time.Minute
 	offlineAfter := 10 * time.Minute
+	heartbeatRetention := 100
 
 	if err := applyServerEnvFallbacks(map[string]bool{}, serverFlagValues{
-		addr:         &addr,
-		dbPath:       &dbPath,
-		webDir:       &webDir,
-		staleAfter:   &staleAfter,
-		offlineAfter: &offlineAfter,
+		addr:               &addr,
+		dbPath:             &dbPath,
+		webDir:             &webDir,
+		staleAfter:         &staleAfter,
+		offlineAfter:       &offlineAfter,
+		heartbeatRetention: &heartbeatRetention,
 	}); err != nil {
 		t.Fatalf("apply env fallbacks: %v", err)
 	}
@@ -88,6 +91,26 @@ func TestServerEnvFallbacksApplyWhenFlagsUnset(t *testing.T) {
 	}
 	if offlineAfter != 6*time.Minute {
 		t.Fatalf("offline after = %s, want 6m", offlineAfter)
+	}
+	if heartbeatRetention != 250 {
+		t.Fatalf("heartbeat retention = %d, want 250", heartbeatRetention)
+	}
+}
+
+func TestRunRejectsInvalidHeartbeatRetention(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	code := run([]string{"--heartbeat-retention", "0"}, &stdout, &stderr)
+
+	if code == 0 {
+		t.Fatalf("exit code = 0, want non-zero")
+	}
+	if !strings.Contains(stderr.String(), "heartbeat-retention must be positive") {
+		t.Fatalf("stderr = %q, want heartbeat retention validation error", stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout = %q, want empty", stdout.String())
 	}
 }
 

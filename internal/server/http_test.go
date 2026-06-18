@@ -2062,6 +2062,10 @@ func (s staticNodeStore) DeleteNode(context.Context, string) error {
 	return nil
 }
 
+func (s staticNodeStore) PruneHeartbeats(context.Context, int) (int64, error) {
+	return 0, nil
+}
+
 func (s staticNodeStore) CreateEnrollmentToken(context.Context, time.Time, time.Time) (protocol.CreateEnrollmentTokenResponse, error) {
 	return protocol.CreateEnrollmentTokenResponse{}, nil
 }

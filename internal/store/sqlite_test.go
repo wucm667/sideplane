@@ -100,6 +100,84 @@ func TestSQLiteNodeStoreMigratesAndPersistsHeartbeat(t *testing.T) {
 	assertSQLiteNodeSnapshot(t, nodes, observedAt)
 }
 
+func TestSQLitePruneHeartbeatsKeepsLatestPerNode(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenSQLiteNodeStore(ctx, filepath.Join(t.TempDir(), "sideplane.db"))
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer store.Close()
+
+	now := time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)
+	for i := 0; i < 5; i++ {
+		if _, err := store.RecordHeartbeat(ctx, protocol.HeartbeatRequest{NodeID: "node-a"}, now.Add(time.Duration(i)*time.Minute)); err != nil {
+			t.Fatalf("record node-a heartbeat %d: %v", i, err)
+		}
+	}
+	for i := 0; i < 3; i++ {
+		if _, err := store.RecordHeartbeat(ctx, protocol.HeartbeatRequest{NodeID: "node-b"}, now.Add(time.Duration(i)*time.Minute)); err != nil {
+			t.Fatalf("record node-b heartbeat %d: %v", i, err)
+		}
+	}
+
+	deleted, err := store.PruneHeartbeats(ctx, 2)
+	if err != nil {
+		t.Fatalf("prune heartbeats: %v", err)
+	}
+	if deleted != 4 {
+		t.Fatalf("deleted = %d, want 4", deleted)
+	}
+
+	assertHeartbeatTimes(t, ctx, store, "node-a", []time.Time{now.Add(4 * time.Minute), now.Add(3 * time.Minute)})
+	assertHeartbeatTimes(t, ctx, store, "node-b", []time.Time{now.Add(2 * time.Minute), now.Add(time.Minute)})
+
+	deleted, err = store.PruneHeartbeats(ctx, 2)
+	if err != nil {
+		t.Fatalf("second prune heartbeats: %v", err)
+	}
+	if deleted != 0 {
+		t.Fatalf("second deleted = %d, want 0", deleted)
+	}
+}
+
+func assertHeartbeatTimes(t *testing.T, ctx context.Context, store *SQLiteNodeStore, nodeID string, want []time.Time) {
+	t.Helper()
+	rows, err := store.db.QueryContext(ctx, `
+SELECT observed_at
+FROM heartbeats
+WHERE node_id = ?
+ORDER BY observed_at DESC
+`, nodeID)
+	if err != nil {
+		t.Fatalf("query heartbeats for %s: %v", nodeID, err)
+	}
+	defer rows.Close()
+
+	var got []time.Time
+	for rows.Next() {
+		var observedAt string
+		if err := rows.Scan(&observedAt); err != nil {
+			t.Fatalf("scan heartbeat for %s: %v", nodeID, err)
+		}
+		parsed, err := parseDBTime(observedAt)
+		if err != nil {
+			t.Fatalf("parse heartbeat time %q: %v", observedAt, err)
+		}
+		got = append(got, parsed)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate heartbeats for %s: %v", nodeID, err)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("%s heartbeat count = %d, want %d: %v", nodeID, len(got), len(want), got)
+	}
+	for i := range want {
+		if !got[i].Equal(want[i]) {
+			t.Fatalf("%s heartbeat[%d] = %s, want %s; all=%v", nodeID, i, got[i], want[i], got)
+		}
+	}
+}
+
 func TestSQLiteEnrollmentTokenFlow(t *testing.T) {
 	ctx := context.Background()
 	store, err := OpenSQLiteNodeStore(ctx, filepath.Join(t.TempDir(), "sideplane.db"))

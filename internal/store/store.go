@@ -17,6 +17,8 @@ const (
 	DefaultJobListLimit = 50
 	// MaxJobListLimit is the largest node job page size accepted by the store.
 	MaxJobListLimit = 500
+	// DefaultHeartbeatRetention is the default number of recent heartbeats to keep per node.
+	DefaultHeartbeatRetention = 100
 )
 
 var (
@@ -68,6 +70,7 @@ type NodeStore interface {
 	ListNodes(ctx context.Context) ([]protocol.NodeStatus, error)
 	NodeExists(ctx context.Context, nodeID string) (bool, error)
 	DeleteNode(ctx context.Context, nodeID string) error
+	PruneHeartbeats(ctx context.Context, keep int) (int64, error)
 }
 
 // EnrollmentStore persists one-time enrollment tokens and node credentials.
