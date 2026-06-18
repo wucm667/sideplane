@@ -200,6 +200,25 @@ func TestCreateConfigApplyJobUsesNodeRuntimeProfileOverride(t *testing.T) {
 	}
 }
 
+func TestCreateConfigApplyJobRejectsUnsafeProviderModelValues(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	enrollTestNode(t, nodeStore, "node-apply")
+	seedDesiredAndProbe(t, nodeStore, "node-apply", "/etc/hermes/config.json")
+	if err := nodeStore.SetDesiredConfig(context.Background(), protocol.DesiredConfig{
+		Global: protocol.ProviderModelConfig{Provider: "openai", Model: "gpt-5:bad"},
+	}, time.Now().UTC()); err != nil {
+		t.Fatalf("set desired config: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/nodes/node-apply/config-apply", strings.NewReader(`{}`))
+	newDevHandlerWithStore(t, nodeStore).ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusBadRequest)
+	if !strings.Contains(rec.Body.String(), "invalid desired provider/model") {
+		t.Fatalf("response = %q, want invalid desired provider/model", rec.Body.String())
+	}
+}
+
 func TestCreateConfigApplyJobRejectsDuplicatePendingApply(t *testing.T) {
 	nodeStore := store.NewMemoryNodeStore()
 	enrollTestNode(t, nodeStore, "node-apply")
@@ -416,6 +435,36 @@ func TestDesiredConfigPutWritesAuditEvent(t *testing.T) {
 	}
 }
 
+func TestDesiredConfigPutRejectsUnsafeProviderModelValues(t *testing.T) {
+	handler := newDevHandler(t)
+	tests := []struct {
+		name  string
+		value string
+	}{
+		{name: "newline", value: "gpt-5\nmodel: hacked"},
+		{name: "comment", value: "gpt-5#comment"},
+		{name: "colon", value: "gpt-5:bad"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			payload, err := json.Marshal(protocol.DesiredConfig{
+				Global: protocol.ProviderModelConfig{Provider: "openai", Model: tt.value},
+			})
+			if err != nil {
+				t.Fatalf("marshal desired: %v", err)
+			}
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPut, "/api/config/desired", bytes.NewReader(payload))
+			handler.ServeHTTP(rec, req)
+			assertStatus(t, rec, http.StatusBadRequest)
+			if !strings.Contains(rec.Body.String(), "invalid desired config") {
+				t.Fatalf("response = %q, want invalid desired config", rec.Body.String())
+			}
+		})
+	}
+}
+
 func TestEffectiveConfigPreviewDoesNotPersistDesiredConfig(t *testing.T) {
 	nodeStore := store.NewMemoryNodeStore()
 	enrollTestNode(t, nodeStore, "node-preview")
@@ -451,6 +500,30 @@ func TestEffectiveConfigPreviewDoesNotPersistDesiredConfig(t *testing.T) {
 	}
 	if after.Global != before.Global || len(after.NodeOverrides) != len(before.NodeOverrides) || len(after.RuntimeProfileOverrides) != len(before.RuntimeProfileOverrides) || len(after.NodeRuntimeProfileOverrides) != len(before.NodeRuntimeProfileOverrides) {
 		t.Fatalf("preview mutated desired config: before=%#v after=%#v", before, after)
+	}
+}
+
+func TestEffectiveConfigPreviewRejectsUnsafeProviderModelValues(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	enrollTestNode(t, nodeStore, "node-preview")
+	seedDesiredAndProfileProbe(t, nodeStore, "node-preview", "/etc/hermes/config.json", "default")
+	handler := newDevHandlerWithStore(t, nodeStore)
+
+	payload, err := json.Marshal(protocol.EffectiveConfigPreviewRequest{
+		NodeID:      "node-preview",
+		RuntimeType: "hermes",
+		Profile:     "default",
+		Desired:     protocol.ProviderModelConfig{Provider: "openai", Model: "gpt-5#comment"},
+	})
+	if err != nil {
+		t.Fatalf("marshal preview: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/config/effective/preview", bytes.NewReader(payload))
+	handler.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusBadRequest)
+	if !strings.Contains(rec.Body.String(), "invalid desired provider/model") {
+		t.Fatalf("response = %q, want invalid desired provider/model", rec.Body.String())
 	}
 }
 

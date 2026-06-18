@@ -493,6 +493,10 @@ func (h *handler) createConfigApplyJob(w http.ResponseWriter, r *http.Request, n
 		http.Error(w, "desired provider and model must be set before applying config", http.StatusBadRequest)
 		return
 	}
+	if err := spconfig.ValidateProviderModelSelection(effective); err != nil {
+		http.Error(w, "invalid desired provider/model: "+err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	actual, err := h.latestActualSnapshot(r.Context(), nodeID, runtimeType, profile)
 	if err != nil {
@@ -517,7 +521,7 @@ func (h *handler) createConfigApplyJob(w http.ResponseWriter, r *http.Request, n
 	plan := protocol.ConfigPlan{
 		ID:           planID,
 		Schema:       protocol.ConfigPlanSchema,
-		Version:      1,
+		Version:      protocol.ConfigPlanVersion,
 		CreatedAt:    now,
 		TargetNodeID: nodeID,
 		Mode:         mode,
@@ -838,6 +842,10 @@ func (h *handler) desiredConfig(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "invalid desired config JSON", http.StatusBadRequest)
 			return
 		}
+		if err := spconfig.ValidateDesiredConfigValues(desired); err != nil {
+			http.Error(w, "invalid desired config: "+err.Error(), http.StatusBadRequest)
+			return
+		}
 		now := time.Now().UTC()
 		if err := h.store.SetDesiredConfig(r.Context(), desired, now); err != nil {
 			http.Error(w, "set desired config", http.StatusInternalServerError)
@@ -894,6 +902,10 @@ func (h *handler) previewEffectiveConfig(w http.ResponseWriter, r *http.Request)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&req); err != nil {
 		http.Error(w, "invalid config preview JSON", http.StatusBadRequest)
+		return
+	}
+	if err := spconfig.ValidateProviderModelSelection(req.Desired); err != nil {
+		http.Error(w, "invalid desired provider/model: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	spconfig "github.com/wucm667/sideplane/pkg/config"
 	"github.com/wucm667/sideplane/pkg/protocol"
 )
 
@@ -63,6 +64,9 @@ func RenderDesiredModel(current []byte, desired protocol.ProviderModelConfig) ([
 	}
 	if model == "" {
 		return nil, fmt.Errorf("desired model is required")
+	}
+	if err := spconfig.ValidateProviderModelSelection(protocol.ProviderModelConfig{Provider: provider, Model: model}); err != nil {
+		return nil, err
 	}
 
 	hadTrailingNewline := bytes.HasSuffix(current, []byte("\n"))

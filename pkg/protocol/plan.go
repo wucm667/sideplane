@@ -11,6 +11,8 @@ import (
 const (
 	// ConfigPlanSchema is the schema identifier for signed config plans.
 	ConfigPlanSchema = "sideplane.config-plan.v1"
+	// ConfigPlanVersion is the supported signed config plan version.
+	ConfigPlanVersion = 1
 	// ConfigPlanModeDryRun validates and reports without replacing live config.
 	ConfigPlanModeDryRun = "dry_run"
 	// ConfigPlanModeLive enables the live branch when sidecar policy permits it.

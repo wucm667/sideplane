@@ -81,6 +81,25 @@ func TestRenderDesiredModelRequiresValues(t *testing.T) {
 	}
 }
 
+func TestRenderDesiredModelRejectsUnsafeValues(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+	}{
+		{name: "newline", value: "gpt-4o\nprovider: bad"},
+		{name: "comment", value: "gpt-4o#bad"},
+		{name: "colon", value: "gpt-4o:bad"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := RenderDesiredModel([]byte(sampleConfig), protocol.ProviderModelConfig{Provider: "openai", Model: tt.value}); err == nil {
+				t.Fatalf("expected unsafe value %q to fail", tt.value)
+			}
+		})
+	}
+}
+
 func TestRenderDesiredModelMissingBlock(t *testing.T) {
 	if _, err := RenderDesiredModel([]byte("providers: {}\n"), protocol.ProviderModelConfig{Provider: "openai", Model: "gpt-4o"}); err == nil {
 		t.Error("expected error when no model block is present")

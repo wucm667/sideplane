@@ -15,12 +15,19 @@ import (
 
 	"github.com/wucm667/sideplane/pkg/adapters"
 	"github.com/wucm667/sideplane/pkg/adapters/hermes"
+	spconfig "github.com/wucm667/sideplane/pkg/config"
 	spcrypto "github.com/wucm667/sideplane/pkg/crypto"
 	"github.com/wucm667/sideplane/pkg/protocol"
 )
 
-// defaultApplyRetention bounds how many apply run directories are kept.
-const defaultApplyRetention = 20
+const (
+	// defaultApplyRetention bounds how many apply run directories are kept.
+	defaultApplyRetention = 20
+	// maxConfigPlanAge is the conservative replay-resistance window for plans.
+	maxConfigPlanAge = 15 * time.Minute
+	// maxConfigPlanFutureSkew allows small server/sidecar clock differences.
+	maxConfigPlanFutureSkew = 2 * time.Minute
+)
 
 // ConfigApplyExecutor executes signed config_apply jobs.
 //
@@ -28,6 +35,7 @@ const defaultApplyRetention = 20
 // reachable only when AllowLiveApply is true AND the plan explicitly requests
 // live mode. With AllowLiveApply false the live branch is never entered.
 type ConfigApplyExecutor struct {
+	NodeID         string
 	PublicKey      string
 	WorkDir        string
 	AllowLiveApply bool
@@ -61,6 +69,16 @@ func (e ConfigApplyExecutor) Execute(ctx context.Context, signedPlan protocol.Si
 		return result, err
 	}
 	addStep("signature_verified", "completed", "ed25519")
+
+	now := e.Now
+	if now == nil {
+		now = time.Now
+	}
+	observedAt := now().UTC()
+	if err := e.validateSignedPlan(signedPlan.Plan, observedAt); err != nil {
+		addStep("validated", "failed", err.Error())
+		return result, err
+	}
 
 	live, err := planExecutionMode(signedPlan.Plan)
 	if err != nil {
@@ -107,11 +125,7 @@ func (e ConfigApplyExecutor) Execute(ctx context.Context, signedPlan protocol.Si
 	if workDir == "" {
 		workDir = filepath.Join(os.TempDir(), "sideplane-apply")
 	}
-	now := e.Now
-	if now == nil {
-		now = time.Now
-	}
-	runDir := filepath.Join(workDir, signedPlan.Plan.ID+"-"+now().UTC().Format("20060102T150405Z"))
+	runDir := filepath.Join(workDir, signedPlan.Plan.ID+"-"+observedAt.Format("20060102T150405Z"))
 	mkdirAll := e.MkdirAll
 	if mkdirAll == nil {
 		mkdirAll = os.MkdirAll
@@ -247,6 +261,40 @@ func rejectLiveSymlinkPath(path string) error {
 	return nil
 }
 
+func (e ConfigApplyExecutor) validateSignedPlan(plan protocol.ConfigPlan, now time.Time) error {
+	if strings.TrimSpace(plan.ID) == "" {
+		return errors.New("plan id is required")
+	}
+	if plan.Schema != protocol.ConfigPlanSchema {
+		return fmt.Errorf("unsupported plan schema %q", plan.Schema)
+	}
+	if plan.Version != protocol.ConfigPlanVersion {
+		return fmt.Errorf("unsupported plan version %d", plan.Version)
+	}
+	nodeID := strings.TrimSpace(e.NodeID)
+	if nodeID == "" {
+		return errors.New("sidecar node id is required to validate plan target")
+	}
+	targetNodeID := strings.TrimSpace(plan.TargetNodeID)
+	if targetNodeID != nodeID {
+		return fmt.Errorf("plan target node %q does not match sidecar node %q", targetNodeID, nodeID)
+	}
+	if plan.CreatedAt.IsZero() {
+		return errors.New("plan createdAt is required")
+	}
+	createdAt := plan.CreatedAt.UTC()
+	if createdAt.After(now.Add(maxConfigPlanFutureSkew)) {
+		return fmt.Errorf("plan createdAt %s is too far in the future", createdAt.Format(time.RFC3339))
+	}
+	if now.Sub(createdAt) > maxConfigPlanAge {
+		return fmt.Errorf("plan expired: createdAt %s is older than %s", createdAt.Format(time.RFC3339), maxConfigPlanAge)
+	}
+	if err := spconfig.ValidateProviderModelSelection(plan.Body.Desired); err != nil {
+		return fmt.Errorf("invalid desired provider/model: %w", err)
+	}
+	return nil
+}
+
 // planExecutionMode reports whether a plan requests the live branch and rejects
 // inconsistent plans.
 func planExecutionMode(plan protocol.ConfigPlan) (live bool, err error) {
@@ -368,7 +416,7 @@ func (p *JobPoller) executeConfigApply(ctx context.Context, job *protocol.Job) p
 	if err := json.Unmarshal([]byte(job.PayloadJSON), &signedPlan); err != nil {
 		return protocol.JobResultRequest{Status: protocol.JobStatusFailed, Error: fmt.Sprintf("parse config_apply payload: %v", err)}
 	}
-	executor := ConfigApplyExecutor{PublicKey: p.publicKey, WorkDir: p.applyWorkDir, AllowLiveApply: p.allowLiveApply, Controller: p.controller}
+	executor := ConfigApplyExecutor{NodeID: p.nodeID, PublicKey: p.publicKey, WorkDir: p.applyWorkDir, AllowLiveApply: p.allowLiveApply, Controller: p.controller}
 	result, err := executor.Execute(ctx, signedPlan)
 	payload, marshalErr := json.Marshal(result)
 	if marshalErr != nil {

@@ -83,3 +83,29 @@ func TestRunCreatesSigningKeyFromFlagBeforeListenFailure(t *testing.T) {
 		t.Fatalf("signing key mode = %v, want 0600", info.Mode().Perm())
 	}
 }
+
+func TestRunWarnsWhenSigningKeyIsEphemeral(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen on temp port: %v", err)
+	}
+	defer listener.Close()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{
+		"--addr", listener.Addr().String(),
+		"--db", filepath.Join(t.TempDir(), "sideplane.db"),
+		"--operator-token", "dev-token",
+	}, &stdout, &stderr)
+
+	if code == 0 {
+		t.Fatalf("exit code = 0, want listen failure")
+	}
+	if !strings.Contains(stderr.String(), "ephemeral in-memory key") {
+		t.Fatalf("stderr = %q, want ephemeral signing key warning", stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout = %q, want empty", stdout.String())
+	}
+}

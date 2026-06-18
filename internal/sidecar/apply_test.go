@@ -52,7 +52,7 @@ func dryRunPlan(nodeID, configPath, provider, model string) protocol.ConfigPlan 
 	return protocol.ConfigPlan{
 		ID:           "plan-1",
 		Schema:       protocol.ConfigPlanSchema,
-		Version:      1,
+		Version:      protocol.ConfigPlanVersion,
 		CreatedAt:    time.Now().UTC(),
 		TargetNodeID: nodeID,
 		Mode:         protocol.ConfigPlanModeDryRun,
@@ -105,7 +105,7 @@ func TestConfigApplyDryRunHappyPath(t *testing.T) {
 		t.Fatalf("sign plan: %v", err)
 	}
 
-	exec := ConfigApplyExecutor{PublicKey: pub, WorkDir: workDir}
+	exec := ConfigApplyExecutor{NodeID: "node-1", PublicKey: pub, WorkDir: workDir}
 	result, err := exec.Execute(context.Background(), signed)
 	if err != nil {
 		t.Fatalf("execute: %v", err)
@@ -177,7 +177,7 @@ func TestConfigApplyDryRunAllowsSymlinkReadOnly(t *testing.T) {
 		t.Fatalf("sign plan: %v", err)
 	}
 
-	exec := ConfigApplyExecutor{PublicKey: pub, WorkDir: workDir}
+	exec := ConfigApplyExecutor{NodeID: "node-1", PublicKey: pub, WorkDir: workDir}
 	result, err := exec.Execute(context.Background(), signed)
 	if err != nil {
 		t.Fatalf("execute dry-run through symlink: %v", err)
@@ -214,7 +214,7 @@ func TestConfigApplyRejectsTamperedPlan(t *testing.T) {
 	// Tamper after signing.
 	signed.Plan.Body.Desired.Model = "tampered-model"
 
-	exec := ConfigApplyExecutor{PublicKey: pub, WorkDir: workDir}
+	exec := ConfigApplyExecutor{NodeID: "node-1", PublicKey: pub, WorkDir: workDir}
 	result, err := exec.Execute(context.Background(), signed)
 	if err == nil {
 		t.Fatal("expected signature verification error, got nil")
@@ -250,13 +250,101 @@ func TestConfigApplyRejectsWrongKey(t *testing.T) {
 		t.Fatalf("sign plan: %v", err)
 	}
 
-	exec := ConfigApplyExecutor{PublicKey: otherPub, WorkDir: t.TempDir()}
+	exec := ConfigApplyExecutor{NodeID: "node-1", PublicKey: otherPub, WorkDir: t.TempDir()}
 	result, err := exec.Execute(context.Background(), signed)
 	if err == nil {
 		t.Fatal("expected verification error with wrong key, got nil")
 	}
 	if s, ok := findStep(t, result.Steps, "signature_verified"); !ok || s.Status != "failed" {
 		t.Errorf("signature_verified step = %+v, want failed", s)
+	}
+}
+
+func TestConfigApplyRejectsInvalidSignedPlanMetadata(t *testing.T) {
+	pub, priv := newTestSigningKey(t)
+	base := time.Date(2026, 6, 18, 12, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name    string
+		mutate  func(*protocol.ConfigPlan)
+		wantErr string
+	}{
+		{
+			name: "target mismatch",
+			mutate: func(plan *protocol.ConfigPlan) {
+				plan.TargetNodeID = "node-2"
+			},
+			wantErr: "does not match sidecar node",
+		},
+		{
+			name: "schema mismatch",
+			mutate: func(plan *protocol.ConfigPlan) {
+				plan.Schema = "sideplane.config-plan.v0"
+			},
+			wantErr: "unsupported plan schema",
+		},
+		{
+			name: "version mismatch",
+			mutate: func(plan *protocol.ConfigPlan) {
+				plan.Version = 99
+			},
+			wantErr: "unsupported plan version",
+		},
+		{
+			name: "expired",
+			mutate: func(plan *protocol.ConfigPlan) {
+				plan.CreatedAt = base.Add(-maxConfigPlanAge - time.Second)
+			},
+			wantErr: "plan expired",
+		},
+		{
+			name: "future",
+			mutate: func(plan *protocol.ConfigPlan) {
+				plan.CreatedAt = base.Add(maxConfigPlanFutureSkew + time.Second)
+			},
+			wantErr: "too far in the future",
+		},
+		{
+			name: "invalid desired",
+			mutate: func(plan *protocol.ConfigPlan) {
+				plan.Body.Desired.Model = "gpt-5:bad"
+			},
+			wantErr: "invalid desired provider/model",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			workDir := t.TempDir()
+			plan := dryRunPlan("node-1", filepath.Join(t.TempDir(), "missing.yaml"), "openai", "gpt-4o")
+			plan.CreatedAt = base
+			tt.mutate(&plan)
+			signed, err := protocol.SignConfigPlan(plan, priv)
+			if err != nil {
+				t.Fatalf("sign plan: %v", err)
+			}
+
+			exec := ConfigApplyExecutor{NodeID: "node-1", PublicKey: pub, WorkDir: workDir, Now: func() time.Time { return base }}
+			result, err := exec.Execute(context.Background(), signed)
+			if err == nil {
+				t.Fatal("expected validation error, got nil")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("error = %q, want %q", err.Error(), tt.wantErr)
+			}
+			if s, ok := findStep(t, result.Steps, "validated"); !ok || s.Status != "failed" {
+				t.Fatalf("validated step = %+v, want failed", s)
+			}
+			if _, ok := findStep(t, result.Steps, "backup_created"); ok {
+				t.Fatal("backup_created reached for invalid signed plan")
+			}
+			if result.BackupPath != "" || result.TempPath != "" {
+				t.Fatalf("paths set for invalid signed plan: backup=%q temp=%q", result.BackupPath, result.TempPath)
+			}
+			if n := dirEntryCount(t, workDir); n != 0 {
+				t.Fatalf("work dir entries = %d, want 0", n)
+			}
+		})
 	}
 }
 
@@ -274,7 +362,7 @@ func TestConfigApplyRejectsLiveMode(t *testing.T) {
 		t.Fatalf("sign plan: %v", err)
 	}
 
-	exec := ConfigApplyExecutor{PublicKey: pub, WorkDir: workDir}
+	exec := ConfigApplyExecutor{NodeID: "node-1", PublicKey: pub, WorkDir: workDir}
 	result, err := exec.Execute(context.Background(), signed)
 	if err == nil {
 		t.Fatal("expected live-mode rejection, got nil")
@@ -307,7 +395,7 @@ func TestConfigApplyRejectsUnsupportedRuntime(t *testing.T) {
 		t.Fatalf("sign plan: %v", err)
 	}
 
-	exec := ConfigApplyExecutor{PublicKey: pub, WorkDir: t.TempDir()}
+	exec := ConfigApplyExecutor{NodeID: "node-1", PublicKey: pub, WorkDir: t.TempDir()}
 	if _, err := exec.Execute(context.Background(), signed); err == nil {
 		t.Fatal("expected unsupported runtime error, got nil")
 	}
@@ -322,7 +410,7 @@ func TestConfigApplyMissingConfigPath(t *testing.T) {
 		t.Fatalf("sign plan: %v", err)
 	}
 
-	exec := ConfigApplyExecutor{PublicKey: pub, WorkDir: t.TempDir()}
+	exec := ConfigApplyExecutor{NodeID: "node-1", PublicKey: pub, WorkDir: t.TempDir()}
 	if _, err := exec.Execute(context.Background(), signed); err == nil {
 		t.Fatal("expected missing config path error, got nil")
 	}
@@ -338,7 +426,7 @@ func TestConfigApplyReadConfigError(t *testing.T) {
 		t.Fatalf("sign plan: %v", err)
 	}
 
-	exec := ConfigApplyExecutor{PublicKey: pub, WorkDir: t.TempDir()}
+	exec := ConfigApplyExecutor{NodeID: "node-1", PublicKey: pub, WorkDir: t.TempDir()}
 	result, err := exec.Execute(context.Background(), signed)
 	if err == nil {
 		t.Fatal("expected read error, got nil")
@@ -359,13 +447,13 @@ func TestConfigApplyRejectsEmptyDesired(t *testing.T) {
 		t.Fatalf("sign plan: %v", err)
 	}
 
-	exec := ConfigApplyExecutor{PublicKey: pub, WorkDir: t.TempDir()}
+	exec := ConfigApplyExecutor{NodeID: "node-1", PublicKey: pub, WorkDir: t.TempDir()}
 	result, err := exec.Execute(context.Background(), signed)
 	if err == nil {
 		t.Fatal("expected error for empty desired model, got nil")
 	}
-	if s, ok := findStep(t, result.Steps, "temp_written"); !ok || s.Status != "failed" {
-		t.Errorf("temp_written step = %+v, want failed", s)
+	if s, ok := findStep(t, result.Steps, "validated"); !ok || s.Status != "failed" {
+		t.Errorf("validated step = %+v, want failed", s)
 	}
 }
 
@@ -383,7 +471,7 @@ func TestExecuteConfigApplyJobCompletes(t *testing.T) {
 		t.Fatalf("marshal signed plan: %v", err)
 	}
 
-	p := &JobPoller{publicKey: pub, applyWorkDir: t.TempDir()}
+	p := &JobPoller{nodeID: "node-1", publicKey: pub, applyWorkDir: t.TempDir()}
 	res := p.executeConfigApply(context.Background(), &protocol.Job{Type: protocol.JobTypeConfigApply, PayloadJSON: string(payload)})
 	if res.Status != protocol.JobStatusCompleted {
 		t.Fatalf("status = %q, want completed (err=%s)", res.Status, res.Error)
@@ -417,7 +505,7 @@ func TestConfigApplyLiveReplacesConfig(t *testing.T) {
 	}
 
 	controller := &stubController{}
-	exec := ConfigApplyExecutor{PublicKey: pub, WorkDir: workDir, AllowLiveApply: true, Controller: controller}
+	exec := ConfigApplyExecutor{NodeID: "node-1", PublicKey: pub, WorkDir: workDir, AllowLiveApply: true, Controller: controller}
 	result, err := exec.Execute(context.Background(), signed)
 	if err != nil {
 		t.Fatalf("execute: %v", err)
@@ -469,7 +557,7 @@ func TestConfigApplyLiveRollsBackOnRestartFailure(t *testing.T) {
 	}
 
 	controller := &stubController{restartErr: errors.New("simulated restart failure")}
-	exec := ConfigApplyExecutor{PublicKey: pub, WorkDir: workDir, AllowLiveApply: true, Controller: controller}
+	exec := ConfigApplyExecutor{NodeID: "node-1", PublicKey: pub, WorkDir: workDir, AllowLiveApply: true, Controller: controller}
 	result, err := exec.Execute(context.Background(), signed)
 	if err == nil {
 		t.Fatal("expected restart failure, got nil")
@@ -507,7 +595,7 @@ func TestConfigApplyLiveRollsBackOnHealthFailure(t *testing.T) {
 	}
 
 	controller := &stubController{healthErr: errors.New("unhealthy after restart")}
-	exec := ConfigApplyExecutor{PublicKey: pub, WorkDir: workDir, AllowLiveApply: true, Controller: controller}
+	exec := ConfigApplyExecutor{NodeID: "node-1", PublicKey: pub, WorkDir: workDir, AllowLiveApply: true, Controller: controller}
 	result, err := exec.Execute(context.Background(), signed)
 	if err == nil {
 		t.Fatal("expected health-check failure, got nil")
@@ -540,6 +628,7 @@ func TestConfigApplyLiveRollsBackWhenReplaceMutatesThenFails(t *testing.T) {
 
 	controller := &stubController{}
 	exec := ConfigApplyExecutor{
+		NodeID:         "node-1",
 		PublicKey:      pub,
 		WorkDir:        workDir,
 		AllowLiveApply: true,
@@ -596,7 +685,7 @@ func TestConfigApplyLiveRejectsSymlinkBeforeMutationPreservesTopology(t *testing
 		t.Fatalf("sign plan: %v", err)
 	}
 
-	exec := ConfigApplyExecutor{PublicKey: pub, WorkDir: workDir, AllowLiveApply: true, Controller: &stubController{}}
+	exec := ConfigApplyExecutor{NodeID: "node-1", PublicKey: pub, WorkDir: workDir, AllowLiveApply: true, Controller: &stubController{}}
 	result, err := exec.Execute(context.Background(), signed)
 	if err == nil {
 		t.Fatal("expected symlink rejection, got nil")
@@ -644,7 +733,7 @@ func TestConfigApplyLiveNilControllerFailsBeforeMutation(t *testing.T) {
 		t.Fatalf("sign plan: %v", err)
 	}
 
-	exec := ConfigApplyExecutor{PublicKey: pub, WorkDir: workDir, AllowLiveApply: true}
+	exec := ConfigApplyExecutor{NodeID: "node-1", PublicKey: pub, WorkDir: workDir, AllowLiveApply: true}
 	result, err := exec.Execute(context.Background(), signed)
 	if err == nil {
 		t.Fatal("expected nil controller rejection, got nil")
@@ -681,7 +770,7 @@ func TestConfigApplyLiveNoReplaceOnInvalidDesired(t *testing.T) {
 		t.Fatalf("sign plan: %v", err)
 	}
 
-	exec := ConfigApplyExecutor{PublicKey: pub, WorkDir: t.TempDir(), AllowLiveApply: true, Controller: &stubController{}}
+	exec := ConfigApplyExecutor{NodeID: "node-1", PublicKey: pub, WorkDir: t.TempDir(), AllowLiveApply: true, Controller: &stubController{}}
 	result, err := exec.Execute(context.Background(), signed)
 	if err == nil {
 		t.Fatal("expected render/validate failure, got nil")

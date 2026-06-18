@@ -68,7 +68,7 @@ func testConfigPlan() ConfigPlan {
 	return ConfigPlan{
 		ID:           "plan_123",
 		Schema:       ConfigPlanSchema,
-		Version:      1,
+		Version:      ConfigPlanVersion,
 		CreatedAt:    time.Date(2026, 6, 17, 10, 0, 0, 0, time.UTC),
 		TargetNodeID: "node-a",
 		Mode:         ConfigPlanModeDryRun,

@@ -70,6 +70,9 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	if keyPath == "" {
 		keyPath = strings.TrimSpace(os.Getenv("SIDEPLANE_SIGNING_KEY"))
 	}
+	if keyPath == "" {
+		logger.Warn("signing key not configured; config apply plans will use an ephemeral in-memory key; set SIDEPLANE_SIGNING_KEY or --signing-key for apply-capable deployments")
+	}
 
 	nodeStore, err := store.OpenSQLiteNodeStore(context.Background(), *dbPath)
 	if err != nil {
