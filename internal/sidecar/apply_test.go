@@ -348,6 +348,50 @@ func TestConfigApplyRejectsInvalidSignedPlanMetadata(t *testing.T) {
 	}
 }
 
+func TestConfigApplyRejectsDuplicatePlanIDReplayBeforeMutation(t *testing.T) {
+	pub, priv := newTestSigningKey(t)
+	base := time.Date(2026, 6, 18, 12, 0, 0, 0, time.UTC)
+	srcDir := t.TempDir()
+	workDir := t.TempDir()
+	cfgPath, original := writeHermesConfig(t, srcDir)
+
+	plan := dryRunPlan("node-1", cfgPath, "openai", "gpt-4o")
+	plan.CreatedAt = base
+	signed, err := protocol.SignConfigPlan(plan, priv)
+	if err != nil {
+		t.Fatalf("sign plan: %v", err)
+	}
+
+	exec := ConfigApplyExecutor{NodeID: "node-1", PublicKey: pub, WorkDir: workDir, Now: func() time.Time { return base }}
+	if _, err := exec.Execute(context.Background(), signed); err != nil {
+		t.Fatalf("first execute: %v", err)
+	}
+
+	result, err := exec.Execute(context.Background(), signed)
+	if err == nil {
+		t.Fatal("expected duplicate plan rejection, got nil")
+	}
+	if !strings.Contains(err.Error(), "duplicate config plan id") {
+		t.Fatalf("error = %q, want duplicate plan id", err.Error())
+	}
+	if s, ok := findStep(t, result.Steps, "validated"); !ok || s.Status != "failed" {
+		t.Fatalf("validated step = %+v, want failed", s)
+	}
+	if _, ok := findStep(t, result.Steps, "backup_created"); ok {
+		t.Fatal("backup_created reached for duplicate plan replay")
+	}
+	if n := dirEntryCount(t, workDir); n != 1 {
+		t.Fatalf("work dir entries = %d, want only the first apply run", n)
+	}
+	after, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read config after duplicate rejection: %v", err)
+	}
+	if string(after) != string(original) {
+		t.Fatalf("config after duplicate rejection = %q, want original %q", after, original)
+	}
+}
+
 func TestConfigApplyRejectsLiveMode(t *testing.T) {
 	pub, priv := newTestSigningKey(t)
 	srcDir := t.TempDir()
@@ -580,6 +624,45 @@ func TestConfigApplyLiveRollsBackOnRestartFailure(t *testing.T) {
 	}
 	if string(after) != string(original) {
 		t.Errorf("config after rollback = %q, want original %q (byte-for-byte restore)", after, original)
+	}
+}
+
+func TestConfigApplyLiveRollbackRestoresOriginalContentAndMode(t *testing.T) {
+	pub, priv := newTestSigningKey(t)
+	srcDir := t.TempDir()
+	workDir := t.TempDir()
+	cfgPath, original := writeHermesConfig(t, srcDir)
+	if err := os.Chmod(cfgPath, 0o640); err != nil {
+		t.Fatalf("chmod config: %v", err)
+	}
+
+	signed, err := protocol.SignConfigPlan(livePlan("node-1", cfgPath, "openai", "gpt-4o"), priv)
+	if err != nil {
+		t.Fatalf("sign plan: %v", err)
+	}
+
+	controller := &stubController{restartErr: errors.New("simulated restart failure")}
+	exec := ConfigApplyExecutor{NodeID: "node-1", PublicKey: pub, WorkDir: workDir, AllowLiveApply: true, Controller: controller}
+	result, err := exec.Execute(context.Background(), signed)
+	if err == nil {
+		t.Fatal("expected restart failure, got nil")
+	}
+	if s, ok := findStep(t, result.Steps, "rolled_back"); !ok || s.Status != "completed" {
+		t.Fatalf("rolled_back step = %+v, want completed", s)
+	}
+	after, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read config after rollback: %v", err)
+	}
+	if string(after) != string(original) {
+		t.Fatalf("config after rollback = %q, want original %q", after, original)
+	}
+	info, err := os.Stat(cfgPath)
+	if err != nil {
+		t.Fatalf("stat config after rollback: %v", err)
+	}
+	if info.Mode().Perm() != 0o640 {
+		t.Fatalf("mode after rollback = %v, want 0640", info.Mode().Perm())
 	}
 }
 

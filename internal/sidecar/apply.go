@@ -111,6 +111,14 @@ func (e ConfigApplyExecutor) Execute(ctx context.Context, signedPlan protocol.Si
 			return result, err
 		}
 	}
+	workDir := strings.TrimSpace(e.WorkDir)
+	if workDir == "" {
+		workDir = filepath.Join(os.TempDir(), "sideplane-apply")
+	}
+	if err := rejectDuplicatePlanRun(workDir, signedPlan.Plan.ID); err != nil {
+		addStep("validated", "failed", err.Error())
+		return result, err
+	}
 	readFile := e.ReadFile
 	if readFile == nil {
 		readFile = os.ReadFile
@@ -121,10 +129,6 @@ func (e ConfigApplyExecutor) Execute(ctx context.Context, signedPlan protocol.Si
 		return result, fmt.Errorf("read current config: %w", err)
 	}
 
-	workDir := strings.TrimSpace(e.WorkDir)
-	if workDir == "" {
-		workDir = filepath.Join(os.TempDir(), "sideplane-apply")
-	}
 	runDir := filepath.Join(workDir, signedPlan.Plan.ID+"-"+observedAt.Format("20060102T150405Z"))
 	mkdirAll := e.MkdirAll
 	if mkdirAll == nil {
@@ -257,6 +261,23 @@ func rejectLiveSymlinkPath(path string) error {
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
 		return fmt.Errorf("live apply refuses symlink config path %q until target resolution is implemented", path)
+	}
+	return nil
+}
+
+func rejectDuplicatePlanRun(workDir string, planID string) error {
+	entries, err := os.ReadDir(workDir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect apply work dir for replay: %w", err)
+	}
+	prefix := planID + "-"
+	for _, entry := range entries {
+		if entry.IsDir() && strings.HasPrefix(entry.Name(), prefix) {
+			return fmt.Errorf("duplicate config plan id %q already has an apply run", planID)
+		}
 	}
 	return nil
 }
