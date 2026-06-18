@@ -1,7 +1,7 @@
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import ConfigWizard from '../ConfigWizard.tsx'
 import { compactHash, formatDate, formatRelativeTime, hasActiveConfigApply, hasActiveDeepProbe, jobBadgeClasses, latestConfigSnapshots, runtimeKey, snapshotForRuntime, stateBadgeClasses } from '../helpers.ts'
-import type { ConfigDiffEntry, EffectiveConfigResponse, Job, NodeStatus, RuntimeConfigSnapshot, RuntimeStatus } from '../types.ts'
+import type { ConfigApplyResult, ConfigDiffEntry, DeepProbeResult, EffectiveConfigResponse, Job, NodeStatus, RuntimeConfigSnapshot, RuntimeStatus } from '../types.ts'
 
 export function NodeDetailView({
   creating,
@@ -35,6 +35,7 @@ export function NodeDetailView({
   const [wizardOpen, setWizardOpen] = useState(false)
   const [removing, setRemoving] = useState(false)
   const [removeError, setRemoveError] = useState<string | null>(null)
+  const [selectedJobId, setSelectedJobId] = useState<string | null>(null)
   const canEditConfig = Boolean(primarySnapshot?.configPath)
   const canRemoveNode = operatorToken.trim().length > 0
 
@@ -162,10 +163,23 @@ export function NodeDetailView({
         <div className="divide-y divide-[var(--sp-border)]">
           {!jobsLoading && jobs.length === 0 && <div className="px-4 py-4 text-xs text-[var(--sp-muted)]">No jobs yet.</div>}
           {jobs.slice(0, 6).map((job) => (
-            <div key={job.id} className="grid gap-2 px-4 py-3 text-xs sm:grid-cols-[1fr_auto_auto] sm:items-center">
-              <span className="font-mono text-[var(--sp-text)]">{job.type}</span>
-              <span className={`inline-flex w-fit rounded border px-2 py-0.5 font-semibold ${jobBadgeClasses(job.status)}`}>{job.status}</span>
-              <span className="text-[var(--sp-faint)]" title={formatDate(job.createdAt)}>{formatRelativeTime(job.createdAt)}</span>
+            <div key={job.id}>
+              <button
+                type="button"
+                className="grid w-full gap-2 px-4 py-3 text-left text-xs hover:bg-[var(--sp-surface-2)] sm:grid-cols-[1fr_auto_auto] sm:items-center"
+                aria-expanded={selectedJobId === job.id}
+                onClick={() => setSelectedJobId((current) => (current === job.id ? null : job.id))}
+              >
+                <span className="flex min-w-0 items-center gap-2 font-mono text-[var(--sp-text)]">
+                  <span className="inline-flex h-5 w-5 flex-none items-center justify-center rounded border border-[var(--sp-border)] text-[11px] text-[var(--sp-muted)]">
+                    {selectedJobId === job.id ? '-' : '+'}
+                  </span>
+                  <span className="truncate">{job.type}</span>
+                </span>
+                <span className={`inline-flex w-fit rounded border px-2 py-0.5 font-semibold ${jobBadgeClasses(job.status)}`}>{job.status}</span>
+                <span className="text-[var(--sp-faint)]" title={formatDate(job.createdAt)}>{formatRelativeTime(job.createdAt)}</span>
+              </button>
+              {selectedJobId === job.id && <JobDetail job={job} />}
             </div>
           ))}
         </div>
@@ -185,6 +199,85 @@ export function NodeDetailView({
       )}
     </div>
   )
+}
+
+function JobDetail({ job }: { job: Job }) {
+  if (job.status === 'pending' || job.status === 'claimed') {
+    return <JobDetailShell>Waiting for sidecar...</JobDetailShell>
+  }
+  if (job.status === 'failed') {
+    return <JobDetailShell tone="danger">{job.error || 'Job failed without an error message.'}</JobDetailShell>
+  }
+  if (job.type === 'deep_probe') {
+    return <DeepProbeJobDetail job={job} />
+  }
+  if (job.type === 'config_apply') {
+    return <ConfigApplyJobDetail job={job} />
+  }
+  return <JobDetailShell>No structured result available.</JobDetailShell>
+}
+
+function DeepProbeJobDetail({ job }: { job: Job }) {
+  const result = parseJobResult<DeepProbeResult>(job)
+  const snapshots = result?.configSnapshots ?? []
+  if (snapshots.length === 0) {
+    return <JobDetailShell>No config snapshots reported.</JobDetailShell>
+  }
+
+  return (
+    <JobDetailShell>
+      <div className="grid gap-2">
+        {snapshots.map((snapshot, index) => (
+          <div key={`${snapshot.runtimeName || snapshot.runtimeType}-${snapshot.profile || index}`} className="grid gap-2 rounded-lg border border-[var(--sp-border)] bg-[var(--sp-surface)] px-3 py-2 sm:grid-cols-[1fr_1fr_1fr_1fr]">
+            <RuntimeField label="Runtime" value={snapshot.runtimeName || snapshot.runtimeType || '-'} />
+            <RuntimeField label="Provider" value={snapshot.provider || '-'} />
+            <RuntimeField label="Model" value={snapshot.model || '-'} />
+            <RuntimeField label="Hash" value={compactHash(snapshot.configHash)} title={snapshot.configHash} />
+          </div>
+        ))}
+      </div>
+    </JobDetailShell>
+  )
+}
+
+function ConfigApplyJobDetail({ job }: { job: Job }) {
+  const result = parseJobResult<ConfigApplyResult>(job)
+  const steps = result?.steps ?? []
+  if (steps.length === 0) {
+    return <JobDetailShell>No config apply steps reported.</JobDetailShell>
+  }
+
+  return (
+    <JobDetailShell>
+      <div className="mb-2 font-mono text-[11px] text-[var(--sp-faint)]">{result?.dryRun ? 'dry-run' : 'live'} apply</div>
+      <div className="grid gap-2">
+        {steps.map((step, index) => (
+          <div key={`${step.name}-${index}`} className="grid gap-2 rounded-lg border border-[var(--sp-border)] bg-[var(--sp-surface)] px-3 py-2 sm:grid-cols-[1fr_auto_2fr] sm:items-center">
+            <span className="font-mono text-xs font-semibold text-[var(--sp-text)]">{step.name}</span>
+            <span className={`inline-flex w-fit rounded border px-2 py-0.5 text-[11px] font-semibold ${step.status === 'failed' ? 'border-rose-500/30 bg-rose-500/10 text-rose-600' : 'border-[var(--sp-border)] bg-[var(--sp-surface-2)] text-[var(--sp-muted)]'}`}>{step.status}</span>
+            <span className="min-w-0 truncate text-xs text-[var(--sp-muted)]" title={step.detail || ''}>{step.detail || '-'}</span>
+          </div>
+        ))}
+      </div>
+    </JobDetailShell>
+  )
+}
+
+function JobDetailShell({ children, tone = 'normal' }: { children: ReactNode; tone?: 'normal' | 'danger' }) {
+  return (
+    <div className={`border-t border-[var(--sp-border)] bg-[var(--sp-surface-2)] px-4 py-3 text-xs ${tone === 'danger' ? 'text-rose-600' : 'text-[var(--sp-muted)]'}`}>
+      {children}
+    </div>
+  )
+}
+
+function parseJobResult<T>(job: Job): T | null {
+  if (!job.resultJson?.trim()) return null
+  try {
+    return JSON.parse(job.resultJson) as T
+  } catch {
+    return null
+  }
 }
 
 function ConfigDiffPanel({ effective, error }: { effective?: EffectiveConfigResponse; error?: string }) {
