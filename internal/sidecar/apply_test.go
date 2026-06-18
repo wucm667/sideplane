@@ -827,6 +827,92 @@ func TestAtomicReplaceFilePreservesMode(t *testing.T) {
 	}
 }
 
+func TestLiveApplyPreservesOwnerGroupAsRoot(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("requires root to verify chown-based owner/group preservation")
+	}
+
+	targetUID, targetGID := 1, 1
+	dir := t.TempDir()
+	path := filepath.Join(dir, "cfg")
+	if err := os.WriteFile(path, []byte("old"), 0o600); err != nil {
+		t.Fatalf("seed file: %v", err)
+	}
+	if err := os.Chown(path, targetUID, targetGID); err != nil {
+		t.Skipf("environment cannot change test file ownership to %d:%d: %v", targetUID, targetGID, err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat after chown: %v", err)
+	}
+	uid, gid, ok := fileOwner(info)
+	if !ok {
+		t.Skip("environment does not expose file uid/gid for ownership assertions")
+	}
+	if uid != targetUID || gid != targetGID {
+		t.Skipf("environment did not apply requested ownership: got %d:%d, want %d:%d", uid, gid, targetUID, targetGID)
+	}
+
+	if err := atomicReplaceFile(path, []byte("new"), info); err != nil {
+		t.Fatalf("atomic replace: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read after atomic replace: %v", err)
+	}
+	if string(got) != "new" {
+		t.Fatalf("contents after atomic replace = %q, want new", got)
+	}
+	if uid, gid := mustFileOwner(t, path); uid != targetUID || gid != targetGID {
+		t.Fatalf("owner after atomic replace = %d:%d, want %d:%d", uid, gid, targetUID, targetGID)
+	}
+
+	pub, priv := newTestSigningKey(t)
+	srcDir := t.TempDir()
+	workDir := t.TempDir()
+	cfgPath, original := writeHermesConfig(t, srcDir)
+	if err := os.Chown(cfgPath, targetUID, targetGID); err != nil {
+		t.Skipf("environment cannot change config ownership to %d:%d: %v", targetUID, targetGID, err)
+	}
+	signed, err := protocol.SignConfigPlan(livePlan("node-1", cfgPath, "openai", "gpt-4o"), priv)
+	if err != nil {
+		t.Fatalf("sign plan: %v", err)
+	}
+
+	controller := &stubController{restartErr: errors.New("simulated restart failure")}
+	exec := ConfigApplyExecutor{NodeID: "node-1", PublicKey: pub, WorkDir: workDir, AllowLiveApply: true, Controller: controller}
+	result, err := exec.Execute(context.Background(), signed)
+	if err == nil {
+		t.Fatal("expected restart failure rollback, got nil")
+	}
+	if s, ok := findStep(t, result.Steps, "rolled_back"); !ok || s.Status != "completed" {
+		t.Fatalf("rolled_back step = %+v, want completed", s)
+	}
+	after, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read config after rollback: %v", err)
+	}
+	if string(after) != string(original) {
+		t.Fatalf("config after rollback = %q, want original %q", after, original)
+	}
+	if uid, gid := mustFileOwner(t, cfgPath); uid != targetUID || gid != targetGID {
+		t.Fatalf("owner after rollback = %d:%d, want %d:%d", uid, gid, targetUID, targetGID)
+	}
+}
+
+func mustFileOwner(t *testing.T, path string) (int, int) {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	uid, gid, ok := fileOwner(info)
+	if !ok {
+		t.Skip("environment does not expose file uid/gid for ownership assertions")
+	}
+	return uid, gid
+}
+
 func TestVerifyWritten(t *testing.T) {
 	read := func(string) ([]byte, error) { return []byte("abc"), nil }
 	if err := verifyWritten(read, "p", []byte("abc")); err != nil {
