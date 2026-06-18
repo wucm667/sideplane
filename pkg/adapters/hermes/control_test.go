@@ -59,6 +59,19 @@ func TestRestartDockerContainer(t *testing.T) {
 	}
 }
 
+func TestRestartPrefersDockerContainerOverSystemdUnit(t *testing.T) {
+	runner := &recordingRunner{}
+	a := NewAdapter(WithDockerContainer("hermes"), WithServiceUnit("hermes.service"), WithAllowLiveApply(true))
+	a.runCommand = runner.run
+
+	if err := a.Restart(context.Background()); err != nil {
+		t.Fatalf("Restart: %v", err)
+	}
+	if got := runner.joined(); len(got) != 1 || got[0] != "docker restart hermes" {
+		t.Errorf("calls = %v, want [docker restart hermes]", got)
+	}
+}
+
 func TestRestartDockerError(t *testing.T) {
 	runner := &recordingRunner{fn: func(string, []string) ([]byte, error) {
 		return []byte("boom"), errors.New("exit 1")
