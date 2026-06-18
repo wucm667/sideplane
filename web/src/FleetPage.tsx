@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import { ActivityView } from './components/ActivityView.tsx'
 import { EnrollmentView } from './components/EnrollmentView.tsx'
 import { FleetOverview } from './components/FleetOverview.tsx'
@@ -39,6 +40,46 @@ export default function FleetPage() {
     view,
     loadAuditEvents,
   } = useFleetPageController()
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) return
+      if (isEditableTarget(event.target)) return
+
+      const key = event.key.toLowerCase()
+      if (key === '1' || key === 'f') {
+        event.preventDefault()
+        changeView('fleet')
+        return
+      }
+      if (key === '2' || key === 'a') {
+        event.preventDefault()
+        changeView('activity')
+        return
+      }
+      if (key === '3' || key === 'e') {
+        event.preventDefault()
+        changeView('enrollment')
+        return
+      }
+      if (key === 'r') {
+        event.preventDefault()
+        if (view === 'activity') {
+          void loadAuditEvents()
+        } else {
+          void refreshFleet()
+        }
+        return
+      }
+      if (key === 'escape' && view === 'node') {
+        event.preventDefault()
+        changeView('fleet')
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [changeView, loadAuditEvents, refreshFleet, view])
 
   return (
     <div data-sideplane-theme={theme} className="min-h-screen bg-[var(--sp-bg)] text-[var(--sp-text)]">
@@ -103,6 +144,13 @@ export default function FleetPage() {
       </div>
     </div>
   )
+}
+
+function isEditableTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false
+  if (target.isContentEditable) return true
+  const tagName = target.tagName.toLowerCase()
+  return tagName === 'input' || tagName === 'textarea' || tagName === 'select'
 }
 
 function EmptyState({ title, body }: { title: string; body: string }) {

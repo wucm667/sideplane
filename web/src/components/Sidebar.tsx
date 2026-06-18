@@ -78,6 +78,10 @@ export function Sidebar({
           <span>{theme === 'dark' ? 'Dark mode' : 'Light mode'}</span>
           <span className="font-mono text-[var(--sp-faint)]">{theme === 'dark' ? 'on' : 'off'}</span>
         </button>
+        <div className="flex items-center justify-between px-1 text-[11px] text-[var(--sp-faint)]">
+          <span>?</span>
+          <span>shortcuts</span>
+        </div>
       </div>
     </aside>
   )
