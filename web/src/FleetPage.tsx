@@ -718,7 +718,12 @@ function FleetRow({ activeProbe, node, onOpen }: { activeProbe: boolean; node: N
       </div>
 
       <div>
-        <div className={`text-xs font-semibold ${configColor}`}>{configLabel}</div>
+        <div className="flex items-center gap-1.5">
+          <span className={`text-xs font-semibold ${configColor}`}>{configLabel}</span>
+          {node.drift === true && (
+            <span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-amber-600">drift</span>
+          )}
+        </div>
         <div className="mt-1 font-mono text-[11px] text-[var(--sp-faint)]">{compactHash(node.configHash)}</div>
       </div>
 
