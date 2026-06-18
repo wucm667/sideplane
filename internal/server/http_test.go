@@ -1264,6 +1264,21 @@ func TestHealthz(t *testing.T) {
 	assertJSONStatus(t, rec, "ok")
 }
 
+func TestSecurityHeaders(t *testing.T) {
+	handler := NewHandler()
+	for _, path := range []string{"/healthz", "/api/nodes"} {
+		t.Run(path, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+
+			handler.ServeHTTP(rec, req)
+
+			assertStatus(t, rec, http.StatusOK)
+			assertSecurityHeaders(t, rec)
+		})
+	}
+}
+
 func TestReadyz(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
@@ -1794,6 +1809,22 @@ func assertJSONStatus(t *testing.T, rec *httptest.ResponseRecorder, want string)
 	}
 	if body.Status != want {
 		t.Fatalf("status body = %q, want %q", body.Status, want)
+	}
+}
+
+func assertSecurityHeaders(t *testing.T, rec *httptest.ResponseRecorder) {
+	t.Helper()
+
+	want := map[string]string{
+		"X-Content-Type-Options":  "nosniff",
+		"X-Frame-Options":         "DENY",
+		"Referrer-Policy":         "strict-origin-when-cross-origin",
+		"Content-Security-Policy": contentSecurityPolicy,
+	}
+	for name, value := range want {
+		if got := rec.Header().Get(name); got != value {
+			t.Fatalf("%s = %q, want %q", name, got, value)
+		}
 	}
 }
 

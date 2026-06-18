@@ -111,7 +111,7 @@ func NewHandlerWithConfig(cfg HandlerConfig) (http.Handler, error) {
 	mux.HandleFunc("/api/nodes/", handler.nodeJobsRouter)
 	mux.HandleFunc("/api/sidecar/jobs/next", handler.claimNextJob)
 	mux.HandleFunc("/api/sidecar/jobs/", handler.submitJobResult)
-	return mux, nil
+	return securityHeaders(mux), nil
 }
 
 type handler struct {

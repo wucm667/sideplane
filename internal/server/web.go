@@ -46,14 +46,15 @@ func NewWebHandler(webDir string, api http.Handler) (http.Handler, error) {
 
 	fileServer := http.FileServer(http.Dir(root))
 
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	webHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if isAPIPath(r.URL.Path) {
 			api.ServeHTTP(w, r)
 			return
 		}
 
 		serveWebAsset(w, r, root, fileServer)
-	}), nil
+	})
+	return securityHeaders(webHandler), nil
 }
 
 // serveWebAsset serves a static asset from root, falling back to index.html
