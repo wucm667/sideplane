@@ -2,314 +2,91 @@
 
 Open-source control plane for self-hosted AI agent fleets.
 
-Sideplane is for solo operators, one-person companies, and small teams running AI agents across local PCs, LAN servers, and VPS nodes. It starts with Hermes Agent and OpenClaw, with a focus on safe configuration, lifecycle management, visibility, and rollback.
+Sideplane is built for solo operators, one-person companies, and small teams running agents across local PCs, LAN servers, and VPS nodes. It starts with Hermes Agent and OpenClaw and focuses on a narrow operational promise:
 
 > Know what every self-hosted agent is running, safely change its configuration, and recover when a change goes wrong.
 
 ## Status
 
-Sideplane is in early project initialization.
+Sideplane is early, but the first control-plane path is implemented: a Go server, Go sidecar, SQLite store, compact React UI, Docker packaging, systemd units, enrollment flow, heartbeat/status reporting, audit history, metrics, and signed config-apply jobs.
 
-The repository is currently defining product scope, architecture, and the first implementation path. Production use is not ready yet.
+Production operators should still treat it as pre-1.0 infrastructure. Run it on low-risk nodes first, keep backups, and review the dry-run/live apply docs before enabling live writes.
 
-## Why
+## Features
 
-Running multiple self-hosted agents quickly creates an operations problem:
+- Fleet inventory with node heartbeat, freshness state, runtime summary, and drift badges.
+- Sidecar enrollment token flow with one-time tokens exchanged for long-lived node credentials.
+- Hermes and OpenClaw adapters for read-only runtime discovery, config hash reporting, and provider/model snapshots.
+- Desired configuration layering with effective config preview and read-only actual-vs-desired diffs.
+- Signed config apply plans, dry-run by default, with live apply gated behind explicit sidecar opt-in and rollback handling.
+- Deep-probe, config-apply, restart/rollback-aware job lifecycle with recent job status in the UI.
+- Operator audit log with node/action filtering and deletion audit events.
+- Node removal API and UI flow for decommissioned fleet entries.
+- Prometheus-compatible `/metrics`, including job counters and fleet freshness/drift gauges.
+- Compact infrastructure-console Web UI served directly by `sideplane-server`.
+- Docker Compose, server and sidecar systemd units, and a Linux install script for local systemd setup.
+- Server hardening with security response headers and structured request logging.
 
-- Each node may run different agent runtimes.
-- Model and provider settings drift across machines.
-- Updating configuration often means SSHing into every server.
-- Letting an agent modify its own critical configuration can be risky.
-- Upgrades and restarts need backup, validation, health checks, and rollback.
+Sideplane is not a chat UI, prompt workspace, autonomous task board, marketplace, or generic multi-agent collaboration product.
 
-Sideplane aims to provide a small, self-hosted control plane for that problem.
+## Quick Start
 
-## What Sideplane Will Manage
+### Docker Compose
 
-Initial runtime targets:
-
-- Hermes Agent
-- OpenClaw
-
-Initial management capabilities:
-
-- Fleet inventory
-- Node and agent heartbeat
-- Runtime status
-- Current provider/model visibility
-- Configuration diff
-- Safe configuration apply
-- Restart
-- Rollback
-- Audit trail
-
-Sideplane is not intended to be a chat UI, prompt workspace, autonomous task board, or generic multi-agent collaboration platform.
-
-## Architecture Direction
-
-Sideplane uses an external sidecar model.
-
-```text
-Sideplane Server
-  - Web UI
-  - REST API
-  - WebSocket endpoint
-  - SQLite/PostgreSQL store
-  - Desired configuration state
-  - Job planner
-  - Audit log
-
-Sideplane Sidecar
-  - Node enrollment
-  - Heartbeat
-  - Runtime discovery
-  - Hermes adapter
-  - OpenClaw adapter
-  - Config backup/apply/rollback
-  - Service restart
-  - Health check
-
-Managed Runtimes
-  - Hermes Agent
-  - OpenClaw
-```
-
-The sidecar is an independent process. Hermes and OpenClaw are managed runtimes, not the components responsible for changing their own critical configuration.
-
-## Network Model
-
-Sidecars connect outbound to the server by default.
-
-This supports:
-
-- LAN deployments where server and sidecars can reach each other
-- Public server with public sidecars
-- Public server with private or NATed sidecars
-
-The server dispatches work through an existing sidecar connection or polling fallback, rather than requiring inbound access to every node.
-
-## Planned Technology Stack
-
-- Server: Go
-- Sidecar: Go
-- CLI: Go
-- Web UI: React, TypeScript, Vite
-- UI primitives: Radix UI or shadcn/ui with Tailwind CSS
-- Default database: SQLite
-- Production/team database option: PostgreSQL
-- API style: REST plus WebSocket
-- API contract: OpenAPI with generated TypeScript client
-- Metrics: Prometheus-compatible `/metrics`
-- Logging: structured Go `slog`
-- Packaging: single binaries, Docker images, systemd units, and install script
-
-The first version should remain easy to self-host and should not require Redis, NATS, Kubernetes, or a separate frontend server at runtime.
-
-## Configuration Model
-
-Sideplane will use layered desired configuration:
-
-```text
-global defaults
-  -> group overrides
-    -> node overrides
-      -> agent/profile overrides
-```
-
-The MVP should support changing model/provider configuration globally and overriding it for an individual agent or profile.
-
-Configuration changes should follow a safe flow:
-
-```text
-plan
-  -> diff
-  -> sign
-  -> sidecar receives
-  -> local backup
-  -> write temp config
-  -> validate
-  -> atomic replace
-  -> restart if needed
-  -> health check
-  -> report success or rollback
-```
-
-Secrets should be referenced rather than stored inline in ordinary configuration.
-
-## MVP Scope
-
-The first useful version should include:
-
-- Server setup with SQLite
-- Sidecar enrollment token flow
-- Node registry
-- Heartbeat and fresh/stale/offline state
-- Hermes status adapter
-- OpenClaw status adapter
-- Current model/provider display
-- Config hash and drift display
-- Config diff preview
-- Signed config plan
-- Safe config apply
-- Restart operation
-- Rollback operation
-- Basic audit log
-- Prometheus-compatible metrics endpoint
-
-## Repository Layout
-
-Planned monorepo layout:
-
-```text
-sideplane/
-  cmd/
-    sideplane-server/
-    sideplane-sidecar/
-    sideplane/
-  internal/
-    server/
-    sidecar/
-    api/
-    store/
-    auth/
-    jobs/
-    rollout/
-    audit/
-  pkg/
-    protocol/
-    config/
-    adapters/
-      hermes/
-      openclaw/
-    crypto/
-  web/
-  deployments/
-    docker-compose/
-    systemd/
-  docs/
-  examples/
-```
-
-## Development
-
-Run the development server:
+From the repository root:
 
 ```bash
-go run ./cmd/sideplane-server
+export SIDEPLANE_OPERATOR_TOKEN='replace-with-a-long-random-token'
+docker compose -f deployments/docker-compose/docker-compose.yml up -d --build
 ```
 
-Run the Web UI development server (in another terminal):
+Open `http://localhost:8080`, enter the operator token in the sidebar, and create an enrollment token in the Enrollment view. Then enroll the compose sidecar:
 
 ```bash
-cd web && npm install && npm run dev
+docker compose -f deployments/docker-compose/docker-compose.yml exec sidecar \
+  sideplane-sidecar enroll --server http://server:8080 --token TOKEN --state /data/sidecar.json
 ```
 
-The Vite dev server listens on `http://localhost:3000` and proxies API
-requests to `http://localhost:8080`. You can also change the target server
-with the `VITE_API_URL` environment variable if the backend is on a different
-port.
+The sidecar container waits for `/data/sidecar.json`, then starts outbound heartbeat and job polling with env-var configuration.
 
-To build the Web UI for production:
+### Local Development
+
+Run the API server with SQLite:
 
 ```bash
-cd web && npm run build
+export SIDEPLANE_OPERATOR_TOKEN='replace-with-a-long-random-token'
+go run ./cmd/sideplane-server --db ./sideplane.db
 ```
 
-This outputs static assets to `web/dist/` that can be served by the
-Sideplane server.
+Run the Web UI dev server in another terminal:
 
-To run the server and serve the built Web UI from `web/dist/`:
+```bash
+cd web
+npm install
+npm run dev
+```
+
+The Vite dev server listens on `http://localhost:3000` and proxies API requests to `http://localhost:8080`.
+
+To serve the built UI from the Go server:
 
 ```bash
 npm --prefix web run build
 export SIDEPLANE_OPERATOR_TOKEN='replace-with-a-long-random-token'
-go run ./cmd/sideplane-server --web-dir ./web/dist
+go run ./cmd/sideplane-server --db ./sideplane.db --web-dir ./web/dist
 ```
 
-When `--web-dir` points at a directory, the server serves the built Web UI for
-browser routes while keeping the API routes on `/api/*`, `/healthz`, `/readyz`,
-and `/metrics`. Unknown browser paths fall back to `index.html` so client-side
-routing works. When `--web-dir` is omitted, the server only serves the API.
+### Manual Sidecar
 
-## Docker
-
-From the repository root, set an operator token and start the local stack:
+Create an enrollment token from the UI or CLI:
 
 ```bash
-export SIDEPLANE_OPERATOR_TOKEN='replace-with-a-long-random-token'
-docker compose -f deployments/docker-compose/docker-compose.yml up -d
+go run ./cmd/sideplane enrollment create \
+  --server http://localhost:8080 \
+  --operator-token "$SIDEPLANE_OPERATOR_TOKEN"
 ```
 
-The server is published on `http://localhost:8080` and stores SQLite data in the
-`sideplane-data` volume. Create an enrollment token in the UI, then enroll the
-compose sidecar:
-
-```bash
-docker compose -f deployments/docker-compose/docker-compose.yml exec sidecar sideplane-sidecar enroll --server http://server:8080 --token TOKEN --state /data/sidecar.json
-```
-
-The sidecar service waits for `/data/sidecar.json`, then starts with outbound
-heartbeats to the server.
-
-The server listens on `:8080` by default, opens `sideplane.db` in the current
-directory, and applies SQLite migrations on startup. Use `--addr` to choose
-another address and `--db` to choose a different SQLite database path:
-
-```bash
-go run ./cmd/sideplane-server --addr :9090 --db ./dev-sideplane.db
-```
-
-Node freshness is computed by the server when `GET /api/nodes` is listed. The
-store keeps the latest heartbeat-derived status, while the API response applies
-the current freshness policy. By default, nodes become `stale` after `2m` and
-`offline` after `10m` without a heartbeat:
-
-```bash
-go run ./cmd/sideplane-server --stale-after 2m --offline-after 10m
-```
-
-`--offline-after` must be greater than `--stale-after`; otherwise the server
-exits during startup.
-
-Available endpoints:
-
-- `GET /healthz` returns `{"status":"ok"}`
-- `GET /readyz` returns `{"status":"ready"}`
-- `GET /metrics` returns a placeholder Prometheus-compatible endpoint
-- `POST /api/enrollment-tokens` creates a one-time sidecar enrollment token and requires `Authorization: Bearer <operatorToken>`
-- `POST /api/enroll` exchanges an enrollment token for a node credential
-- `POST /api/heartbeat` records the latest heartbeat-derived node status and
-  requires `Authorization: Bearer <nodeCredential>`
-- `GET /api/nodes` lists nodes with freshness-adjusted `fresh`, `stale`, or
-  `offline` state
-- `GET /api/nodes/{nodeId}/jobs` lists that node's jobs by newest `createdAt`
-  first
-- `POST /api/nodes/{nodeId}/jobs` creates a `deep_probe` job for a node and requires `Authorization: Bearer <operatorToken>`
-- `GET /api/sidecar/jobs/next?nodeId=...` lets an enrolled sidecar claim its
-  next pending job and requires `Authorization: Bearer <nodeCredential>`
-- `POST /api/sidecar/jobs/{jobId}/result` lets the owning sidecar submit a job
-  result and requires `Authorization: Bearer <nodeCredential>`
-
-Create a sidecar enrollment token with the CLI:
-
-```bash
-go run ./cmd/sideplane enrollment create --server http://localhost:8080 --operator-token "$SIDEPLANE_OPERATOR_TOKEN"
-```
-
-The response prints the plaintext token once and its expiry. The server stores
-only a hash of the token. Mutating operator endpoints reject requests unless
-`SIDEPLANE_OPERATOR_TOKEN` is configured and supplied, or the server is started
-with the explicit development-only `--allow-unauthenticated-operator-api` flag.
-
-Enroll a sidecar with the one-time token:
-
-```bash
-go run ./cmd/sideplane-sidecar enroll --server http://localhost:8080 --token TOKEN
-```
-
-Enrollment writes `nodeId` and `nodeCredential` to
-`~/.sideplane/sidecar.json` by default. Use `--state` to choose another path,
-and `--node-id` to request a specific node ID:
+Enroll the sidecar:
 
 ```bash
 go run ./cmd/sideplane-sidecar enroll \
@@ -319,75 +96,105 @@ go run ./cmd/sideplane-sidecar enroll \
   --state ./sidecar-state.json
 ```
 
-After enrollment, start the sidecar heartbeat and job polling loops from the saved state:
-
-```bash
-go run ./cmd/sideplane-sidecar
-```
-
-Both loops default to a `30s` interval. The job poller now checks for work once
-immediately on startup, then continues at `--job-poll-interval`. Use
-`--heartbeat-interval` and `--job-poll-interval` to tune development runs:
-
-```bash
-go run ./cmd/sideplane-sidecar --heartbeat-interval 15s --job-poll-interval 10s
-```
-
-For a custom state path, pass the same `--state` value used during enrollment:
+Start heartbeat and job polling:
 
 ```bash
 go run ./cmd/sideplane-sidecar --state ./sidecar-state.json
 ```
 
-The runtime `--server` and `--node-id` flags override values loaded from state.
-The node credential is read from state first; `--node-credential` is available
-for tests and temporary runs when no state credential exists.
+## Configuration
 
-The sidecar heartbeat includes lightweight runtime discovery. During each
-heartbeat, the sidecar checks whether `hermes` and `openclaw` commands are
-available on the local `PATH`. Detected runtimes are reported in the heartbeat
-payload; missing runtimes are silently omitted. Runtime adapters may also read
-known local config files to report provider/model and config hash, but they do
-not write config, restart services, SSH, or execute arbitrary commands.
+Server flags can be configured with environment variables. Explicit CLI flags take precedence over env vars.
 
-For explicit read-only config discovery, pass path lists to the sidecar:
+| Env var | Default | Purpose |
+| --- | --- | --- |
+| `SIDEPLANE_ADDR` | `:8080` | HTTP listen address. |
+| `SIDEPLANE_DB_PATH` | `sideplane.db` | SQLite database path. |
+| `SIDEPLANE_WEB_DIR` | empty | Built Web UI directory to serve. Empty means API only. |
+| `SIDEPLANE_OPERATOR_TOKEN` | empty | Bearer token required for mutating operator APIs. |
+| `SIDEPLANE_SIGNING_KEY` | empty | Ed25519 config-plan signing key path. Empty uses ephemeral in-memory key. |
+| `SIDEPLANE_STALE_AFTER` | `2m` | Heartbeat age before a node is stale. |
+| `SIDEPLANE_OFFLINE_AFTER` | `10m` | Heartbeat age before a node is offline. Must exceed stale duration. |
+| `SIDEPLANE_ALLOW_UNAUTHENTICATED_OPERATOR_API` | false | Development-only escape hatch for mutating operator APIs. |
 
-```bash
-go run ./cmd/sideplane-sidecar \
-  --hermes-config-paths /etc/hermes/config.json \
-  --openclaw-config-paths /etc/openclaw/config.json
+Sidecar runtime flags also support env vars. Explicit CLI flags take precedence over env vars, then values loaded from the sidecar state file.
+
+| Env var | Purpose |
+| --- | --- |
+| `SIDEPLANE_SERVER_URL` | Server URL used for heartbeat, job polling, and enrollment commands. |
+| `SIDEPLANE_NODE_ID` | Node ID override after enrollment. |
+| `SIDEPLANE_SIDECAR_STATE` | Sidecar state file path. |
+| `SIDEPLANE_HEARTBEAT_INTERVAL` | Heartbeat loop interval. |
+| `SIDEPLANE_JOB_POLL_INTERVAL` | Job polling interval. |
+| `SIDEPLANE_HERMES_CONFIG_PATHS` | Read-only Hermes config search paths. |
+| `SIDEPLANE_OPENCLAW_CONFIG_PATHS` | Read-only OpenClaw config search paths. |
+| `SIDEPLANE_HERMES_DOCKER_CONTAINER` | Optional Hermes Docker container for read-only status/log inspection and allowlisted restart target. |
+| `SIDEPLANE_HERMES_SERVICE_UNIT` | Optional Hermes systemd service unit restart target. |
+| `SIDEPLANE_SERVER_PUBLIC_KEY` | Server public key used to verify signed config plans. |
+| `SIDEPLANE_APPLY_WORK_DIR` | Sidecar-controlled work directory for config apply dry runs and backups. |
+
+There is intentionally no env var for `--allow-live-apply` or `--node-credential`. Live writes require an explicit flag, and node credentials are read from the state file.
+
+## Architecture
+
+Sideplane uses an external sidecar model:
+
+```text
+Sideplane Server
+  - Web UI, REST API, metrics
+  - SQLite store
+  - desired configuration state
+  - job planner and audit log
+
+Sideplane Sidecar
+  - node enrollment and heartbeat
+  - runtime discovery
+  - Hermes/OpenClaw adapters
+  - signed config plan verification
+  - backup/apply/restart/health-check/rollback path
+
+Managed Runtimes
+  - Hermes Agent
+  - OpenClaw
 ```
 
-The same values can be supplied with `SIDEPLANE_HERMES_CONFIG_PATHS` and
-`SIDEPLANE_OPENCLAW_CONFIG_PATHS`. Path lists accept the platform path-list
-separator, commas, or newlines.
+Sidecars connect outbound to the server, which works for LAN, public, and private/NATed nodes without requiring inbound management ports. The sidecar is a controlled executor, not a general remote shell.
 
-OpenClaw support is intentionally conservative because this repository does not
-yet record the real OpenClaw config format. For OpenClaw snapshots, the config
-path and `sha256:` hash of the file bytes are authoritative for any file format.
-Provider/model extraction is best-effort from generic config keys only; when the
-adapter cannot determine both values, it leaves them empty and emits a warning
-instead of guessing. Full config contents and secret-like fields are not reported.
+## API And Operations
 
-For a read-only real-machine sidecar test using systemd, see
-[docs/read-only-sidecar-deployment.md](docs/read-only-sidecar-deployment.md)
-and [docs/real-machine-readonly-smoke-test.md](docs/real-machine-readonly-smoke-test.md).
+Core endpoints:
 
-For the signed configuration apply pipeline (dry-run by default, live apply
-gated behind `--allow-live-apply`), see
-[docs/config-apply-pipeline.md](docs/config-apply-pipeline.md).
+- `GET /healthz`, `GET /readyz`, and `GET /metrics`.
+- `POST /api/enrollment-tokens` creates one-time enrollment tokens with operator auth.
+- `POST /api/enroll` exchanges an enrollment token for a node credential.
+- `POST /api/heartbeat` records node status with node credential auth.
+- `GET /api/nodes` lists freshness-adjusted nodes with drift state.
+- `DELETE /api/nodes/{nodeId}` removes a node with operator auth and records `node.delete`.
+- `GET /api/nodes/{nodeId}/jobs` lists node jobs.
+- `POST /api/nodes/{nodeId}/jobs` creates a `deep_probe` job with operator auth.
+- `POST /api/nodes/{nodeId}/config-apply` creates a signed config apply job with operator auth.
+- `GET /api/audit?nodeId=...&action=...&limit=...` lists audit events with additive filters.
+- `GET /api/sidecar/jobs/next?nodeId=...` and `POST /api/sidecar/jobs/{jobId}/result` power sidecar polling.
 
-In the web UI, each node shows recent jobs and a `Deep Probe` button. The button
-creates a `deep_probe` job through `POST /api/nodes/{nodeId}/jobs`; the sidecar
-claims it on the next poll and reports runtime status back through the job result
-path. The UI intentionally does not expose configuration changes, restart, or
-rollback controls yet.
+For systemd deployment files, see `deployments/systemd/`. The root `install.sh` creates the `sideplane` user/group, `/etc/sideplane`, `/var/lib/sideplane`, and copies systemd units/env examples. It does not download binaries yet; build and copy `sideplane-server` and `sideplane-sidecar` manually until release CI exists.
 
-Expected next steps:
+## Security
 
-1. Confirm the real OpenClaw config format through read-only discovery on a low-risk node.
-2. Add finer per-runtime drift visibility after the node-level signal is stable.
-3. Add rollback and health-check integration after config changes.
+- Operator-token auth protects mutating operator endpoints.
+- One-time enrollment tokens are stored hashed and exchanged for long-lived node credentials.
+- Configuration plans are signed by the server and verified by the sidecar.
+- The sidecar defaults to dry-run config apply; live apply requires explicit `--allow-live-apply`.
+- The sidecar uses adapter-specific allowlisted operations and does not expose arbitrary shell execution.
+- Provider secrets should be referenced through local env/files/SOPS/1Password/Vault-style backends, not stored inline in ordinary config.
+- Server responses include `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, and a restrictive Content Security Policy. CORS is not enabled by default because the server serves its own UI.
+- Server request logs are structured with method, path, status, duration, and remote address.
+
+## Docs
+
+- [Signed config apply pipeline](docs/config-apply-pipeline.md)
+- [Live-write preflight](docs/live-write-preflight.md)
+- [Read-only sidecar deployment](docs/read-only-sidecar-deployment.md)
+- [Real-machine read-only smoke test](docs/real-machine-readonly-smoke-test.md)
 
 ## License
 
