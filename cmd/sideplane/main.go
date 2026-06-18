@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -21,6 +22,8 @@ import (
 
 const version = "dev"
 const serverURLEnv = "SIDEPLANE_SERVER_URL"
+
+var cliStdin io.Reader = os.Stdin
 
 type cliNodeStatus struct {
 	protocol.NodeStatus
@@ -44,6 +47,9 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	if len(args) >= 2 && args[0] == "config" && args[1] == "set" {
 		return runConfigSet(args[2:], stdout, stderr)
 	}
+	if len(args) >= 2 && args[0] == "node" && args[1] == "remove" {
+		return runNodeRemove(args[2:], stdout, stderr)
+	}
 	if len(args) >= 2 && args[0] == "enrollment" && args[1] == "create" {
 		return runEnrollmentCreate(args[2:], stdout, stderr)
 	}
@@ -62,6 +68,57 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 
 	fmt.Fprintln(stdout, "sideplane CLI skeleton")
 	return 0
+}
+
+func runNodeRemove(args []string, stdout io.Writer, stderr io.Writer) int {
+	flags := flag.NewFlagSet("sideplane node remove", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+
+	serverURL := flags.String("server", "", "Sideplane server URL; can also be set with SIDEPLANE_SERVER_URL")
+	operatorTokenFlag := flags.String("operator-token", "", "operator bearer token; can also be set with SIDEPLANE_OPERATOR_TOKEN")
+	yes := flags.Bool("yes", false, "skip confirmation")
+	if err := parseCommandFlags(flags, args, "yes"); err != nil {
+		return 2
+	}
+	if flags.NArg() != 1 {
+		fmt.Fprintln(stderr, "usage: sideplane node remove <nodeId> [--server URL] [--operator-token TOKEN] [--yes]")
+		return 1
+	}
+
+	nodeID := strings.TrimSpace(flags.Arg(0))
+	if nodeID == "" {
+		fmt.Fprintln(stderr, "node remove: nodeId is required")
+		return 1
+	}
+	if !*yes {
+		confirmed, err := confirmNodeRemoval(stdout, cliStdin, nodeID)
+		if err != nil {
+			fmt.Fprintf(stderr, "node remove: read confirmation: %v\n", err)
+			return 1
+		}
+		if !confirmed {
+			fmt.Fprintln(stdout, "Node removal cancelled.")
+			return 0
+		}
+	}
+
+	path := "/api/nodes/" + url.PathEscape(nodeID)
+	if _, err := apiJSONRequest(context.Background(), http.MethodDelete, serverURLValue(*serverURL), path, nil, operatorTokenValue(*operatorTokenFlag)); err != nil {
+		fmt.Fprintf(stderr, "node remove: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "Node %s removed.\n", nodeID)
+	return 0
+}
+
+func confirmNodeRemoval(stdout io.Writer, stdin io.Reader, nodeID string) (bool, error) {
+	fmt.Fprintf(stdout, "Remove node %q? [y/N] ", nodeID)
+	line, err := bufio.NewReader(stdin).ReadString('\n')
+	if err != nil && err != io.EOF {
+		return false, err
+	}
+	answer := strings.TrimSpace(line)
+	return strings.EqualFold(answer, "y") || strings.EqualFold(answer, "yes"), nil
 }
 
 func runConfigGet(args []string, stdout io.Writer, stderr io.Writer) int {

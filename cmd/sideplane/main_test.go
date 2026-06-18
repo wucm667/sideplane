@@ -285,3 +285,68 @@ func TestConfigSetUpdatesGlobalDesiredConfig(t *testing.T) {
 		t.Fatalf("stdout = %q, want updated global config", got)
 	}
 }
+
+func TestNodeRemoveWithYesDeletesNode(t *testing.T) {
+	var sawDelete bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			t.Fatalf("method = %s, want DELETE", r.Method)
+		}
+		if r.URL.Path != "/api/nodes/node-a" {
+			t.Fatalf("path = %s, want /api/nodes/node-a", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer test-token" {
+			t.Fatalf("Authorization = %q, want bearer token", got)
+		}
+		sawDelete = true
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"node", "remove", "node-a", "--server", server.URL, "--operator-token", "test-token", "--yes"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("run returned %d, stderr=%q", code, stderr.String())
+	}
+	if !sawDelete {
+		t.Fatal("server did not receive DELETE /api/nodes/node-a")
+	}
+	if got := stdout.String(); !strings.Contains(got, "Node node-a removed.") {
+		t.Fatalf("stdout = %q, want removal message", got)
+	}
+}
+
+func TestNodeRemovePromptsForConfirmation(t *testing.T) {
+	oldStdin := cliStdin
+	cliStdin = strings.NewReader("y\n")
+	defer func() {
+		cliStdin = oldStdin
+	}()
+
+	var sawDelete bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete || r.URL.Path != "/api/nodes/node-b" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		sawDelete = true
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"node", "remove", "node-b", "--server", server.URL}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("run returned %d, stderr=%q", code, stderr.String())
+	}
+	if !sawDelete {
+		t.Fatal("server did not receive DELETE after confirmation")
+	}
+	output := stdout.String()
+	for _, want := range []string{`Remove node "node-b"? [y/N]`, "Node node-b removed."} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output missing %q:\n%s", want, output)
+		}
+	}
+}
