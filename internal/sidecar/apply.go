@@ -32,8 +32,8 @@ type ConfigApplyExecutor struct {
 	WorkDir        string
 	AllowLiveApply bool
 	// Controller restarts the runtime and verifies its health after a live
-	// replace. When nil, the restart and health-check steps are skipped. A
-	// failure in either step triggers a rollback to the backup.
+	// replace. Live apply requires a controller so replacement is followed by
+	// restart and health-check; a failure in either step triggers rollback.
 	Controller  adapters.ServiceController
 	ReadFile    func(string) ([]byte, error)
 	WriteFile   func(string, []byte, os.FileMode) error
@@ -81,6 +81,17 @@ func (e ConfigApplyExecutor) Execute(ctx context.Context, signedPlan protocol.Si
 	configPath := strings.TrimSpace(signedPlan.Plan.Body.Profile)
 	if configPath == "" {
 		return result, errors.New("plan profile must contain the read-only config path for dry-run apply")
+	}
+	if live {
+		if e.Controller == nil {
+			err := errors.New("live config apply requires a restart/health controller")
+			addStep("validated", "failed", err.Error())
+			return result, err
+		}
+		if err := rejectLiveSymlinkPath(configPath); err != nil {
+			addStep("validated", "failed", err.Error())
+			return result, err
+		}
 	}
 	readFile := e.ReadFile
 	if readFile == nil {
@@ -176,10 +187,9 @@ func (e ConfigApplyExecutor) Execute(ctx context.Context, signedPlan protocol.Si
 	addStep("replaced", "completed", "atomic rename")
 
 	if e.Controller == nil {
-		addStep("restarted", "skipped", "no controller")
-		addStep("health_checked", "skipped", "no controller")
-		pruneApplyRuns(workDir, defaultApplyRetention)
-		return result, nil
+		err := errors.New("live config apply requires a restart/health controller")
+		addStep("restarted", "failed", err.Error())
+		return result, e.rollback(addStep, configPath, contents, origInfo, err)
 	}
 
 	if err := e.Controller.Restart(ctx); err != nil {
@@ -224,6 +234,17 @@ func (e mutatedConfigError) Unwrap() error {
 func configWasMutated(err error) bool {
 	var mutated mutatedConfigError
 	return errors.As(err, &mutated)
+}
+
+func rejectLiveSymlinkPath(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return fmt.Errorf("inspect config path: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("live apply refuses symlink config path %q until target resolution is implemented", path)
+	}
+	return nil
 }
 
 // planExecutionMode reports whether a plan requests the live branch and rejects

@@ -162,6 +162,45 @@ func TestConfigApplyDryRunHappyPath(t *testing.T) {
 	}
 }
 
+func TestConfigApplyDryRunAllowsSymlinkReadOnly(t *testing.T) {
+	pub, priv := newTestSigningKey(t)
+	srcDir := t.TempDir()
+	workDir := t.TempDir()
+	cfgPath, original := writeHermesConfig(t, srcDir)
+	linkPath := filepath.Join(srcDir, "config-link.yaml")
+	if err := os.Symlink(cfgPath, linkPath); err != nil {
+		t.Fatalf("symlink config: %v", err)
+	}
+
+	signed, err := protocol.SignConfigPlan(dryRunPlan("node-1", linkPath, "openai", "gpt-4o"), priv)
+	if err != nil {
+		t.Fatalf("sign plan: %v", err)
+	}
+
+	exec := ConfigApplyExecutor{PublicKey: pub, WorkDir: workDir}
+	result, err := exec.Execute(context.Background(), signed)
+	if err != nil {
+		t.Fatalf("execute dry-run through symlink: %v", err)
+	}
+	if s, ok := findStep(t, result.Steps, "replaced"); !ok || s.Status != "skipped" {
+		t.Errorf("replaced step = %+v, want skipped", s)
+	}
+	linkInfo, err := os.Lstat(linkPath)
+	if err != nil {
+		t.Fatalf("lstat link: %v", err)
+	}
+	if linkInfo.Mode()&os.ModeSymlink == 0 {
+		t.Fatal("dry-run changed symlink into a regular file")
+	}
+	after, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read target after dry-run: %v", err)
+	}
+	if string(after) != string(original) {
+		t.Errorf("target after dry-run = %q, want original %q", after, original)
+	}
+}
+
 func TestConfigApplyRejectsTamperedPlan(t *testing.T) {
 	pub, priv := newTestSigningKey(t)
 	srcDir := t.TempDir()
@@ -542,6 +581,95 @@ func TestConfigApplyLiveRollsBackWhenReplaceMutatesThenFails(t *testing.T) {
 	}
 }
 
+func TestConfigApplyLiveRejectsSymlinkBeforeMutationPreservesTopology(t *testing.T) {
+	pub, priv := newTestSigningKey(t)
+	srcDir := t.TempDir()
+	workDir := t.TempDir()
+	cfgPath, original := writeHermesConfig(t, srcDir)
+	linkPath := filepath.Join(srcDir, "config-link.yaml")
+	if err := os.Symlink(cfgPath, linkPath); err != nil {
+		t.Fatalf("symlink config: %v", err)
+	}
+
+	signed, err := protocol.SignConfigPlan(livePlan("node-1", linkPath, "openai", "gpt-4o"), priv)
+	if err != nil {
+		t.Fatalf("sign plan: %v", err)
+	}
+
+	exec := ConfigApplyExecutor{PublicKey: pub, WorkDir: workDir, AllowLiveApply: true, Controller: &stubController{}}
+	result, err := exec.Execute(context.Background(), signed)
+	if err == nil {
+		t.Fatal("expected symlink rejection, got nil")
+	}
+	if s, ok := findStep(t, result.Steps, "validated"); !ok || s.Status != "failed" || !strings.Contains(s.Detail, "symlink") {
+		t.Errorf("validated step = %+v, want symlink failure", s)
+	}
+	if _, ok := findStep(t, result.Steps, "backup_created"); ok {
+		t.Error("backup step reached despite symlink live path rejection")
+	}
+	if _, ok := findStep(t, result.Steps, "rolled_back"); ok {
+		t.Error("rollback should not run because symlink path is rejected before mutation")
+	}
+	linkInfo, err := os.Lstat(linkPath)
+	if err != nil {
+		t.Fatalf("lstat link: %v", err)
+	}
+	if linkInfo.Mode()&os.ModeSymlink == 0 {
+		t.Fatal("live rejection changed symlink into a regular file")
+	}
+	target, err := os.Readlink(linkPath)
+	if err != nil {
+		t.Fatalf("readlink: %v", err)
+	}
+	if target != cfgPath {
+		t.Fatalf("symlink target = %q, want %q", target, cfgPath)
+	}
+	after, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read target after rejection: %v", err)
+	}
+	if string(after) != string(original) {
+		t.Errorf("target after live rejection = %q, want original %q", after, original)
+	}
+}
+
+func TestConfigApplyLiveNilControllerFailsBeforeMutation(t *testing.T) {
+	pub, priv := newTestSigningKey(t)
+	srcDir := t.TempDir()
+	workDir := t.TempDir()
+	cfgPath, original := writeHermesConfig(t, srcDir)
+
+	signed, err := protocol.SignConfigPlan(livePlan("node-1", cfgPath, "openai", "gpt-4o"), priv)
+	if err != nil {
+		t.Fatalf("sign plan: %v", err)
+	}
+
+	exec := ConfigApplyExecutor{PublicKey: pub, WorkDir: workDir, AllowLiveApply: true}
+	result, err := exec.Execute(context.Background(), signed)
+	if err == nil {
+		t.Fatal("expected nil controller rejection, got nil")
+	}
+	if s, ok := findStep(t, result.Steps, "validated"); !ok || s.Status != "failed" || !strings.Contains(s.Detail, "controller") {
+		t.Errorf("validated step = %+v, want controller failure", s)
+	}
+	if _, ok := findStep(t, result.Steps, "backup_created"); ok {
+		t.Error("backup step reached despite nil controller rejection")
+	}
+	if result.BackupPath != "" || result.TempPath != "" {
+		t.Fatalf("paths set despite pre-mutation failure: backup=%q temp=%q", result.BackupPath, result.TempPath)
+	}
+	after, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read config after rejection: %v", err)
+	}
+	if string(after) != string(original) {
+		t.Errorf("config after nil controller rejection = %q, want original %q", after, original)
+	}
+	if n := dirEntryCount(t, workDir); n != 0 {
+		t.Errorf("work dir entry count = %d, want 0", n)
+	}
+}
+
 func TestConfigApplyLiveNoReplaceOnInvalidDesired(t *testing.T) {
 	pub, priv := newTestSigningKey(t)
 	srcDir := t.TempDir()
@@ -553,7 +681,7 @@ func TestConfigApplyLiveNoReplaceOnInvalidDesired(t *testing.T) {
 		t.Fatalf("sign plan: %v", err)
 	}
 
-	exec := ConfigApplyExecutor{PublicKey: pub, WorkDir: t.TempDir(), AllowLiveApply: true}
+	exec := ConfigApplyExecutor{PublicKey: pub, WorkDir: t.TempDir(), AllowLiveApply: true, Controller: &stubController{}}
 	result, err := exec.Execute(context.Background(), signed)
 	if err == nil {
 		t.Fatal("expected render/validate failure, got nil")
