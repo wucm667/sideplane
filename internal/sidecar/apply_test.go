@@ -488,6 +488,60 @@ func TestConfigApplyLiveRollsBackOnHealthFailure(t *testing.T) {
 	}
 }
 
+func TestConfigApplyLiveRollsBackWhenReplaceMutatesThenFails(t *testing.T) {
+	pub, priv := newTestSigningKey(t)
+	srcDir := t.TempDir()
+	workDir := t.TempDir()
+	cfgPath, original := writeHermesConfig(t, srcDir)
+
+	signed, err := protocol.SignConfigPlan(livePlan("node-1", cfgPath, "openai", "gpt-4o"), priv)
+	if err != nil {
+		t.Fatalf("sign plan: %v", err)
+	}
+
+	controller := &stubController{}
+	exec := ConfigApplyExecutor{
+		PublicKey:      pub,
+		WorkDir:        workDir,
+		AllowLiveApply: true,
+		Controller:     controller,
+		replaceFile: func(path string, contents []byte, orig os.FileInfo) error {
+			if err := atomicReplaceFile(path, contents, orig); err != nil {
+				return err
+			}
+			mutated, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read mutated config: %v", err)
+			}
+			if string(mutated) == string(original) {
+				t.Fatal("test hook did not mutate the live config before failing")
+			}
+			return mutatedConfigError{err: errors.New("simulated metadata failure after rename")}
+		},
+	}
+
+	result, err := exec.Execute(context.Background(), signed)
+	if err == nil {
+		t.Fatal("expected replace failure, got nil")
+	}
+	if s, ok := findStep(t, result.Steps, "replaced"); !ok || s.Status != "failed" {
+		t.Errorf("replaced step = %+v, want failed", s)
+	}
+	if s, ok := findStep(t, result.Steps, "rolled_back"); !ok || s.Status != "completed" {
+		t.Errorf("rolled_back step = %+v, want completed", s)
+	}
+	if controller.restarts != 0 || controller.healths != 0 {
+		t.Errorf("controller calls after failed replace: restarts=%d healths=%d, want 0/0", controller.restarts, controller.healths)
+	}
+	after, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read config after rollback: %v", err)
+	}
+	if string(after) != string(original) {
+		t.Errorf("config after rollback = %q, want original %q", after, original)
+	}
+}
+
 func TestConfigApplyLiveNoReplaceOnInvalidDesired(t *testing.T) {
 	pub, priv := newTestSigningKey(t)
 	srcDir := t.TempDir()

@@ -34,11 +34,12 @@ type ConfigApplyExecutor struct {
 	// Controller restarts the runtime and verifies its health after a live
 	// replace. When nil, the restart and health-check steps are skipped. A
 	// failure in either step triggers a rollback to the backup.
-	Controller adapters.ServiceController
-	ReadFile   func(string) ([]byte, error)
-	WriteFile  func(string, []byte, os.FileMode) error
-	MkdirAll   func(string, os.FileMode) error
-	Now        func() time.Time
+	Controller  adapters.ServiceController
+	ReadFile    func(string) ([]byte, error)
+	WriteFile   func(string, []byte, os.FileMode) error
+	MkdirAll    func(string, os.FileMode) error
+	Now         func() time.Time
+	replaceFile func(string, []byte, os.FileInfo) error
 }
 
 // Execute verifies a signed config apply plan and runs it in dry-run mode, or
@@ -152,9 +153,20 @@ func (e ConfigApplyExecutor) Execute(ctx context.Context, signedPlan protocol.Si
 	// failure; a failure after replace rolls back to the backup byte-for-byte.
 	// The original file's mode and ownership are preserved so a sidecar running
 	// as root does not leave the config owned by root for a non-root runtime.
-	origInfo, _ := os.Stat(configPath)
-	if err := atomicReplaceFile(configPath, rendered, origInfo); err != nil {
+	origInfo, err := os.Stat(configPath)
+	if err != nil {
 		addStep("replaced", "failed", err.Error())
+		return result, fmt.Errorf("stat current config: %w", err)
+	}
+	replaceFile := e.replaceFile
+	if replaceFile == nil {
+		replaceFile = atomicReplaceFile
+	}
+	if err := replaceFile(configPath, rendered, origInfo); err != nil {
+		addStep("replaced", "failed", err.Error())
+		if configWasMutated(err) {
+			return result, e.rollback(addStep, configPath, contents, origInfo, err)
+		}
 		return result, fmt.Errorf("atomic replace: %w", err)
 	}
 	if err := verifyWritten(readFile, configPath, rendered); err != nil {
@@ -195,6 +207,23 @@ func (e ConfigApplyExecutor) rollback(addStep func(string, string, string), conf
 	}
 	addStep("rolled_back", "completed", "restored backup")
 	return fmt.Errorf("apply failed, rolled back: %w", cause)
+}
+
+type mutatedConfigError struct {
+	err error
+}
+
+func (e mutatedConfigError) Error() string {
+	return e.err.Error()
+}
+
+func (e mutatedConfigError) Unwrap() error {
+	return e.err
+}
+
+func configWasMutated(err error) bool {
+	var mutated mutatedConfigError
+	return errors.As(err, &mutated)
 }
 
 // planExecutionMode reports whether a plan requests the live branch and rejects
@@ -241,6 +270,11 @@ func atomicReplaceFile(path string, contents []byte, orig os.FileInfo) error {
 	if orig != nil {
 		mode = orig.Mode().Perm()
 	}
+	if uid, gid, ok := fileOwner(orig); ok {
+		if err := os.Chown(tmpName, uid, gid); err != nil {
+			return fmt.Errorf("restore temp ownership: %w", err)
+		}
+	}
 	if err := os.Chmod(tmpName, mode); err != nil {
 		return fmt.Errorf("chmod temp file: %w", err)
 	}
@@ -248,11 +282,6 @@ func atomicReplaceFile(path string, contents []byte, orig os.FileInfo) error {
 		return fmt.Errorf("rename into place: %w", err)
 	}
 	cleanup = false
-	if uid, gid, ok := fileOwner(orig); ok {
-		if err := os.Chown(path, uid, gid); err != nil {
-			return fmt.Errorf("restore config ownership: %w", err)
-		}
-	}
 	return nil
 }
 
