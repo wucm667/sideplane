@@ -521,19 +521,33 @@ func (s *SQLiteNodeStore) CreateJob(ctx context.Context, req protocol.CreateJobR
 		return protocol.Job{}, err
 	}
 
-	if req.Type == protocol.JobTypeDeepProbe {
-		var activeCount int
-		err = tx.QueryRowContext(ctx, `
-SELECT COUNT(*)
+	rows, err := tx.QueryContext(ctx, `
+SELECT payload_json, status
 FROM jobs
 WHERE node_id = ? AND type = ? AND status IN (?, ?)
-`, nodeID, string(req.Type), string(protocol.JobStatusPending), string(protocol.JobStatusClaimed)).Scan(&activeCount)
-		if err != nil {
-			return protocol.Job{}, fmt.Errorf("query active jobs: %w", err)
+`, nodeID, string(req.Type), string(protocol.JobStatusPending), string(protocol.JobStatusClaimed))
+	if err != nil {
+		return protocol.Job{}, fmt.Errorf("query active jobs: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var payloadJSON string
+		var status string
+		if err := rows.Scan(&payloadJSON, &status); err != nil {
+			return protocol.Job{}, fmt.Errorf("scan active job: %w", err)
 		}
-		if activeCount > 0 {
+		existing := protocol.Job{
+			NodeID:      nodeID,
+			Type:        req.Type,
+			Status:      protocol.JobStatus(status),
+			PayloadJSON: payloadJSON,
+		}
+		if activeJobConflict(job, existing) {
 			return protocol.Job{}, ErrActiveJobExists
 		}
+	}
+	if err := rows.Err(); err != nil {
+		return protocol.Job{}, fmt.Errorf("iterate active jobs: %w", err)
 	}
 
 	_, err = tx.ExecContext(ctx, `

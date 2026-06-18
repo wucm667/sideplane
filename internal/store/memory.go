@@ -245,11 +245,9 @@ func (s *MemoryNodeStore) CreateJob(_ context.Context, req protocol.CreateJobReq
 		s.jobs = make(map[string]protocol.Job)
 	}
 	s.expireClaimedJobsLocked(now.UTC())
-	if req.Type == protocol.JobTypeDeepProbe {
-		for _, existing := range s.jobs {
-			if existing.NodeID == nodeID && existing.Type == req.Type && jobStatusIsActive(existing.Status) {
-				return protocol.Job{}, ErrActiveJobExists
-			}
+	for _, existing := range s.jobs {
+		if activeJobConflict(job, existing) {
+			return protocol.Job{}, ErrActiveJobExists
 		}
 	}
 	s.jobs[jobID] = job

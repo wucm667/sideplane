@@ -95,6 +95,10 @@ function hasActiveDeepProbe(jobs: Job[]): boolean {
   return jobs.some((job) => job.type === 'deep_probe' && ACTIVE_JOB_STATUSES.includes(job.status))
 }
 
+function hasActiveConfigApply(jobs: Job[]): boolean {
+  return jobs.some((job) => job.type === 'config_apply' && ACTIVE_JOB_STATUSES.includes(job.status))
+}
+
 function runtimeKey(runtime: RuntimeStatus, index: number): string {
   return `${runtime.name || runtime.type || 'runtime'}-${index}`
 }
@@ -760,6 +764,7 @@ function NodeDetailView({
   onApplied: () => void
 }) {
   const activeProbe = hasActiveDeepProbe(jobs)
+  const activeConfigApply = hasActiveConfigApply(jobs)
   const snapshots = latestConfigSnapshots(jobs)
   const primarySnapshot = snapshots[0]
   const [wizardOpen, setWizardOpen] = useState(false)
@@ -855,6 +860,7 @@ function NodeDetailView({
           profile={effective?.profile || 'default'}
           operatorToken={operatorToken}
           effective={effective}
+          activeConfigApply={activeConfigApply}
           onClose={() => setWizardOpen(false)}
           onApplied={onApplied}
         />

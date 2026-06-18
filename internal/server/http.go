@@ -539,6 +539,10 @@ func (h *handler) createConfigApplyJob(w http.ResponseWriter, r *http.Request, n
 		PayloadJSON: string(payload),
 	}, nodeID, now)
 	if err != nil {
+		if errors.Is(err, store.ErrActiveJobExists) {
+			http.Error(w, "active config_apply job already exists", http.StatusConflict)
+			return
+		}
 		http.Error(w, "create job", http.StatusInternalServerError)
 		return
 	}

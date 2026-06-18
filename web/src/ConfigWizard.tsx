@@ -26,6 +26,7 @@ interface ConfigWizardProps {
   profile: string
   operatorToken: string
   effective?: EffectiveConfigResponse
+  activeConfigApply: boolean
   onClose: () => void
   onApplied: () => void
 }
@@ -36,6 +37,7 @@ export default function ConfigWizard({
   profile,
   operatorToken,
   effective,
+  activeConfigApply,
   onClose,
   onApplied,
 }: ConfigWizardProps) {
@@ -141,6 +143,10 @@ export default function ConfigWizard({
   )
 
   const startApply = useCallback(async () => {
+    if (activeConfigApply) {
+      setError('A config apply job is already pending or running for this node.')
+      return
+    }
     setBusy(true)
     setError(null)
     setApplyResult(null)
@@ -153,7 +159,9 @@ export default function ConfigWizard({
       })
       if (!res.ok) {
         const body = await res.text()
-        throw new Error(res.status === 401 ? 'Operator token required or invalid' : body || failMessage(res))
+        if (res.status === 401) throw new Error('Operator token required or invalid')
+        if (res.status === 409) throw new Error('A config apply job is already pending or running for this node.')
+        throw new Error(body || failMessage(res))
       }
       const job: Job = await res.json()
       await pollApply(job.id)
@@ -162,7 +170,7 @@ export default function ConfigWizard({
     } finally {
       if (mountedRef.current) setBusy(false)
     }
-  }, [authedFetch, dryRun, nodeId, pollApply, profile, runtimeType])
+  }, [activeConfigApply, authedFetch, dryRun, nodeId, pollApply, profile, runtimeType])
 
   const terminal = applyStatus === 'completed' || applyStatus === 'failed'
   const rollback = rollbackStep(applyResult)
@@ -275,7 +283,7 @@ export default function ConfigWizard({
             {step === 'Review' && (
               <>
                 <SecondaryButton disabled={busy} label="Back" onClick={() => setStep('Edit')} />
-                <PrimaryButton disabled={busy} label={dryRun ? 'Run dry-run apply' : 'Run live apply'} onClick={startApply} />
+                <PrimaryButton disabled={busy || activeConfigApply} label={activeConfigApply ? 'Apply in progress' : dryRun ? 'Run dry-run apply' : 'Run live apply'} onClick={startApply} />
               </>
             )}
             {step === 'Apply' && terminal && (

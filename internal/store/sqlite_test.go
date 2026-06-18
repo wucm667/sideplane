@@ -357,6 +357,84 @@ func TestSQLiteFailJobPersistsResultJSON(t *testing.T) {
 	}
 }
 
+func TestSQLiteRejectsActiveConfigApplyForSamePath(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenSQLiteNodeStore(ctx, filepath.Join(t.TempDir(), "sideplane.db"))
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer store.Close()
+
+	now := time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)
+	if _, err := store.RecordHeartbeat(ctx, protocol.HeartbeatRequest{NodeID: "node-apply"}, now); err != nil {
+		t.Fatalf("record heartbeat: %v", err)
+	}
+	req := protocol.CreateJobRequest{
+		Type:        protocol.JobTypeConfigApply,
+		PayloadJSON: configApplyPayloadForTest(t, "hermes", "/etc/hermes/config.yaml"),
+	}
+	if _, err := store.CreateJob(ctx, req, "node-apply", now); err != nil {
+		t.Fatalf("create first config_apply: %v", err)
+	}
+	if _, err := store.CreateJob(ctx, req, "node-apply", now.Add(time.Second)); err != ErrActiveJobExists {
+		t.Fatalf("duplicate pending config_apply error = %v, want ErrActiveJobExists", err)
+	}
+}
+
+func TestSQLiteRejectsClaimedConfigApplyForSamePath(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenSQLiteNodeStore(ctx, filepath.Join(t.TempDir(), "sideplane.db"))
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer store.Close()
+
+	now := time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)
+	if _, err := store.RecordHeartbeat(ctx, protocol.HeartbeatRequest{NodeID: "node-apply"}, now); err != nil {
+		t.Fatalf("record heartbeat: %v", err)
+	}
+	req := protocol.CreateJobRequest{
+		Type:        protocol.JobTypeConfigApply,
+		PayloadJSON: configApplyPayloadForTest(t, "hermes", "/etc/hermes/config.yaml"),
+	}
+	if _, err := store.CreateJob(ctx, req, "node-apply", now); err != nil {
+		t.Fatalf("create first config_apply: %v", err)
+	}
+	if _, err := store.ClaimNextJob(ctx, "node-apply", now.Add(time.Second)); err != nil {
+		t.Fatalf("claim config_apply: %v", err)
+	}
+	if _, err := store.CreateJob(ctx, req, "node-apply", now.Add(2*time.Second)); err != ErrActiveJobExists {
+		t.Fatalf("duplicate claimed config_apply error = %v, want ErrActiveJobExists", err)
+	}
+}
+
+func TestSQLiteAllowsConfigApplyForDifferentNodeOrPath(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenSQLiteNodeStore(ctx, filepath.Join(t.TempDir(), "sideplane.db"))
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer store.Close()
+
+	now := time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)
+	for _, nodeID := range []string{"node-a", "node-b"} {
+		if _, err := store.RecordHeartbeat(ctx, protocol.HeartbeatRequest{NodeID: nodeID}, now); err != nil {
+			t.Fatalf("record heartbeat %s: %v", nodeID, err)
+		}
+	}
+	reqA := protocol.CreateJobRequest{Type: protocol.JobTypeConfigApply, PayloadJSON: configApplyPayloadForTest(t, "hermes", "/etc/hermes/a.yaml")}
+	reqB := protocol.CreateJobRequest{Type: protocol.JobTypeConfigApply, PayloadJSON: configApplyPayloadForTest(t, "hermes", "/etc/hermes/b.yaml")}
+	if _, err := store.CreateJob(ctx, reqA, "node-a", now); err != nil {
+		t.Fatalf("create node-a config_apply: %v", err)
+	}
+	if _, err := store.CreateJob(ctx, reqB, "node-a", now.Add(time.Second)); err != nil {
+		t.Fatalf("create different path config_apply: %v", err)
+	}
+	if _, err := store.CreateJob(ctx, reqA, "node-b", now.Add(2*time.Second)); err != nil {
+		t.Fatalf("create different node config_apply: %v", err)
+	}
+}
+
 func TestSQLiteNodeStoreTimesOutExpiredClaimedJob(t *testing.T) {
 	ctx := context.Background()
 	store, err := OpenSQLiteNodeStore(ctx, filepath.Join(t.TempDir(), "sideplane.db"))

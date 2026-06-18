@@ -146,6 +146,59 @@ func TestCreateConfigApplyJobDryRun(t *testing.T) {
 	}
 }
 
+func TestCreateConfigApplyJobRejectsDuplicatePendingApply(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	enrollTestNode(t, nodeStore, "node-apply")
+	seedDesiredAndProbe(t, nodeStore, "node-apply", "/etc/hermes/config.json")
+	handler := newDevHandlerWithStore(t, nodeStore)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/nodes/node-apply/config-apply", strings.NewReader(`{}`))
+	handler.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusCreated)
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/nodes/node-apply/config-apply", strings.NewReader(`{}`))
+	handler.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusConflict)
+}
+
+func TestCreateConfigApplyJobRejectsDuplicateClaimedApply(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	enrollTestNode(t, nodeStore, "node-apply")
+	seedDesiredAndProbe(t, nodeStore, "node-apply", "/etc/hermes/config.json")
+	handler := newDevHandlerWithStore(t, nodeStore)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/nodes/node-apply/config-apply", strings.NewReader(`{}`))
+	handler.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusCreated)
+	if _, err := nodeStore.ClaimNextJob(context.Background(), "node-apply", time.Now().UTC()); err != nil {
+		t.Fatalf("claim config_apply: %v", err)
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/nodes/node-apply/config-apply", strings.NewReader(`{}`))
+	handler.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusConflict)
+}
+
+func TestCreateConfigApplyJobAllowsDifferentNode(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	enrollTestNode(t, nodeStore, "node-a")
+	enrollTestNode(t, nodeStore, "node-b")
+	seedDesiredAndProbe(t, nodeStore, "node-a", "/etc/hermes/config.json")
+	seedDesiredAndProbe(t, nodeStore, "node-b", "/etc/hermes/config.json")
+	handler := newDevHandlerWithStore(t, nodeStore)
+
+	for _, nodeID := range []string{"node-a", "node-b"} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/api/nodes/"+nodeID+"/config-apply", strings.NewReader(`{}`))
+		handler.ServeHTTP(rec, req)
+		assertStatus(t, rec, http.StatusCreated)
+	}
+}
+
 func TestCreateConfigApplyJobRequiresConfigPath(t *testing.T) {
 	nodeStore := store.NewMemoryNodeStore()
 	enrollTestNode(t, nodeStore, "node-apply")
