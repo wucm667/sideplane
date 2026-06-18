@@ -196,7 +196,12 @@ export default function FleetPage() {
       setJobsLoadingByNode((current) => ({ ...current, [nodeId]: true }))
     }
     try {
-      const res = await fetch(`/api/nodes/${encodeURIComponent(nodeId)}/jobs`)
+      const headers: HeadersInit = {}
+      const token = operatorToken.trim()
+      if (token) {
+        headers.Authorization = `Bearer ${token}`
+      }
+      const res = await fetch(`/api/nodes/${encodeURIComponent(nodeId)}/jobs`, { headers })
       if (!res.ok) {
         throw new Error(`HTTP ${res.status}: ${res.statusText}`)
       }
@@ -219,7 +224,7 @@ export default function FleetPage() {
         setJobsLoadingByNode((current) => ({ ...current, [nodeId]: false }))
       }
     }
-  }, [])
+  }, [operatorToken])
 
   const loadNodes = useCallback(async () => {
     const res = await fetch('/api/nodes')

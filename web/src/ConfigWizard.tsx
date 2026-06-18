@@ -116,7 +116,7 @@ export default function ConfigWizard({
         if (!mountedRef.current) return
         await new Promise((resolve) => setTimeout(resolve, APPLY_POLL_MS))
         if (!mountedRef.current) return
-        const res = await fetch(`/api/nodes/${encodeURIComponent(nodeId)}/jobs`)
+        const res = await authedFetch(`/api/nodes/${encodeURIComponent(nodeId)}/jobs`, { method: 'GET' })
         if (!res.ok) continue
         const jobs: Job[] = await res.json()
         const job = jobs.find((item) => item.id === jobId)
@@ -137,7 +137,7 @@ export default function ConfigWizard({
       }
       if (mountedRef.current) setError('Timed out waiting for the apply job to finish')
     },
-    [nodeId, onApplied],
+    [authedFetch, nodeId, onApplied],
   )
 
   const startApply = useCallback(async () => {

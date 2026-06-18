@@ -351,8 +351,24 @@ func (h *handler) listNodeJobs(w http.ResponseWriter, r *http.Request, nodeID st
 		http.Error(w, "list node jobs", http.StatusInternalServerError)
 		return
 	}
+	if h.shouldHideJobResults(r) {
+		jobs = summarizeJobs(jobs)
+	}
 
 	writeJSON(w, http.StatusOK, jobs)
+}
+
+func (h *handler) shouldHideJobResults(r *http.Request) bool {
+	return h.operatorAuth.Configured() && !h.operatorAuth.AuthorizeHeader(r.Header.Get("Authorization"))
+}
+
+func summarizeJobs(jobs []protocol.Job) []protocol.Job {
+	summaries := make([]protocol.Job, len(jobs))
+	copy(summaries, jobs)
+	for i := range summaries {
+		summaries[i].ResultJSON = ""
+	}
+	return summaries
 }
 
 func (h *handler) createNodeJob(w http.ResponseWriter, r *http.Request, nodeID string) {

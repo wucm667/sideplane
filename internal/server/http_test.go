@@ -216,6 +216,83 @@ func TestCreateJobAPIRequiresConfiguredOperatorToken(t *testing.T) {
 	}
 }
 
+func TestListNodeJobsProtectsResultJSONWithConfiguredOperatorToken(t *testing.T) {
+	tests := []struct {
+		name          string
+		authorization string
+		wantResult    bool
+	}{
+		{
+			name: "missing token gets summary only",
+		},
+		{
+			name:          "wrong token gets summary only",
+			authorization: "Bearer wrong-token",
+		},
+		{
+			name:          "correct token gets result details",
+			authorization: "Bearer dev-token",
+			wantResult:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			nodeStore := store.NewMemoryNodeStore()
+			enrollTestNode(t, nodeStore, "node-jobs")
+			job, err := nodeStore.CreateJob(context.Background(), protocol.CreateJobRequest{Type: protocol.JobTypeDeepProbe}, "node-jobs", time.Now().UTC())
+			if err != nil {
+				t.Fatalf("create job: %v", err)
+			}
+			if _, err := nodeStore.ClaimNextJob(context.Background(), "node-jobs", time.Now().UTC()); err != nil {
+				t.Fatalf("claim job: %v", err)
+			}
+			if err := nodeStore.CompleteJob(context.Background(), job.ID, protocol.JobResultRequest{
+				Status:     protocol.JobStatusCompleted,
+				ResultJSON: `{"apiKey":"sk-test-secret","status":"complete"}`,
+			}, time.Now().UTC()); err != nil {
+				t.Fatalf("complete job: %v", err)
+			}
+
+			handler, err := NewHandlerWithStoreAndFreshnessPolicyAndOperatorToken(nodeStore, DefaultFreshnessPolicy(), "dev-token")
+			if err != nil {
+				t.Fatalf("build handler: %v", err)
+			}
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, "/api/nodes/node-jobs/jobs", nil)
+			if tt.authorization != "" {
+				req.Header.Set("Authorization", tt.authorization)
+			}
+
+			handler.ServeHTTP(rec, req)
+
+			assertStatus(t, rec, http.StatusOK)
+			body := rec.Body.String()
+			var jobs []protocol.Job
+			if err := json.Unmarshal([]byte(body), &jobs); err != nil {
+				t.Fatalf("decode jobs: %v", err)
+			}
+			if len(jobs) != 1 {
+				t.Fatalf("len(jobs) = %d, want 1", len(jobs))
+			}
+			if tt.wantResult {
+				if !strings.Contains(jobs[0].ResultJSON, "sk-test-secret") {
+					t.Fatalf("resultJson = %q, want detailed result", jobs[0].ResultJSON)
+				}
+				return
+			}
+			if jobs[0].ResultJSON != "" {
+				t.Fatalf("resultJson = %q, want empty summary", jobs[0].ResultJSON)
+			}
+			for _, forbidden := range []string{"sk-test-secret", "apiKey"} {
+				if strings.Contains(body, forbidden) {
+					t.Fatalf("unauthenticated jobs response leaked %q: %s", forbidden, body)
+				}
+			}
+		})
+	}
+}
+
 func TestCreateJobAPIRejectsMalformedJSON(t *testing.T) {
 	nodeStore := store.NewMemoryNodeStore()
 	enrollTestNode(t, nodeStore, "node-jobs")
