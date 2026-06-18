@@ -771,8 +771,13 @@ WHERE id = ? AND status = ?
 	return nil
 }
 
-// ListNodeJobs returns all jobs for a node.
+// ListNodeJobs returns the default page of jobs for a node.
 func (s *SQLiteNodeStore) ListNodeJobs(ctx context.Context, nodeID string) ([]protocol.Job, error) {
+	return s.ListNodeJobsFiltered(ctx, nodeID, JobFilter{})
+}
+
+// ListNodeJobsFiltered returns bounded jobs for a node, optionally filtered by status.
+func (s *SQLiteNodeStore) ListNodeJobsFiltered(ctx context.Context, nodeID string, filter JobFilter) ([]protocol.Job, error) {
 	if s == nil || s.db == nil {
 		return nil, errors.New("sqlite node store is closed")
 	}
@@ -780,6 +785,7 @@ func (s *SQLiteNodeStore) ListNodeJobs(ctx context.Context, nodeID string) ([]pr
 	if nodeID == "" {
 		return nil, errors.New("node ID is required")
 	}
+	filter = normalizeJobFilter(filter)
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -791,12 +797,23 @@ func (s *SQLiteNodeStore) ListNodeJobs(ctx context.Context, nodeID string) ([]pr
 		return nil, err
 	}
 
-	rows, err := tx.QueryContext(ctx, `
+	query := `
 SELECT id
 FROM jobs
 WHERE node_id = ?
-ORDER BY created_at DESC
-`, nodeID)
+`
+	args := []any{nodeID}
+	if filter.Status != "" {
+		query += `AND status = ?
+`
+		args = append(args, string(filter.Status))
+	}
+	query += `ORDER BY created_at DESC
+LIMIT ?
+`
+	args = append(args, filter.Limit)
+
+	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query node jobs: %w", err)
 	}

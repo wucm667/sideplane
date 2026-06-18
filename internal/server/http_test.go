@@ -879,6 +879,56 @@ func TestListNodeJobsAPI(t *testing.T) {
 	}
 }
 
+func TestListNodeJobsAPIWithLimitAndStatusFilter(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	enrollTestNode(t, nodeStore, "node-jobs")
+
+	now := time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)
+	older, err := nodeStore.CreateJob(context.Background(), protocol.CreateJobRequest{Type: protocol.JobTypeDeepProbe}, "node-jobs", now)
+	if err != nil {
+		t.Fatalf("create older job: %v", err)
+	}
+	if _, err := nodeStore.ClaimNextJob(context.Background(), "node-jobs", now.Add(time.Second)); err != nil {
+		t.Fatalf("claim older job: %v", err)
+	}
+	if err := nodeStore.CompleteJob(context.Background(), older.ID, protocol.JobResultRequest{Status: protocol.JobStatusCompleted}, now.Add(2*time.Second)); err != nil {
+		t.Fatalf("complete older job: %v", err)
+	}
+	newer, err := nodeStore.CreateJob(context.Background(), protocol.CreateJobRequest{Type: protocol.JobTypeDeepProbe}, "node-jobs", now.Add(3*time.Second))
+	if err != nil {
+		t.Fatalf("create newer job: %v", err)
+	}
+	if _, err := nodeStore.ClaimNextJob(context.Background(), "node-jobs", now.Add(4*time.Second)); err != nil {
+		t.Fatalf("claim newer job: %v", err)
+	}
+	if err := nodeStore.CompleteJob(context.Background(), newer.ID, protocol.JobResultRequest{Status: protocol.JobStatusCompleted}, now.Add(5*time.Second)); err != nil {
+		t.Fatalf("complete newer job: %v", err)
+	}
+	if _, err := nodeStore.CreateJob(context.Background(), protocol.CreateJobRequest{Type: protocol.JobTypeDeepProbe}, "node-jobs", now.Add(6*time.Second)); err != nil {
+		t.Fatalf("create pending job: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/nodes/node-jobs/jobs?limit=1&status=completed", nil)
+
+	NewHandlerWithStore(nodeStore).ServeHTTP(rec, req)
+
+	assertStatus(t, rec, http.StatusOK)
+
+	var jobs []protocol.Job
+	if err := json.NewDecoder(rec.Body).Decode(&jobs); err != nil {
+		t.Fatalf("decode jobs response: %v", err)
+	}
+	if len(jobs) != 1 || jobs[0].ID != newer.ID {
+		t.Fatalf("jobs = %#v, want newest completed job %s", jobs, newer.ID)
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/nodes/node-jobs/jobs?status=unknown", nil)
+	NewHandlerWithStore(nodeStore).ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusBadRequest)
+}
+
 func TestListNodeJobsAPIOmitsUnsetTimestamps(t *testing.T) {
 	nodeStore := store.NewMemoryNodeStore()
 	enrollTestNode(t, nodeStore, "node-jobs")
@@ -2045,6 +2095,10 @@ func (s staticNodeStore) FailJob(context.Context, string, protocol.JobResultRequ
 }
 
 func (s staticNodeStore) ListNodeJobs(context.Context, string) ([]protocol.Job, error) {
+	return nil, nil
+}
+
+func (s staticNodeStore) ListNodeJobsFiltered(context.Context, string, store.JobFilter) ([]protocol.Job, error) {
 	return nil, nil
 }
 

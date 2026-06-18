@@ -224,6 +224,59 @@ func TestMemoryNodeStoreFailJobPersistsResultJSON(t *testing.T) {
 	}
 }
 
+func TestMemoryNodeStoreListNodeJobsFiltered(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryNodeStore()
+	now := time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)
+	if _, err := store.RecordHeartbeat(ctx, protocol.HeartbeatRequest{NodeID: "node-jobs"}, now); err != nil {
+		t.Fatalf("record heartbeat: %v", err)
+	}
+
+	older, err := store.CreateJob(ctx, protocol.CreateJobRequest{Type: protocol.JobTypeDeepProbe}, "node-jobs", now)
+	if err != nil {
+		t.Fatalf("create older job: %v", err)
+	}
+	if _, err := store.ClaimNextJob(ctx, "node-jobs", now.Add(time.Second)); err != nil {
+		t.Fatalf("claim older job: %v", err)
+	}
+	if err := store.CompleteJob(ctx, older.ID, protocol.JobResultRequest{Status: protocol.JobStatusCompleted}, now.Add(2*time.Second)); err != nil {
+		t.Fatalf("complete older job: %v", err)
+	}
+	newer, err := store.CreateJob(ctx, protocol.CreateJobRequest{Type: protocol.JobTypeDeepProbe}, "node-jobs", now.Add(3*time.Second))
+	if err != nil {
+		t.Fatalf("create newer job: %v", err)
+	}
+	if _, err := store.ClaimNextJob(ctx, "node-jobs", now.Add(4*time.Second)); err != nil {
+		t.Fatalf("claim newer job: %v", err)
+	}
+	if err := store.CompleteJob(ctx, newer.ID, protocol.JobResultRequest{Status: protocol.JobStatusCompleted}, now.Add(5*time.Second)); err != nil {
+		t.Fatalf("complete newer job: %v", err)
+	}
+	pending, err := store.CreateJob(ctx, protocol.CreateJobRequest{Type: protocol.JobTypeDeepProbe}, "node-jobs", now.Add(6*time.Second))
+	if err != nil {
+		t.Fatalf("create pending job: %v", err)
+	}
+
+	completed, err := store.ListNodeJobsFiltered(ctx, "node-jobs", JobFilter{
+		Limit:  1,
+		Status: protocol.JobStatusCompleted,
+	})
+	if err != nil {
+		t.Fatalf("list completed jobs: %v", err)
+	}
+	if len(completed) != 1 || completed[0].ID != newer.ID {
+		t.Fatalf("completed jobs = %#v, want newest completed job %s", completed, newer.ID)
+	}
+
+	pendingJobs, err := store.ListNodeJobsFiltered(ctx, "node-jobs", JobFilter{Status: protocol.JobStatusPending})
+	if err != nil {
+		t.Fatalf("list pending jobs: %v", err)
+	}
+	if len(pendingJobs) != 1 || pendingJobs[0].ID != pending.ID {
+		t.Fatalf("pending jobs = %#v, want pending job %s", pendingJobs, pending.ID)
+	}
+}
+
 func TestMemoryNodeStoreRejectsActiveConfigApplyForSamePath(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemoryNodeStore()

@@ -506,7 +506,13 @@ func (h *handler) deleteNode(w http.ResponseWriter, r *http.Request, nodeID stri
 }
 
 func (h *handler) listNodeJobs(w http.ResponseWriter, r *http.Request, nodeID string) {
-	jobs, err := h.store.ListNodeJobs(r.Context(), nodeID)
+	filter, err := parseJobFilter(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	jobs, err := h.store.ListNodeJobsFiltered(r.Context(), nodeID, filter)
 	if err != nil {
 		http.Error(w, "list node jobs", http.StatusInternalServerError)
 		return
@@ -517,6 +523,38 @@ func (h *handler) listNodeJobs(w http.ResponseWriter, r *http.Request, nodeID st
 	}
 
 	writeJSON(w, http.StatusOK, jobs)
+}
+
+func parseJobFilter(r *http.Request) (store.JobFilter, error) {
+	filter := store.JobFilter{Limit: store.DefaultJobListLimit}
+	query := r.URL.Query()
+	if limitValue := strings.TrimSpace(query.Get("limit")); limitValue != "" {
+		limit, err := strconv.Atoi(limitValue)
+		if err != nil || limit <= 0 {
+			return store.JobFilter{}, fmt.Errorf("limit must be a positive integer")
+		}
+		if limit > store.MaxJobListLimit {
+			limit = store.MaxJobListLimit
+		}
+		filter.Limit = limit
+	}
+	if statusValue := strings.TrimSpace(query.Get("status")); statusValue != "" {
+		status := protocol.JobStatus(statusValue)
+		if !validJobStatus(status) {
+			return store.JobFilter{}, fmt.Errorf("unsupported job status %q", statusValue)
+		}
+		filter.Status = status
+	}
+	return filter, nil
+}
+
+func validJobStatus(status protocol.JobStatus) bool {
+	switch status {
+	case protocol.JobStatusPending, protocol.JobStatusClaimed, protocol.JobStatusCompleted, protocol.JobStatusFailed:
+		return true
+	default:
+		return false
+	}
 }
 
 func (h *handler) shouldHideJobResults(r *http.Request) bool {

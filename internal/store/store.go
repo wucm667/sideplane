@@ -13,6 +13,10 @@ const (
 	defaultJobClaimLease     = 5 * time.Minute
 	configApplyJobClaimLease = 30 * time.Minute
 	jobClaimTimeoutError     = "job claim timed out"
+	// DefaultJobListLimit is the bounded default for node job history.
+	DefaultJobListLimit = 50
+	// MaxJobListLimit is the largest node job page size accepted by the store.
+	MaxJobListLimit = 500
 )
 
 var (
@@ -81,6 +85,23 @@ type JobStore interface {
 	CompleteJob(ctx context.Context, jobID string, result protocol.JobResultRequest, now time.Time) error
 	FailJob(ctx context.Context, jobID string, result protocol.JobResultRequest, now time.Time) error
 	ListNodeJobs(ctx context.Context, nodeID string) ([]protocol.Job, error)
+	ListNodeJobsFiltered(ctx context.Context, nodeID string, filter JobFilter) ([]protocol.Job, error)
+}
+
+// JobFilter constrains node job listing.
+type JobFilter struct {
+	Limit  int
+	Status protocol.JobStatus
+}
+
+func normalizeJobFilter(filter JobFilter) JobFilter {
+	if filter.Limit <= 0 {
+		filter.Limit = DefaultJobListLimit
+	}
+	if filter.Limit > MaxJobListLimit {
+		filter.Limit = MaxJobListLimit
+	}
+	return filter
 }
 
 // AuditStore persists bounded audit events for operator-visible history.

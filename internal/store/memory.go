@@ -394,12 +394,18 @@ func (s *MemoryNodeStore) FailJob(_ context.Context, jobID string, result protoc
 	return nil
 }
 
-// ListNodeJobs returns all jobs for a node.
-func (s *MemoryNodeStore) ListNodeJobs(_ context.Context, nodeID string) ([]protocol.Job, error) {
+// ListNodeJobs returns the default page of jobs for a node.
+func (s *MemoryNodeStore) ListNodeJobs(ctx context.Context, nodeID string) ([]protocol.Job, error) {
+	return s.ListNodeJobsFiltered(ctx, nodeID, JobFilter{})
+}
+
+// ListNodeJobsFiltered returns bounded jobs for a node, optionally filtered by status.
+func (s *MemoryNodeStore) ListNodeJobsFiltered(_ context.Context, nodeID string, filter JobFilter) ([]protocol.Job, error) {
 	nodeID = strings.TrimSpace(nodeID)
 	if nodeID == "" {
 		return nil, errors.New("node ID is required")
 	}
+	filter = normalizeJobFilter(filter)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -407,18 +413,16 @@ func (s *MemoryNodeStore) ListNodeJobs(_ context.Context, nodeID string) ([]prot
 
 	var jobs []protocol.Job
 	for _, job := range s.jobs {
-		if job.NodeID == nodeID {
+		if job.NodeID == nodeID && (filter.Status == "" || job.Status == filter.Status) {
 			jobs = append(jobs, job)
 		}
 	}
 
-	// Sort by created_at descending
-	for i := 0; i < len(jobs); i++ {
-		for j := i + 1; j < len(jobs); j++ {
-			if jobs[i].CreatedAt.Before(jobs[j].CreatedAt) {
-				jobs[i], jobs[j] = jobs[j], jobs[i]
-			}
-		}
+	sort.Slice(jobs, func(i, j int) bool {
+		return jobs[i].CreatedAt.After(jobs[j].CreatedAt)
+	})
+	if len(jobs) > filter.Limit {
+		jobs = jobs[:filter.Limit]
 	}
 
 	return jobs, nil
