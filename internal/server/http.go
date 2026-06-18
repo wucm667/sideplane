@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/wucm667/sideplane/internal/audit"
@@ -91,6 +92,7 @@ func NewHandlerWithConfig(cfg HandlerConfig) (http.Handler, error) {
 		operatorAuth: auth.NewOperatorToken(cfg.OperatorToken, cfg.AllowUnauthenticatedOperatorAPI),
 		signingKey:   keyPair,
 		metrics:      NewMetrics(),
+		timedOutJobs: map[string]struct{}{},
 	}
 
 	mux := http.NewServeMux()
@@ -117,6 +119,8 @@ type handler struct {
 	operatorAuth auth.OperatorToken
 	signingKey   spcrypto.KeyPair
 	metrics      *Metrics
+	timedOutMu   sync.Mutex
+	timedOutJobs map[string]struct{}
 }
 
 func jsonStatusHandler(status string) http.HandlerFunc {
@@ -354,6 +358,7 @@ func (h *handler) listNodeJobs(w http.ResponseWriter, r *http.Request, nodeID st
 		http.Error(w, "list node jobs", http.StatusInternalServerError)
 		return
 	}
+	h.observeTimedOutJobs(r.Context(), jobs)
 	if h.shouldHideJobResults(r) {
 		jobs = summarizeJobs(jobs)
 	}
@@ -603,6 +608,10 @@ func (h *handler) claimNextJob(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if job == nil {
+		jobs, listErr := h.store.ListNodeJobs(r.Context(), nodeID)
+		if listErr == nil {
+			h.observeTimedOutJobs(r.Context(), jobs)
+		}
 		// No pending jobs
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusNoContent)
@@ -671,6 +680,10 @@ func (h *handler) submitJobResult(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := time.Now().UTC()
+	if store.IsJobClaimTimeout(*job) {
+		h.observeTimedOutJobs(r.Context(), []protocol.Job{*job})
+	}
+	lateResult := false
 	if req.Status == protocol.JobStatusCompleted {
 		err = h.store.CompleteJob(r.Context(), jobID, req, now)
 	} else if req.Status == protocol.JobStatusFailed {
@@ -681,9 +694,25 @@ func (h *handler) submitJobResult(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err != nil {
-		http.Error(w, "submit job result", http.StatusInternalServerError)
+		if errors.Is(err, store.ErrLateJobResultRecorded) {
+			lateResult = true
+		} else {
+			http.Error(w, "submit job result", http.StatusInternalServerError)
+			return
+		}
+	}
+	if lateResult {
+		h.audit(r.Context(), protocol.AuditEvent{
+			Actor:      audit.ActorSidecar,
+			Action:     audit.ActionJobFail,
+			TargetNode: job.NodeID,
+			Detail:     string(job.Type) + " late_result_after_timeout",
+			CreatedAt:  now,
+		})
+		writeJSON(w, http.StatusOK, map[string]string{"status": "accepted_late"})
 		return
 	}
+
 	action := audit.ActionJobComplete
 	if req.Status == protocol.JobStatusFailed {
 		action = audit.ActionJobFail
@@ -721,6 +750,39 @@ func configApplyRolledBack(resultJSON string) bool {
 		}
 	}
 	return false
+}
+
+func (h *handler) observeTimedOutJobs(ctx context.Context, jobs []protocol.Job) {
+	for _, job := range jobs {
+		if !store.IsJobClaimTimeout(job) {
+			continue
+		}
+		if !h.markTimedOutJobObserved(job.ID) {
+			continue
+		}
+		h.metrics.IncJobFailed(string(job.Type))
+		createdAt := job.FinishedAt
+		if createdAt.IsZero() {
+			createdAt = time.Now().UTC()
+		}
+		h.audit(ctx, protocol.AuditEvent{
+			Actor:      audit.ActorSidecar,
+			Action:     audit.ActionJobFail,
+			TargetNode: job.NodeID,
+			Detail:     string(job.Type) + " timeout",
+			CreatedAt:  createdAt,
+		})
+	}
+}
+
+func (h *handler) markTimedOutJobObserved(jobID string) bool {
+	h.timedOutMu.Lock()
+	defer h.timedOutMu.Unlock()
+	if _, ok := h.timedOutJobs[jobID]; ok {
+		return false
+	}
+	h.timedOutJobs[jobID] = struct{}{}
+	return true
 }
 
 func (h *handler) auditEvents(w http.ResponseWriter, r *http.Request) {

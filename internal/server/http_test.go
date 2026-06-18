@@ -36,6 +36,22 @@ func newDevHandler(t *testing.T) http.Handler {
 	return newDevHandlerWithStore(t, store.NewMemoryNodeStore())
 }
 
+func configApplyPayloadForHTTPTest(t *testing.T, runtimeType string, configPath string) string {
+	t.Helper()
+	payload, err := json.Marshal(protocol.SignedConfigPlan{
+		Plan: protocol.ConfigPlan{
+			Body: protocol.ConfigPlanBody{
+				RuntimeType: runtimeType,
+				Profile:     configPath,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal config apply payload: %v", err)
+	}
+	return string(payload)
+}
+
 func TestCreateJobAPI(t *testing.T) {
 	nodeStore := store.NewMemoryNodeStore()
 	enrollTestNode(t, nodeStore, "node-jobs")
@@ -827,6 +843,122 @@ func TestListNodeJobsAPISurfacesTimedOutJob(t *testing.T) {
 	}
 	if jobs[0].Error != "job claim timed out" {
 		t.Fatalf("job error = %q, want timeout error", jobs[0].Error)
+	}
+}
+
+func TestTimedOutConfigApplyRecordsMetricsAndAuditOnce(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	enrollTestNode(t, nodeStore, "node-timeout")
+	now := time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)
+	job, err := nodeStore.CreateJob(context.Background(), protocol.CreateJobRequest{
+		Type:        protocol.JobTypeConfigApply,
+		PayloadJSON: configApplyPayloadForHTTPTest(t, "hermes", "/etc/hermes/config.yaml"),
+	}, "node-timeout", now)
+	if err != nil {
+		t.Fatalf("create config_apply: %v", err)
+	}
+	claimed, err := nodeStore.ClaimNextJob(context.Background(), "node-timeout", now.Add(time.Second))
+	if err != nil {
+		t.Fatalf("claim config_apply: %v", err)
+	}
+	if _, err := nodeStore.ClaimNextJob(context.Background(), "node-timeout", claimed.ClaimExpiresAt.Add(time.Second)); err != nil {
+		t.Fatalf("advance timeout: %v", err)
+	}
+
+	handler := newDevHandlerWithStore(t, nodeStore)
+	for i := 0; i < 2; i++ {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/nodes/node-timeout/jobs", nil)
+		handler.ServeHTTP(rec, req)
+		assertStatus(t, rec, http.StatusOK)
+	}
+
+	metricsRec := httptest.NewRecorder()
+	handler.ServeHTTP(metricsRec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if got := metricsRec.Body.String(); !strings.Contains(got, `sideplane_jobs_failed_total{type="config_apply"} 1`) {
+		t.Fatalf("metrics missing one config_apply failure for timeout:\n%s", got)
+	}
+
+	auditRec := httptest.NewRecorder()
+	handler.ServeHTTP(auditRec, httptest.NewRequest(http.MethodGet, "/api/audit", nil))
+	assertStatus(t, auditRec, http.StatusOK)
+	var auditResp protocol.ListAuditEventsResponse
+	if err := json.NewDecoder(auditRec.Body).Decode(&auditResp); err != nil {
+		t.Fatalf("decode audit response: %v", err)
+	}
+	var timeoutEvents int
+	for _, event := range auditResp.Events {
+		if event.Action == audit.ActionJobFail && event.TargetNode == "node-timeout" && strings.Contains(event.Detail, "config_apply timeout") {
+			timeoutEvents++
+		}
+	}
+	if timeoutEvents != 1 {
+		t.Fatalf("timeout audit events = %d, want 1; job=%s events=%#v", timeoutEvents, job.ID, auditResp.Events)
+	}
+}
+
+func TestLateConfigApplyResultAfterTimeoutIsRecorded(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	credential := enrollTestNode(t, nodeStore, "node-late")
+	now := time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)
+	job, err := nodeStore.CreateJob(context.Background(), protocol.CreateJobRequest{
+		Type:        protocol.JobTypeConfigApply,
+		PayloadJSON: configApplyPayloadForHTTPTest(t, "hermes", "/etc/hermes/config.yaml"),
+	}, "node-late", now)
+	if err != nil {
+		t.Fatalf("create config_apply: %v", err)
+	}
+	claimed, err := nodeStore.ClaimNextJob(context.Background(), "node-late", now.Add(time.Second))
+	if err != nil {
+		t.Fatalf("claim config_apply: %v", err)
+	}
+	if _, err := nodeStore.ClaimNextJob(context.Background(), "node-late", claimed.ClaimExpiresAt.Add(time.Second)); err != nil {
+		t.Fatalf("advance timeout: %v", err)
+	}
+
+	handler := newDevHandlerWithStore(t, nodeStore)
+	resultJSON := `{"steps":[{"name":"health_checked","status":"completed"}]}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/sidecar/jobs/"+job.ID+"/result", strings.NewReader(`{"status":"completed","resultJson":`+strconv.Quote(resultJSON)+`}`))
+	req.Header.Set("Authorization", "Bearer "+credential)
+	handler.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusOK)
+	if !strings.Contains(rec.Body.String(), "accepted_late") {
+		t.Fatalf("late result response = %s, want accepted_late", rec.Body.String())
+	}
+
+	got, err := nodeStore.GetJob(context.Background(), job.ID)
+	if err != nil {
+		t.Fatalf("get job: %v", err)
+	}
+	if got.ResultJSON != resultJSON {
+		t.Fatalf("late result JSON = %q, want %q", got.ResultJSON, resultJSON)
+	}
+	if !strings.Contains(got.Error, "late sidecar result status=completed") {
+		t.Fatalf("late result error detail = %q", got.Error)
+	}
+
+	auditRec := httptest.NewRecorder()
+	handler.ServeHTTP(auditRec, httptest.NewRequest(http.MethodGet, "/api/audit", nil))
+	assertStatus(t, auditRec, http.StatusOK)
+	var auditResp protocol.ListAuditEventsResponse
+	if err := json.NewDecoder(auditRec.Body).Decode(&auditResp); err != nil {
+		t.Fatalf("decode audit response: %v", err)
+	}
+	var sawTimeout, sawLate bool
+	for _, event := range auditResp.Events {
+		if event.TargetNode != "node-late" || event.Action != audit.ActionJobFail {
+			continue
+		}
+		if strings.Contains(event.Detail, "config_apply timeout") {
+			sawTimeout = true
+		}
+		if strings.Contains(event.Detail, "config_apply late_result_after_timeout") {
+			sawLate = true
+		}
+	}
+	if !sawTimeout || !sawLate {
+		t.Fatalf("audit events missing timeout=%t late=%t: %#v", sawTimeout, sawLate, auditResp.Events)
 	}
 }
 

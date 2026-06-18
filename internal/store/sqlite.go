@@ -596,13 +596,14 @@ func (s *SQLiteNodeStore) ClaimNextJob(ctx context.Context, nodeID string, now t
 	}
 
 	var jobID string
+	var jobType string
 	err = tx.QueryRowContext(ctx, `
-SELECT id
+SELECT id, type
 FROM jobs
 WHERE node_id = ? AND status = ?
 ORDER BY created_at ASC
 LIMIT 1
-`, nodeID, string(protocol.JobStatusPending)).Scan(&jobID)
+`, nodeID, string(protocol.JobStatusPending)).Scan(&jobID, &jobType)
 	if errors.Is(err, sql.ErrNoRows) {
 		if err := tx.Commit(); err != nil {
 			return nil, fmt.Errorf("commit expired job updates: %w", err)
@@ -614,7 +615,7 @@ LIMIT 1
 	}
 
 	claimedAt := now
-	claimExpiresAt := claimedAt.Add(defaultJobClaimLease)
+	claimExpiresAt := claimedAt.Add(jobClaimLease(protocol.JobType(jobType)))
 	result, err := tx.ExecContext(ctx, `
 UPDATE jobs
 SET status = ?, claimed_at = ?, claim_expires_at = ?
@@ -669,7 +670,10 @@ WHERE id = ? AND status = ?
 		return fmt.Errorf("count job completion update: %w", err)
 	}
 	if rowsAffected == 0 {
-		return errors.New("job not found or not in claimed state")
+		if err := s.recordLateJobResult(ctx, jobID, result, now); err != nil {
+			return err
+		}
+		return ErrLateJobResultRecorded
 	}
 	return nil
 }
@@ -698,7 +702,32 @@ WHERE id = ? AND status = ?
 		return fmt.Errorf("count job failure update: %w", err)
 	}
 	if rowsAffected == 0 {
+		if err := s.recordLateJobResult(ctx, jobID, result, now); err != nil {
+			return err
+		}
+		return ErrLateJobResultRecorded
+	}
+	return nil
+}
+
+func (s *SQLiteNodeStore) recordLateJobResult(ctx context.Context, jobID string, result protocol.JobResultRequest, now time.Time) error {
+	job, err := s.loadJob(ctx, jobID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return errors.New("job not found or not in claimed state")
+		}
+		return err
+	}
+	if !IsJobClaimTimeout(job) {
 		return errors.New("job not found or not in claimed state")
+	}
+	_, err = s.db.ExecContext(ctx, `
+UPDATE jobs
+SET result_json = ?, error = ?, finished_at = ?, claim_expires_at = NULL
+WHERE id = ? AND status = ?
+`, result.ResultJSON, lateJobResultError(result), formatDBTime(now.UTC()), jobID, string(protocol.JobStatusFailed))
+	if err != nil {
+		return fmt.Errorf("record late job result: %w", err)
 	}
 	return nil
 }

@@ -381,6 +381,60 @@ func TestSQLiteRejectsActiveConfigApplyForSamePath(t *testing.T) {
 	}
 }
 
+func TestSQLiteConfigApplyUsesLongLeaseAndDoesNotRequeueAfterTimeout(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenSQLiteNodeStore(ctx, filepath.Join(t.TempDir(), "sideplane.db"))
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer store.Close()
+
+	now := time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)
+	if _, err := store.RecordHeartbeat(ctx, protocol.HeartbeatRequest{NodeID: "node-apply"}, now); err != nil {
+		t.Fatalf("record heartbeat: %v", err)
+	}
+	if _, err := store.CreateJob(ctx, protocol.CreateJobRequest{
+		Type:        protocol.JobTypeConfigApply,
+		PayloadJSON: configApplyPayloadForTest(t, "hermes", "/etc/hermes/config.yaml"),
+	}, "node-apply", now); err != nil {
+		t.Fatalf("create config_apply: %v", err)
+	}
+	claimed, err := store.ClaimNextJob(ctx, "node-apply", now.Add(time.Second))
+	if err != nil {
+		t.Fatalf("claim config_apply: %v", err)
+	}
+	if claimed == nil {
+		t.Fatal("claimed job is nil")
+	}
+	if !claimed.ClaimExpiresAt.Equal(claimed.ClaimedAt.Add(configApplyJobClaimLease)) {
+		t.Fatalf("claim expires at = %s, want claimedAt + config apply lease", claimed.ClaimExpiresAt)
+	}
+	if _, err := store.ClaimNextJob(ctx, "node-apply", claimed.ClaimedAt.Add(defaultJobClaimLease+time.Second)); err != nil {
+		t.Fatalf("claim during long config_apply lease: %v", err)
+	}
+	got, err := store.GetJob(ctx, claimed.ID)
+	if err != nil {
+		t.Fatalf("get job during lease: %v", err)
+	}
+	if got.Status != protocol.JobStatusClaimed {
+		t.Fatalf("job status after default lease = %q, want claimed", got.Status)
+	}
+	next, err := store.ClaimNextJob(ctx, "node-apply", claimed.ClaimExpiresAt.Add(time.Second))
+	if err != nil {
+		t.Fatalf("claim after config_apply timeout: %v", err)
+	}
+	if next != nil {
+		t.Fatalf("next job = %#v, want nil after timeout", next)
+	}
+	got, err = store.GetJob(ctx, claimed.ID)
+	if err != nil {
+		t.Fatalf("get job after timeout: %v", err)
+	}
+	if got.Status != protocol.JobStatusFailed || !IsJobClaimTimeout(*got) {
+		t.Fatalf("job after timeout = %#v, want failed timeout", got)
+	}
+}
+
 func TestSQLiteRejectsClaimedConfigApplyForSamePath(t *testing.T) {
 	ctx := context.Background()
 	store, err := OpenSQLiteNodeStore(ctx, filepath.Join(t.TempDir(), "sideplane.db"))

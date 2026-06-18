@@ -3,14 +3,16 @@ package store
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/wucm667/sideplane/pkg/protocol"
 )
 
 const (
-	defaultJobClaimLease = 5 * time.Minute
-	jobClaimTimeoutError = "job claim timed out"
+	defaultJobClaimLease     = 5 * time.Minute
+	configApplyJobClaimLease = 30 * time.Minute
+	jobClaimTimeoutError     = "job claim timed out"
 )
 
 var (
@@ -24,7 +26,35 @@ var (
 	ErrNodeAlreadyEnrolled = errors.New("node is already enrolled")
 	// ErrActiveJobExists means the node already has an active job of that type.
 	ErrActiveJobExists = errors.New("active job already exists")
+	// ErrLateJobResultRecorded means a sidecar submitted a result after the
+	// server had already timed out the job; the result was attached for audit.
+	ErrLateJobResultRecorded = errors.New("late job result recorded after timeout")
 )
+
+func jobClaimLease(jobType protocol.JobType) time.Duration {
+	if jobType == protocol.JobTypeConfigApply {
+		return configApplyJobClaimLease
+	}
+	return defaultJobClaimLease
+}
+
+// IsJobClaimTimeout reports whether a job is a timeout failure, including
+// timeout failures later annotated with a late sidecar result.
+func IsJobClaimTimeout(job protocol.Job) bool {
+	return job.Status == protocol.JobStatusFailed && strings.HasPrefix(job.Error, jobClaimTimeoutError)
+}
+
+func lateJobResultError(result protocol.JobResultRequest) string {
+	status := strings.TrimSpace(string(result.Status))
+	if status == "" {
+		status = "unknown"
+	}
+	msg := jobClaimTimeoutError + "; late sidecar result status=" + status
+	if detail := strings.TrimSpace(result.Error); detail != "" {
+		msg += ": " + detail
+	}
+	return msg
+}
 
 // NodeStore persists heartbeat-derived node status snapshots.
 type NodeStore interface {

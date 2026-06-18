@@ -288,7 +288,7 @@ func (s *MemoryNodeStore) ClaimNextJob(_ context.Context, nodeID string, now tim
 
 	oldestJob.Status = protocol.JobStatusClaimed
 	oldestJob.ClaimedAt = now
-	oldestJob.ClaimExpiresAt = now.Add(defaultJobClaimLease)
+	oldestJob.ClaimExpiresAt = now.Add(jobClaimLease(oldestJob.Type))
 	s.jobs[oldestJob.ID] = *oldestJob
 
 	return oldestJob, nil
@@ -309,6 +309,14 @@ func (s *MemoryNodeStore) CompleteJob(_ context.Context, jobID string, result pr
 		return errors.New("job not found")
 	}
 	if job.Status != protocol.JobStatusClaimed {
+		if IsJobClaimTimeout(job) {
+			job.ResultJSON = result.ResultJSON
+			job.Error = lateJobResultError(result)
+			job.FinishedAt = now.UTC()
+			job.ClaimExpiresAt = time.Time{}
+			s.jobs[jobID] = job
+			return ErrLateJobResultRecorded
+		}
 		return errors.New("job not in claimed state")
 	}
 
@@ -336,6 +344,14 @@ func (s *MemoryNodeStore) FailJob(_ context.Context, jobID string, result protoc
 		return errors.New("job not found")
 	}
 	if job.Status != protocol.JobStatusClaimed {
+		if IsJobClaimTimeout(job) {
+			job.ResultJSON = result.ResultJSON
+			job.Error = lateJobResultError(result)
+			job.FinishedAt = now.UTC()
+			job.ClaimExpiresAt = time.Time{}
+			s.jobs[jobID] = job
+			return ErrLateJobResultRecorded
+		}
 		return errors.New("job not in claimed state")
 	}
 
