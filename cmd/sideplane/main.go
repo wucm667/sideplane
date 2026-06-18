@@ -35,39 +35,60 @@ func main() {
 }
 
 func run(args []string, stdout io.Writer, stderr io.Writer) int {
-	if len(args) >= 2 && args[0] == "fleet" && args[1] == "status" {
-		return runFleetStatus(args[2:], stdout, stderr)
+	if len(args) == 0 || isHelpArg(args[0]) {
+		printHelp(stdout)
+		return 0
 	}
-	if len(args) >= 1 && args[0] == "probe" {
-		return runProbe(args[1:], stdout, stderr)
-	}
-	if len(args) >= 2 && args[0] == "config" && args[1] == "get" {
-		return runConfigGet(args[2:], stdout, stderr)
-	}
-	if len(args) >= 2 && args[0] == "config" && args[1] == "set" {
-		return runConfigSet(args[2:], stdout, stderr)
-	}
-	if len(args) >= 2 && args[0] == "node" && args[1] == "remove" {
-		return runNodeRemove(args[2:], stdout, stderr)
-	}
-	if len(args) >= 2 && args[0] == "enrollment" && args[1] == "create" {
-		return runEnrollmentCreate(args[2:], stdout, stderr)
-	}
-
-	flags := flag.NewFlagSet("sideplane", flag.ContinueOnError)
-	flags.SetOutput(stderr)
-	showVersion := flags.Bool("version", false, "print version and exit")
-	if err := flags.Parse(args); err != nil {
-		return 2
-	}
-
-	if *showVersion {
+	if len(args) == 1 && (args[0] == "version" || args[0] == "--version") {
 		fmt.Fprintf(stdout, "sideplane %s\n", version)
 		return 0
 	}
 
-	fmt.Fprintln(stdout, "sideplane CLI skeleton")
-	return 0
+	switch args[0] {
+	case "fleet":
+		if len(args) >= 2 && args[1] == "status" {
+			return runFleetStatus(args[2:], stdout, stderr)
+		}
+	case "probe":
+		return runProbe(args[1:], stdout, stderr)
+	case "config":
+		if len(args) >= 2 && args[1] == "get" {
+			return runConfigGet(args[2:], stdout, stderr)
+		}
+		if len(args) >= 2 && args[1] == "set" {
+			return runConfigSet(args[2:], stdout, stderr)
+		}
+	case "node":
+		if len(args) >= 2 && args[1] == "remove" {
+			return runNodeRemove(args[2:], stdout, stderr)
+		}
+	case "enrollment":
+		if len(args) >= 2 && args[1] == "create" {
+			return runEnrollmentCreate(args[2:], stdout, stderr)
+		}
+	}
+
+	fmt.Fprintf(stderr, "unknown command: %s\n\n", strings.Join(args, " "))
+	printHelp(stderr)
+	return 1
+}
+
+func isHelpArg(arg string) bool {
+	return arg == "--help" || arg == "-h" || arg == "help"
+}
+
+func printHelp(w io.Writer) {
+	fmt.Fprint(w, `Usage: sideplane <command>
+
+Commands:
+  fleet status        Show fleet node status
+  probe <nodeId>      Run a deep probe on a node
+  config get          Show desired configuration
+  config set          Update global desired configuration
+  node remove <id>    Remove a node from the fleet
+  enrollment create   Create a one-time enrollment token
+  version             Print version
+`)
 }
 
 func runNodeRemove(args []string, stdout io.Writer, stderr io.Writer) int {

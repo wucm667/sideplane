@@ -81,6 +81,58 @@ func TestFleetStatusPrintsCompactTable(t *testing.T) {
 	}
 }
 
+func TestHelpListsCommands(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"--help"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("run returned %d, stderr=%q", code, stderr.String())
+	}
+
+	output := stdout.String()
+	for _, want := range []string{
+		"Usage: sideplane <command>",
+		"fleet status",
+		"probe <nodeId>",
+		"config get",
+		"config set",
+		"node remove <id>",
+		"enrollment create",
+		"version",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("help missing %q:\n%s", want, output)
+		}
+	}
+}
+
+func TestUnknownCommandPrintsHelp(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"fleet", "unknown"}, &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("run returned %d, want 1", code)
+	}
+	output := stderr.String()
+	for _, want := range []string{"unknown command: fleet unknown", "Usage: sideplane <command>"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("stderr missing %q:\n%s", want, output)
+		}
+	}
+}
+
+func TestVersionCommand(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"version"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("run returned %d, stderr=%q", code, stderr.String())
+	}
+	if got := stdout.String(); !strings.Contains(got, "sideplane dev") {
+		t.Fatalf("stdout = %q, want version", got)
+	}
+}
+
 func TestProbeCreatesDeepProbeJob(t *testing.T) {
 	job := protocol.Job{
 		ID:        "job-1",
