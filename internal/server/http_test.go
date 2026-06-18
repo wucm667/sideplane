@@ -1314,6 +1314,59 @@ func TestMetricsCountsConfigApplyCreation(t *testing.T) {
 	}
 }
 
+func TestMetricsExposeFleetGauges(t *testing.T) {
+	now := time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)
+	nodeStore := store.NewMemoryNodeStore()
+	heartbeats := map[string]time.Time{
+		"node-fresh-drift": now.Add(-time.Minute),
+		"node-stale":       now.Add(-3 * time.Minute),
+		"node-offline":     now.Add(-11 * time.Minute),
+	}
+	for nodeID, observedAt := range heartbeats {
+		enrollTestNode(t, nodeStore, nodeID)
+		if _, err := nodeStore.RecordHeartbeat(context.Background(), protocol.HeartbeatRequest{
+			NodeID:   nodeID,
+			Hostname: nodeID,
+		}, observedAt); err != nil {
+			t.Fatalf("record heartbeat for %s: %v", nodeID, err)
+		}
+	}
+	if err := nodeStore.SetDesiredConfig(context.Background(), protocol.DesiredConfig{
+		Global: protocol.ProviderModelConfig{Provider: "openai", Model: "gpt-4o"},
+	}, now); err != nil {
+		t.Fatalf("set desired config: %v", err)
+	}
+	seedRuntimeConfigSnapshot(t, nodeStore, "node-fresh-drift", "anthropic", "claude-3-7-sonnet")
+	seedRuntimeConfigSnapshot(t, nodeStore, "node-stale", "openai", "gpt-4o")
+
+	handler, err := NewHandlerWithStoreAndFreshnessPolicy(nodeStore, FreshnessPolicy{
+		StaleAfter:   2 * time.Minute,
+		OfflineAfter: 10 * time.Minute,
+		Now: func() time.Time {
+			return now
+		},
+	})
+	if err != nil {
+		t.Fatalf("build handler: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	assertStatus(t, rec, http.StatusOK)
+
+	body := rec.Body.String()
+	for _, want := range []string{
+		`sideplane_fleet_nodes{state="fresh"} 1`,
+		`sideplane_fleet_nodes{state="stale"} 1`,
+		`sideplane_fleet_nodes{state="offline"} 1`,
+		`sideplane_fleet_nodes_drifted 1`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("metrics body missing %q\n%s", want, body)
+		}
+	}
+}
+
 func TestPublicSigningKeyAPI(t *testing.T) {
 	keyPair, err := spcrypto.GenerateKeyPair()
 	if err != nil {

@@ -146,8 +146,63 @@ func (h *handler) metricsEndpoint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	fleetMetrics, err := h.collectFleetMetrics(r.Context())
+	if err != nil {
+		http.Error(w, "collect fleet metrics", http.StatusInternalServerError)
+		return
+	}
+
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	h.metrics.WriteProm(w)
+	writeFleetMetrics(w, fleetMetrics)
+}
+
+type fleetMetricsSnapshot struct {
+	nodesByState map[protocol.NodeState]int
+	driftedNodes int
+}
+
+func (h *handler) collectFleetMetrics(ctx context.Context) (fleetMetricsSnapshot, error) {
+	nodes, err := h.store.ListNodes(ctx)
+	if err != nil {
+		return fleetMetricsSnapshot{}, err
+	}
+	h.applyFreshness(nodes)
+
+	desired, err := h.store.GetDesiredConfig(ctx)
+	if err != nil {
+		return fleetMetricsSnapshot{}, err
+	}
+
+	snapshot := fleetMetricsSnapshot{
+		nodesByState: map[protocol.NodeState]int{
+			protocol.NodeStateFresh:   0,
+			protocol.NodeStateStale:   0,
+			protocol.NodeStateOffline: 0,
+		},
+	}
+	for _, node := range nodes {
+		snapshot.nodesByState[node.State]++
+		drift, err := h.nodeHasConfigDrift(ctx, node.NodeID, desired)
+		if err != nil {
+			return fleetMetricsSnapshot{}, err
+		}
+		if drift {
+			snapshot.driftedNodes++
+		}
+	}
+	return snapshot, nil
+}
+
+func writeFleetMetrics(w http.ResponseWriter, snapshot fleetMetricsSnapshot) {
+	fmt.Fprintln(w, "# HELP sideplane_fleet_nodes Nodes by freshness state.")
+	fmt.Fprintln(w, "# TYPE sideplane_fleet_nodes gauge")
+	for _, state := range []protocol.NodeState{protocol.NodeStateFresh, protocol.NodeStateStale, protocol.NodeStateOffline} {
+		fmt.Fprintf(w, "sideplane_fleet_nodes{state=%q} %d\n", state, snapshot.nodesByState[state])
+	}
+	fmt.Fprintln(w, "# HELP sideplane_fleet_nodes_drifted Nodes with config drift.")
+	fmt.Fprintln(w, "# TYPE sideplane_fleet_nodes_drifted gauge")
+	fmt.Fprintf(w, "sideplane_fleet_nodes_drifted %d\n", snapshot.driftedNodes)
 }
 
 func (h *handler) createEnrollmentToken(w http.ResponseWriter, r *http.Request) {
