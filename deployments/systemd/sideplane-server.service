@@ -1,0 +1,21 @@
+[Unit]
+Description=Sideplane Server
+Documentation=https://github.com/wucm667/sideplane
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=sideplane
+Group=sideplane
+EnvironmentFile=-/etc/sideplane/sideplane-server.env
+ExecStart=/usr/local/bin/sideplane-server --db ${SIDEPLANE_DB_PATH} --web-dir ${SIDEPLANE_WEB_DIR} --addr ${SIDEPLANE_ADDR}
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/sideplane
+
+[Install]
+WantedBy=multi-user.target
