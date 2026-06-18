@@ -48,6 +48,18 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 0
 	}
 
+	setFlags := visitedFlags(flags)
+	if err := applyServerEnvFallbacks(setFlags, serverFlagValues{
+		addr:         addr,
+		dbPath:       dbPath,
+		webDir:       webDir,
+		staleAfter:   staleAfter,
+		offlineAfter: offlineAfter,
+	}); err != nil {
+		fmt.Fprintf(stderr, "invalid environment configuration: %v\n", err)
+		return 1
+	}
+
 	freshness := server.FreshnessPolicy{
 		StaleAfter:   *staleAfter,
 		OfflineAfter: *offlineAfter,
@@ -154,6 +166,60 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 	logger.Info("sideplane-server stopped")
 	return 0
+}
+
+type serverFlagValues struct {
+	addr         *string
+	dbPath       *string
+	webDir       *string
+	staleAfter   *time.Duration
+	offlineAfter *time.Duration
+}
+
+func visitedFlags(flags *flag.FlagSet) map[string]bool {
+	visited := map[string]bool{}
+	flags.Visit(func(f *flag.Flag) {
+		visited[f.Name] = true
+	})
+	return visited
+}
+
+func applyServerEnvFallbacks(setFlags map[string]bool, values serverFlagValues) error {
+	applyStringEnvFallback(setFlags, "addr", "SIDEPLANE_ADDR", values.addr)
+	applyStringEnvFallback(setFlags, "db", "SIDEPLANE_DB_PATH", values.dbPath)
+	applyStringEnvFallback(setFlags, "web-dir", "SIDEPLANE_WEB_DIR", values.webDir)
+	if err := applyDurationEnvFallback(setFlags, "stale-after", "SIDEPLANE_STALE_AFTER", values.staleAfter); err != nil {
+		return err
+	}
+	if err := applyDurationEnvFallback(setFlags, "offline-after", "SIDEPLANE_OFFLINE_AFTER", values.offlineAfter); err != nil {
+		return err
+	}
+	return nil
+}
+
+func applyStringEnvFallback(setFlags map[string]bool, flagName string, envName string, value *string) {
+	if value == nil || setFlags[flagName] {
+		return
+	}
+	if envValue := strings.TrimSpace(os.Getenv(envName)); envValue != "" {
+		*value = envValue
+	}
+}
+
+func applyDurationEnvFallback(setFlags map[string]bool, flagName string, envName string, value *time.Duration) error {
+	if value == nil || setFlags[flagName] {
+		return nil
+	}
+	envValue := strings.TrimSpace(os.Getenv(envName))
+	if envValue == "" {
+		return nil
+	}
+	parsed, err := time.ParseDuration(envValue)
+	if err != nil {
+		return fmt.Errorf("%s: %w", envName, err)
+	}
+	*value = parsed
+	return nil
 }
 
 func truthyEnv(value string) bool {

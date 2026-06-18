@@ -8,11 +8,15 @@ services:
     ports:
       - "8080:8080"
     environment:
+      SIDEPLANE_ADDR: "${SIDEPLANE_ADDR:-:8080}"
+      SIDEPLANE_DB_PATH: ${SIDEPLANE_DB_PATH:-/data/sideplane.db}
+      SIDEPLANE_WEB_DIR: ${SIDEPLANE_WEB_DIR:-/app/web/dist}
       # Set SIDEPLANE_OPERATOR_TOKEN in your shell or .env to a secret value before exposing the server.
       SIDEPLANE_OPERATOR_TOKEN: ${SIDEPLANE_OPERATOR_TOKEN:-}
       SIDEPLANE_SIGNING_KEY: ${SIDEPLANE_SIGNING_KEY:-/data/signing.key}
     volumes:
       - sideplane-data:/data
+    command: ["sideplane-server"]
 
   sidecar:
     image: ghcr.io/wucm667/sideplane/sidecar:local

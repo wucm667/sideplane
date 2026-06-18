@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRunRejectsInvalidFreshnessDurations(t *testing.T) {
@@ -47,6 +48,46 @@ func TestRunRejectsInvalidFreshnessDurations(t *testing.T) {
 				t.Fatalf("stdout = %q, want empty", stdout.String())
 			}
 		})
+	}
+}
+
+func TestServerEnvFallbacksApplyWhenFlagsUnset(t *testing.T) {
+	t.Setenv("SIDEPLANE_ADDR", "127.0.0.1:18080")
+	t.Setenv("SIDEPLANE_DB_PATH", "/var/lib/sideplane/env.db")
+	t.Setenv("SIDEPLANE_WEB_DIR", "/usr/share/sideplane/web")
+	t.Setenv("SIDEPLANE_STALE_AFTER", "90s")
+	t.Setenv("SIDEPLANE_OFFLINE_AFTER", "6m")
+
+	addr := ":8080"
+	dbPath := "sideplane.db"
+	webDir := ""
+	staleAfter := 2 * time.Minute
+	offlineAfter := 10 * time.Minute
+
+	if err := applyServerEnvFallbacks(map[string]bool{}, serverFlagValues{
+		addr:         &addr,
+		dbPath:       &dbPath,
+		webDir:       &webDir,
+		staleAfter:   &staleAfter,
+		offlineAfter: &offlineAfter,
+	}); err != nil {
+		t.Fatalf("apply env fallbacks: %v", err)
+	}
+
+	if addr != "127.0.0.1:18080" {
+		t.Fatalf("addr = %q, want env addr", addr)
+	}
+	if dbPath != "/var/lib/sideplane/env.db" {
+		t.Fatalf("db path = %q, want env db", dbPath)
+	}
+	if webDir != "/usr/share/sideplane/web" {
+		t.Fatalf("web dir = %q, want env web dir", webDir)
+	}
+	if staleAfter != 90*time.Second {
+		t.Fatalf("stale after = %s, want 90s", staleAfter)
+	}
+	if offlineAfter != 6*time.Minute {
+		t.Fatalf("offline after = %s, want 6m", offlineAfter)
 	}
 }
 
