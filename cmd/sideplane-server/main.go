@@ -95,6 +95,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		OperatorToken:                   operatorToken,
 		AllowUnauthenticatedOperatorAPI: allowUnauthenticatedOperatorAPI,
 		SigningKeyPath:                  keyPath,
+		Logger:                          logger,
 	})
 	if err != nil {
 		logger.Error("configure freshness policy", "error", err)

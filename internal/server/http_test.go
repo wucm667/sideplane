@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -1276,6 +1277,38 @@ func TestSecurityHeaders(t *testing.T) {
 			assertStatus(t, rec, http.StatusOK)
 			assertSecurityHeaders(t, rec)
 		})
+	}
+}
+
+func TestRequestLoggingMiddleware(t *testing.T) {
+	var logs bytes.Buffer
+	handler, err := NewHandlerWithConfig(HandlerConfig{
+		Store:     store.NewMemoryNodeStore(),
+		Freshness: DefaultFreshnessPolicy(),
+		Logger:    slog.New(slog.NewJSONHandler(&logs, nil)),
+	})
+	if err != nil {
+		t.Fatalf("build handler: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req.RemoteAddr = "192.0.2.1:1234"
+	handler.ServeHTTP(rec, req)
+
+	assertStatus(t, rec, http.StatusOK)
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(logs.Bytes()), &entry); err != nil {
+		t.Fatalf("decode log entry %q: %v", logs.String(), err)
+	}
+	if entry["method"] != http.MethodGet {
+		t.Fatalf("logged method = %#v, want %s", entry["method"], http.MethodGet)
+	}
+	if entry["path"] != "/healthz" {
+		t.Fatalf("logged path = %#v, want /healthz", entry["path"])
+	}
+	if entry["status"] != float64(http.StatusOK) {
+		t.Fatalf("logged status = %#v, want %d", entry["status"], http.StatusOK)
 	}
 }
 

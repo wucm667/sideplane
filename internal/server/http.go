@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -62,6 +63,7 @@ type HandlerConfig struct {
 	SigningKeyPath                  string
 	SigningKeyPair                  spcrypto.KeyPair
 	DisableSigningKey               bool
+	Logger                          *slog.Logger
 }
 
 // NewHandlerWithConfig returns a server HTTP handler with explicit dependencies.
@@ -93,6 +95,10 @@ func NewHandlerWithConfig(cfg HandlerConfig) (http.Handler, error) {
 		signingKey:   keyPair,
 		metrics:      NewMetrics(),
 		timedOutJobs: map[string]struct{}{},
+		logger:       cfg.Logger,
+	}
+	if handler.logger == nil {
+		handler.logger = discardLogger()
 	}
 
 	mux := http.NewServeMux()
@@ -111,7 +117,7 @@ func NewHandlerWithConfig(cfg HandlerConfig) (http.Handler, error) {
 	mux.HandleFunc("/api/nodes/", handler.nodeJobsRouter)
 	mux.HandleFunc("/api/sidecar/jobs/next", handler.claimNextJob)
 	mux.HandleFunc("/api/sidecar/jobs/", handler.submitJobResult)
-	return securityHeaders(mux), nil
+	return requestLogger(handler.logger, securityHeaders(mux)), nil
 }
 
 type handler struct {
@@ -122,6 +128,7 @@ type handler struct {
 	metrics      *Metrics
 	timedOutMu   sync.Mutex
 	timedOutJobs map[string]struct{}
+	logger       *slog.Logger
 }
 
 func jsonStatusHandler(status string) http.HandlerFunc {
