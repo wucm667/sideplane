@@ -53,6 +53,24 @@ sideplane-sidecar --hermes-docker-container <container>   # docker-managed runti
 sideplane-sidecar --hermes-service-unit <unit>            # systemd-managed runtime
 ```
 
+## Restart strategy for the first content-change live write
+
+The first content-change live-write preflight uses **Path A: root/systemd
+controller**. Keep the existing allowlisted controller and run the sidecar with
+permission to execute:
+
+```bash
+systemctl restart <unit>
+systemctl is-active <unit>
+```
+
+For the first live write, the validated default is a root-managed sidecar with
+`--hermes-service-unit <unit>`. A deployment may instead use an operator-managed
+service account only if the service manager already permits those exact
+noninteractive unit operations; Sideplane does not add a sudo command wrapper in
+this path. Non-root sudo hardening is deferred until after the first
+content-change live write.
+
 ## Creating an apply from the API
 
 A config apply is created per node and defaults to dry run:
