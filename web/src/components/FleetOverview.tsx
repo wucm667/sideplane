@@ -1,5 +1,15 @@
+import { useMemo, useState } from 'react'
 import { compactHash, formatDate, formatRelativeTime, hasActiveDeepProbe, runtimeKey, runtimeLabel, stateBadgeClasses } from '../helpers.ts'
 import type { Job, NodeStatus } from '../types.ts'
+
+type SortKey = 'node' | 'state' | 'heartbeat'
+type SortDirection = 'asc' | 'desc'
+
+const STATE_SORT_ORDER = {
+  offline: 0,
+  stale: 1,
+  fresh: 2,
+}
 
 interface FleetOverviewProps {
   bannerText: string
@@ -26,6 +36,16 @@ export function FleetOverview({
   onOpenNode,
   onRefresh,
 }: FleetOverviewProps) {
+  const [sort, setSort] = useState<{ key: SortKey; direction: SortDirection }>({ key: 'state', direction: 'asc' })
+  const sortedNodes = useMemo(() => sortNodes(nodes, sort.key, sort.direction), [nodes, sort])
+
+  const toggleSort = (key: SortKey) => {
+    setSort((current) => ({
+      key,
+      direction: current.key === key && current.direction === 'asc' ? 'desc' : 'asc',
+    }))
+  }
+
   return (
     <div className="mx-auto max-w-6xl px-4 py-6 sm:px-6 lg:px-9 lg:py-8">
       <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
@@ -65,17 +85,17 @@ export function FleetOverview({
 
       <div className="overflow-hidden rounded-xl border border-[var(--sp-border)] bg-[var(--sp-surface)] shadow-sm">
         <div className="hidden grid-cols-[2fr_1fr_1.4fr_1fr_1fr_2.5rem] gap-4 border-b border-[var(--sp-border)] px-5 py-3 text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--sp-faint)] lg:grid">
-          <div>Node</div>
-          <div>State</div>
+          <SortHeader active={sort.key === 'node'} direction={sort.direction} label="Node" onClick={() => toggleSort('node')} />
+          <SortHeader active={sort.key === 'state'} direction={sort.direction} label="State" onClick={() => toggleSort('state')} />
           <div>Runtimes</div>
           <div>Config</div>
-          <div>Heartbeat</div>
+          <SortHeader active={sort.key === 'heartbeat'} direction={sort.direction} label="Heartbeat" onClick={() => toggleSort('heartbeat')} />
           <div />
         </div>
 
         {loading && <TableMessage message="Loading nodes…" />}
         {!loading && nodes.length === 0 && <TableMessage message="No nodes registered yet." />}
-        {!loading && nodes.map((node) => (
+        {!loading && sortedNodes.map((node) => (
           <FleetRow
             key={node.nodeId}
             activeProbe={hasActiveDeepProbe(jobsByNode[node.nodeId] ?? [])}
@@ -85,6 +105,39 @@ export function FleetOverview({
         ))}
       </div>
     </div>
+  )
+}
+
+function sortNodes(nodes: NodeStatus[], key: SortKey, direction: SortDirection): NodeStatus[] {
+  const multiplier = direction === 'asc' ? 1 : -1
+  return [...nodes].sort((a, b) => {
+    const primary = compareNodeSortValue(a, b, key)
+    if (primary !== 0) return primary * multiplier
+    return a.nodeId.localeCompare(b.nodeId)
+  })
+}
+
+function compareNodeSortValue(a: NodeStatus, b: NodeStatus, key: SortKey): number {
+  if (key === 'node') return a.nodeId.localeCompare(b.nodeId)
+  if (key === 'state') return STATE_SORT_ORDER[a.state] - STATE_SORT_ORDER[b.state]
+  return heartbeatTime(a) - heartbeatTime(b)
+}
+
+function heartbeatTime(node: NodeStatus): number {
+  const value = Date.parse(node.lastHeartbeatAt)
+  return Number.isNaN(value) ? 0 : value
+}
+
+function SortHeader({ active, direction, label, onClick }: { active: boolean; direction: SortDirection; label: string; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      className="flex items-center gap-1 text-left uppercase text-[var(--sp-faint)] hover:text-[var(--sp-text)]"
+      onClick={onClick}
+    >
+      <span>{label}</span>
+      {active && <span className="font-mono text-[10px]">{direction === 'asc' ? '▲' : '▼'}</span>}
+    </button>
   )
 }
 
