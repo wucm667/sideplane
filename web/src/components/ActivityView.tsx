@@ -17,15 +17,19 @@ export function ActivityView({
   error,
   events,
   filters,
+  limit,
   loading,
   onFiltersChange,
+  onLimitChange,
   onRefresh,
 }: {
   error: string | null
   events: AuditEvent[]
   filters: AuditFilters
+  limit: number
   loading: boolean
   onFiltersChange: (filters: AuditFilters) => void
+  onLimitChange: (limit: number) => void
   onRefresh: () => void
 }) {
   const hasFilters = filters.nodeId.trim() !== '' || filters.action !== ''
@@ -46,7 +50,7 @@ export function ActivityView({
         </button>
       </div>
 
-      <div className="mb-5 grid gap-2 rounded-xl border border-[var(--sp-border)] bg-[var(--sp-surface)] p-3 sm:grid-cols-[1fr_1fr_auto]">
+      <div className="mb-5 grid gap-2 rounded-xl border border-[var(--sp-border)] bg-[var(--sp-surface)] p-3 sm:grid-cols-[1fr_1fr_auto_auto]">
         <input
           className="h-9 rounded-lg border border-[var(--sp-border)] bg-[var(--sp-surface-2)] px-3 font-mono text-xs text-[var(--sp-text)] outline-none focus:border-[var(--sp-accent)]"
           value={filters.nodeId}
@@ -62,6 +66,15 @@ export function ActivityView({
           {AUDIT_ACTIONS.map((action) => (
             <option key={action} value={action}>{action}</option>
           ))}
+        </select>
+        <select
+          className="h-9 rounded-lg border border-[var(--sp-border)] bg-[var(--sp-surface-2)] px-3 font-mono text-xs text-[var(--sp-text)] outline-none focus:border-[var(--sp-accent)]"
+          value={limit}
+          onChange={(event) => onLimitChange(Number(event.target.value))}
+        >
+          <option value={50}>50 events</option>
+          <option value={100}>100 events</option>
+          <option value={250}>250 events</option>
         </select>
         {hasFilters && (
           <button
@@ -88,7 +101,7 @@ export function ActivityView({
           <div>Target</div>
         </div>
         {loading && <TableMessage message="Loading audit events…" />}
-        {!loading && events.length === 0 && <TableMessage message="No audit events yet." />}
+        {!loading && events.length === 0 && <TableMessage message={hasFilters ? 'No audit events match these filters.' : 'No audit events yet.'} />}
         {!loading && events.map((event) => (
           <div key={event.id} className="grid gap-2 border-b border-[var(--sp-border)] px-5 py-4 text-sm last:border-b-0 sm:grid-cols-[1fr_1fr_1.4fr_1.4fr] sm:items-center sm:gap-4">
             <div className="text-xs text-[var(--sp-faint)]" title={formatDate(event.createdAt)}>{formatRelativeTime(event.createdAt)}</div>

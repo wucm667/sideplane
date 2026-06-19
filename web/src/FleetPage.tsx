@@ -11,6 +11,7 @@ export default function FleetPage() {
     auditError,
     auditEvents,
     auditFilters,
+    auditLimit,
     auditLoading,
     bannerText,
     changeView,
@@ -36,6 +37,7 @@ export default function FleetPage() {
     refreshing,
     selectedNode,
     setAuditFilters,
+    setAuditLimit,
     setNodeJobStatusFilter,
     setOperatorToken,
     stats,
@@ -140,8 +142,10 @@ export default function FleetPage() {
               error={auditError}
               events={auditEvents}
               filters={auditFilters}
+              limit={auditLimit}
               loading={auditLoading}
               onFiltersChange={setAuditFilters}
+              onLimitChange={setAuditLimit}
               onRefresh={loadAuditEvents}
             />
           )}

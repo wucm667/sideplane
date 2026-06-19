@@ -4,6 +4,7 @@ import type { AuditEvent, AuditFilters, DeepProbeResult, EffectiveConfigResponse
 const NODE_REFRESH_MS = 10_000
 const ACTIVE_JOB_REFRESH_MS = 2_000
 const AUDIT_REFRESH_MS = 10_000
+const DEFAULT_AUDIT_LIMIT = 100
 const DEFAULT_JOB_LIMIT = 50
 const JOB_LIMIT_STEP = 50
 const ACTIVE_JOB_STATUSES: JobStatus[] = ['pending', 'claimed']
@@ -197,6 +198,7 @@ export function useFleetPageController() {
   const [operatorToken, setOperatorToken] = useState(loadStoredOperatorToken)
   const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([])
   const [auditFilters, setAuditFilters] = useState<AuditFilters>({ nodeId: '', action: '' })
+  const [auditLimit, setAuditLimit] = useState(DEFAULT_AUDIT_LIMIT)
   const [auditLoading, setAuditLoading] = useState(true)
   const [auditError, setAuditError] = useState<string | null>(null)
   const [effectiveByNode, setEffectiveByNode] = useState<Record<string, EffectiveConfigResponse>>({})
@@ -377,7 +379,7 @@ export function useFleetPageController() {
 
   const loadAuditEvents = useCallback(async () => {
     try {
-      const params = new URLSearchParams()
+      const params = new URLSearchParams({ limit: String(auditLimit) })
       const nodeId = auditFilters.nodeId.trim()
       if (nodeId) {
         params.set('nodeId', nodeId)
@@ -402,7 +404,7 @@ export function useFleetPageController() {
         setAuditLoading(false)
       }
     }
-  }, [auditFilters])
+  }, [auditFilters, auditLimit])
 
   const loadEffectiveConfig = useCallback(async (nodeId: string, runtimeType = 'hermes', profile = 'default') => {
     try {
@@ -509,6 +511,7 @@ export function useFleetPageController() {
     auditError,
     auditEvents,
     auditFilters,
+    auditLimit,
     auditLoading,
     bannerText,
     changeView,
@@ -535,6 +538,7 @@ export function useFleetPageController() {
     selectedNode,
     setOperatorToken,
     setAuditFilters,
+    setAuditLimit,
     setNodeJobStatusFilter,
     stats,
     theme,
