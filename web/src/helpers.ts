@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { AuditEvent, AuditFilters, DeepProbeResult, EffectiveConfigResponse, Job, JobStatus, ListAuditEventsResponse, NodeState, NodeStatus, RestartRequest, RuntimeConfigSnapshot, RuntimeStatus } from './types.ts'
+import type { AuditEvent, AuditFilters, ConfigApplyResult, DeepProbeResult, EffectiveConfigResponse, Job, JobStatus, ListAuditEventsResponse, NodeState, NodeStatus, RestartRequest, RollbackRequest, RuntimeConfigSnapshot, RuntimeStatus } from './types.ts'
 
 const NODE_REFRESH_MS = 10_000
 const ACTIVE_JOB_REFRESH_MS = 2_000
@@ -13,6 +13,13 @@ const THEME_STORAGE_KEY = 'sideplane.theme'
 
 export type View = 'fleet' | 'node' | 'activity' | 'enrollment'
 export type Theme = 'light' | 'dark'
+
+export interface RollbackCandidate {
+  ref: string
+  sourceJobId: string
+  planId: string
+  createdAt?: string
+}
 
 function loadStoredOperatorToken(): string {
   try {
@@ -134,6 +141,10 @@ export function hasActiveRestart(jobs: Job[]): boolean {
   return jobs.some((job) => job.type === 'restart' && ACTIVE_JOB_STATUSES.includes(job.status))
 }
 
+export function hasActiveRollback(jobs: Job[]): boolean {
+  return jobs.some((job) => job.type === 'rollback' && ACTIVE_JOB_STATUSES.includes(job.status))
+}
+
 export function runtimeKey(runtime: RuntimeStatus, index: number): string {
   return `${runtime.name || runtime.type || 'runtime'}-${index}`
 }
@@ -163,6 +174,33 @@ export function latestConfigSnapshots(jobs: Job[]): RuntimeConfigSnapshot[] {
     if (snapshots.length > 0) return snapshots
   }
   return []
+}
+
+export function latestRollbackBackup(jobs: Job[]): RollbackCandidate | null {
+  for (const job of jobs) {
+    if (job.type !== 'config_apply') continue
+    if (job.status !== 'completed' && job.status !== 'failed') continue
+    const result = parseConfigApplyResult(job.resultJson)
+    if (!result?.backupPath || !result.planId) continue
+    return {
+      ref: result.backup?.ref || `config_apply:${job.id}:${result.planId}`,
+      sourceJobId: result.backup?.sourceJobId || job.id,
+      planId: result.planId,
+      createdAt: result.backup?.createdAt || job.finishedAt || job.createdAt,
+    }
+  }
+  return null
+}
+
+function parseConfigApplyResult(resultJson: string | undefined): ConfigApplyResult | null {
+  if (!resultJson?.trim()) return null
+  try {
+    const parsed = JSON.parse(resultJson) as ConfigApplyResult
+    if (!parsed || typeof parsed !== 'object') return null
+    return parsed
+  } catch {
+    return null
+  }
 }
 
 export function groupRows(nodes: NodeStatus[]) {
@@ -197,6 +235,7 @@ export function useFleetPageController() {
   const [jobLimitByNode, setJobLimitByNode] = useState<Record<string, number>>({})
   const [creatingByNode, setCreatingByNode] = useState<Record<string, boolean>>({})
   const [restartingByNode, setRestartingByNode] = useState<Record<string, boolean>>({})
+  const [rollingBackByNode, setRollingBackByNode] = useState<Record<string, boolean>>({})
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -428,6 +467,52 @@ export function useFleetPageController() {
     }
   }, [loadNodeJobs, operatorToken])
 
+  const createRollback = useCallback(async (nodeId: string, request: RollbackRequest) => {
+    if (!mountedRef.current) return
+    setRollingBackByNode((current) => ({ ...current, [nodeId]: true }))
+    try {
+      const headers: HeadersInit = { 'Content-Type': 'application/json' }
+      const token = operatorToken.trim()
+      if (token) {
+        headers.Authorization = `Bearer ${token}`
+      }
+
+      const res = await fetch(`/api/nodes/${encodeURIComponent(nodeId)}/rollback`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(request),
+      })
+      if (!res.ok) {
+        if (res.status === 401) {
+          throw new Error('Operator token required or invalid')
+        }
+        throw new Error(await apiErrorMessage(res))
+      }
+      const job: Job = await res.json()
+      if (!mountedRef.current) return
+      setJobsByNode((current) => ({
+        ...current,
+        [nodeId]: [job, ...(current[nodeId] ?? []).filter((item) => item.id !== job.id)],
+      }))
+      setJobsErrorByNode((current) => {
+        const next = { ...current }
+        delete next[nodeId]
+        return next
+      })
+      await loadNodeJobs(nodeId, false)
+    } catch (e) {
+      if (!mountedRef.current) return
+      setJobsErrorByNode((current) => ({
+        ...current,
+        [nodeId]: e instanceof Error ? e.message : 'Unknown error',
+      }))
+    } finally {
+      if (mountedRef.current) {
+        setRollingBackByNode((current) => ({ ...current, [nodeId]: false }))
+      }
+    }
+  }, [loadNodeJobs, operatorToken])
+
   const loadAuditEvents = useCallback(async () => {
     try {
       const params = new URLSearchParams({ limit: String(auditLimit) })
@@ -567,6 +652,7 @@ export function useFleetPageController() {
     bannerText,
     changeView,
     createDeepProbe,
+    createRollback,
     createRestart,
     creatingByNode,
     effectiveByNode,
@@ -587,6 +673,7 @@ export function useFleetPageController() {
     refreshFleet,
     refreshSelectedNodeAfterApply,
     refreshing,
+    rollingBackByNode,
     restartingByNode,
     selectedNode,
     setOperatorToken,

@@ -1,10 +1,11 @@
 import { useState, type ReactNode } from 'react'
 import ConfigWizard from '../ConfigWizard.tsx'
-import { apiErrorMessage, compactHash, formatDate, formatRelativeTime, hasActiveConfigApply, hasActiveDeepProbe, hasActiveRestart, jobBadgeClasses, latestConfigSnapshots, runtimeKey, snapshotForRuntime, stateBadgeClasses } from '../helpers.ts'
-import type { ConfigApplyResult, ConfigDiffEntry, DeepProbeResult, EffectiveConfigResponse, Job, JobStatus, NodeStatus, RestartJobResult, RestartRequest, RuntimeConfigSnapshot, RuntimeStatus } from '../types.ts'
+import { apiErrorMessage, compactHash, formatDate, formatRelativeTime, hasActiveConfigApply, hasActiveDeepProbe, hasActiveRestart, hasActiveRollback, jobBadgeClasses, latestConfigSnapshots, latestRollbackBackup, runtimeKey, snapshotForRuntime, stateBadgeClasses } from '../helpers.ts'
+import type { ConfigApplyResult, ConfigDiffEntry, DeepProbeResult, EffectiveConfigResponse, Job, JobStatus, NodeStatus, RestartJobResult, RestartRequest, RollbackJobResult, RollbackRequest, RuntimeConfigSnapshot, RuntimeStatus } from '../types.ts'
 
 export function NodeDetailView({
   creating,
+  rollingBack,
   restarting,
   jobs,
   jobsError,
@@ -17,12 +18,14 @@ export function NodeDetailView({
   operatorToken,
   onBack,
   onDeepProbe,
+  onRollback,
   onRestart,
   onJobStatusFilterChange,
   onLoadMoreJobs,
   onApplied,
 }: {
   creating: boolean
+  rollingBack: boolean
   restarting: boolean
   jobs: Job[]
   jobsError?: string
@@ -35,6 +38,7 @@ export function NodeDetailView({
   operatorToken: string
   onBack: () => void
   onDeepProbe: () => void
+  onRollback: (request: RollbackRequest) => void
   onRestart: (request: RestartRequest) => void
   onJobStatusFilterChange: (status: JobStatus | '') => void
   onLoadMoreJobs: () => void
@@ -43,8 +47,10 @@ export function NodeDetailView({
   const activeProbe = hasActiveDeepProbe(jobs)
   const activeConfigApply = hasActiveConfigApply(jobs)
   const activeRestart = hasActiveRestart(jobs)
+  const activeRollback = hasActiveRollback(jobs)
   const snapshots = latestConfigSnapshots(jobs)
   const primarySnapshot = snapshots[0]
+  const rollbackBackup = latestRollbackBackup(jobs)
   const [wizardOpen, setWizardOpen] = useState(false)
   const [removing, setRemoving] = useState(false)
   const [removeError, setRemoveError] = useState<string | null>(null)
@@ -52,6 +58,7 @@ export function NodeDetailView({
   const tokenReady = operatorToken.trim().length > 0
   const canDeepProbe = tokenReady && !creating && !activeProbe
   const canRestart = tokenReady && !restarting && !activeRestart
+  const canRollback = tokenReady && !rollingBack && !activeRollback && Boolean(rollbackBackup)
   const canEditConfig = tokenReady && Boolean(primarySnapshot?.configPath)
   const canRemoveNode = tokenReady
   const restartRuntimeType = knownRestartRuntime(effective?.runtimeType || primarySnapshot?.runtimeType || 'hermes')
@@ -101,6 +108,23 @@ export function NodeDetailView({
       request.runtimeType = restartRuntimeType
     }
     onRestart(request)
+  }
+
+  const createRollback = (live: boolean) => {
+    if (!rollbackBackup || !canRollback) return
+    if (live) {
+      const confirmed = window.confirm(`Create a live rollback job for ${node.nodeId} using backup ${rollbackBackup.ref}? The sidecar must be running with live apply enabled.`)
+      if (!confirmed) return
+    }
+    const request: RollbackRequest = {
+      backupRef: rollbackBackup.ref,
+      profile: restartProfile,
+      live,
+    }
+    if (restartRuntimeType) {
+      request.runtimeType = restartRuntimeType
+    }
+    onRollback(request)
   }
 
   return (
@@ -153,7 +177,28 @@ export function NodeDetailView({
           >
             Live restart
           </button>
-          <DisabledAction label="Rollback" title="Rollback runs automatically when a live apply fails its health check" />
+          {rollbackBackup && (
+            <>
+              <button
+                type="button"
+                className="h-9 rounded-lg border border-[var(--sp-border-strong)] bg-[var(--sp-surface)] px-3 text-sm font-medium hover:bg-[var(--sp-surface-2)] disabled:cursor-not-allowed disabled:opacity-60"
+                disabled={!canRollback}
+                title={!tokenReady ? 'Set an operator token before creating rollback jobs' : activeRollback ? 'A rollback job is already pending or running' : `Create a dry-run rollback job for ${rollbackBackup.ref}`}
+                onClick={() => createRollback(false)}
+              >
+                {rollingBack ? 'Creating...' : activeRollback ? 'Rollback active' : 'Rollback'}
+              </button>
+              <button
+                type="button"
+                className="h-9 rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 text-sm font-medium text-rose-600 hover:bg-rose-500/15 disabled:cursor-not-allowed disabled:opacity-55"
+                disabled={!canRollback}
+                title={!tokenReady ? 'Set an operator token before live rollback' : activeRollback ? 'A rollback job is already pending or running' : `Confirm and create a live rollback job for ${rollbackBackup.ref}`}
+                onClick={() => createRollback(true)}
+              >
+                Live rollback
+              </button>
+            </>
+          )}
           <button
             type="button"
             className="h-9 rounded-lg bg-[var(--sp-accent)] px-3 text-sm font-medium text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-55"
@@ -301,6 +346,9 @@ function JobDetail({ job }: { job: Job }) {
   if (job.type === 'restart') {
     return <RestartJobDetail job={job} />
   }
+  if (job.type === 'rollback') {
+    return <RollbackJobDetail job={job} />
+  }
   if (job.status === 'failed') {
     return <JobDetailShell tone="danger">{job.error || 'Job failed without an error message.'}</JobDetailShell>
   }
@@ -370,6 +418,32 @@ function RestartJobDetail({ job }: { job: Job }) {
     <JobDetailShell tone={job.status === 'failed' ? 'danger' : 'normal'}>
       <div className="mb-2 grid gap-2 font-mono text-[11px] text-[var(--sp-faint)] sm:grid-cols-2">
         <span>controller: {result?.controller || '-'}</span>
+        <span>health: {result?.healthStatus || '-'}</span>
+      </div>
+      <div className="grid gap-2">
+        {steps.map((step, index) => (
+          <div key={`${step.name}-${index}`} className="grid gap-2 rounded-lg border border-[var(--sp-border)] bg-[var(--sp-surface)] px-3 py-2 sm:grid-cols-[1fr_auto_2fr] sm:items-center">
+            <span className="font-mono text-xs font-semibold text-[var(--sp-text)]">{step.name}</span>
+            <span className={`inline-flex w-fit rounded border px-2 py-0.5 text-[11px] font-semibold ${step.status === 'failed' ? 'border-rose-500/30 bg-rose-500/10 text-rose-600' : 'border-[var(--sp-border)] bg-[var(--sp-surface-2)] text-[var(--sp-muted)]'}`}>{step.status}</span>
+            <span className="min-w-0 truncate text-xs text-[var(--sp-muted)]" title={step.detail || ''}>{step.detail || '-'}</span>
+          </div>
+        ))}
+      </div>
+    </JobDetailShell>
+  )
+}
+
+function RollbackJobDetail({ job }: { job: Job }) {
+  const result = parseJobResult<RollbackJobResult>(job)
+  const steps = result?.steps ?? []
+  if (steps.length === 0) {
+    return <JobDetailShell tone={job.status === 'failed' ? 'danger' : 'normal'}>{job.error || 'No rollback steps reported.'}</JobDetailShell>
+  }
+
+  return (
+    <JobDetailShell tone={job.status === 'failed' ? 'danger' : 'normal'}>
+      <div className="mb-2 grid gap-2 font-mono text-[11px] text-[var(--sp-faint)] sm:grid-cols-2">
+        <span>backup: {result?.backupRef || '-'}</span>
         <span>health: {result?.healthStatus || '-'}</span>
       </div>
       <div className="grid gap-2">
@@ -470,19 +544,6 @@ function DiffRow({ entry }: { entry: ConfigDiffEntry }) {
       <span className="font-mono text-[var(--sp-muted)]">desired: {entry.desired || '-'}</span>
       <span className="font-semibold text-amber-700">{entry.change}</span>
     </div>
-  )
-}
-
-function DisabledAction({ label, title, primary = false }: { label: string; title?: string; primary?: boolean }) {
-  return (
-    <button
-      type="button"
-      className={`h-9 cursor-not-allowed rounded-lg px-3 text-sm font-medium opacity-55 ${primary ? 'bg-[var(--sp-accent)] text-white' : 'border border-[var(--sp-border-strong)] bg-[var(--sp-surface)] text-[var(--sp-text)]'}`}
-      disabled
-      title={title || 'Available after the apply path lands'}
-    >
-      {label}
-    </button>
   )
 }
 

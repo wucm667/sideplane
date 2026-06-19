@@ -170,6 +170,7 @@ func TestHelpListsCommands(t *testing.T) {
 		"fleet status",
 		"probe <nodeId>",
 		"restart <nodeId>",
+		"rollback <nodeId>",
 		"jobs list <nodeId>",
 		"audit list",
 		"config apply <id>",
@@ -191,6 +192,7 @@ func TestPerCommandHelpPrintsFlags(t *testing.T) {
 	tests := [][]string{
 		{"config", "apply", "--help"},
 		{"restart", "--help"},
+		{"rollback", "--help"},
 		{"jobs", "list", "--help"},
 		{"enrollment", "create", "--help"},
 	}
@@ -944,6 +946,176 @@ func TestRestartJSONOutput(t *testing.T) {
 	}
 }
 
+func TestRollbackDryRunDefaultAndOperatorToken(t *testing.T) {
+	job := protocol.Job{
+		ID:          "job-rollback",
+		NodeID:      "node-a",
+		Type:        protocol.JobTypeRollback,
+		Status:      protocol.JobStatusPending,
+		PayloadJSON: rollbackPayload(t, "hermes", "default", "config_apply:job_apply:plan_1", true),
+		CreatedAt:   time.Now().UTC(),
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/nodes/node-a/rollback" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer test-token" {
+			t.Fatalf("Authorization = %q, want bearer token", got)
+		}
+		var req protocol.RollbackRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if req.Live {
+			t.Fatalf("live = true, want dry-run request")
+		}
+		if req.BackupRef != "config_apply:job_apply:plan_1" || req.RuntimeType != "hermes" || req.Profile != "default" {
+			t.Fatalf("request = %#v, want backup/hermes/default", req)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		if err := json.NewEncoder(w).Encode(job); err != nil {
+			t.Fatalf("encode job: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"rollback", "node-a", "--server", server.URL, "--operator-token", "test-token", "--backup-ref", "config_apply:job_apply:plan_1"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("run returned %d, stderr=%q", code, stderr.String())
+	}
+	for _, want := range []string{"Job: job-rollback", "Mode: dry-run", "Runtime: hermes", "Profile: default", "Backup: config_apply:job_apply:plan_1", "Status: pending"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("output missing %q:\n%s", want, stdout.String())
+		}
+	}
+}
+
+func TestRollbackRequiresBackupRef(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"rollback", "node-a", "--server", "http://127.0.0.1:9"}, &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("run returned %d, want 1", code)
+	}
+	if !strings.Contains(stderr.String(), "--backup-ref is required") {
+		t.Fatalf("stderr = %q, want backup ref error", stderr.String())
+	}
+}
+
+func TestRollbackLiveRequiresYes(t *testing.T) {
+	var called bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+	}))
+	defer server.Close()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"rollback", "node-a", "--server", server.URL, "--backup-ref", "config_apply:job_apply:plan_1", "--live"}, &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("run returned %d, want 1", code)
+	}
+	if called {
+		t.Fatal("server was called despite missing --yes")
+	}
+	if !strings.Contains(stderr.String(), "--live requires --yes") {
+		t.Fatalf("stderr = %q, want live confirmation error", stderr.String())
+	}
+}
+
+func TestRollbackWaitPrintsResultSteps(t *testing.T) {
+	created := protocol.Job{
+		ID:          "job-rollback",
+		NodeID:      "node-a",
+		Type:        protocol.JobTypeRollback,
+		Status:      protocol.JobStatusPending,
+		PayloadJSON: rollbackPayload(t, "hermes", "default", "config_apply:job_apply:plan_1", false),
+		CreatedAt:   time.Now().UTC(),
+	}
+	resultJSON, err := json.Marshal(protocol.RollbackJobResult{
+		BackupRef:    "config_apply:job_apply:plan_1",
+		HealthStatus: "healthy",
+		Steps: []protocol.ConfigApplyStep{
+			{Name: "restored", Status: "completed", Detail: "backup restored"},
+			{Name: "health_checked", Status: "completed"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal result: %v", err)
+	}
+	completed := created
+	completed.Status = protocol.JobStatusCompleted
+	completed.ResultJSON = string(resultJSON)
+	completed.FinishedAt = time.Now().UTC()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/nodes/node-a/rollback":
+			var req protocol.RollbackRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatalf("decode rollback request: %v", err)
+			}
+			if !req.Live {
+				t.Fatalf("live = false, want live rollback request")
+			}
+			w.WriteHeader(http.StatusCreated)
+			if err := json.NewEncoder(w).Encode(created); err != nil {
+				t.Fatalf("encode created job: %v", err)
+			}
+		case r.Method == http.MethodGet && r.URL.Path == "/api/nodes/node-a/jobs":
+			if err := json.NewEncoder(w).Encode([]protocol.Job{completed}); err != nil {
+				t.Fatalf("encode jobs: %v", err)
+			}
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"rollback", "node-a", "--server", server.URL, "--backup-ref", "config_apply:job_apply:plan_1", "--live", "--yes", "--wait"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("run returned %d, stderr=%q", code, stderr.String())
+	}
+	for _, want := range []string{"Job: job-rollback", "Mode: live", "Status: completed", "Result backup: config_apply:job_apply:plan_1", "Health: healthy", "Steps:", "restored", "backup restored"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("output missing %q:\n%s", want, stdout.String())
+		}
+	}
+}
+
+func TestRollbackJSONOutput(t *testing.T) {
+	job := protocol.Job{
+		ID:          "job-rollback-json",
+		NodeID:      "node-a",
+		Type:        protocol.JobTypeRollback,
+		Status:      protocol.JobStatusPending,
+		PayloadJSON: rollbackPayload(t, "hermes", "default", "config_apply:job_apply:plan_1", true),
+		CreatedAt:   time.Now().UTC(),
+	}
+	server := httptest.NewServer(jsonHandlerWithStatus(t, http.MethodPost, "/api/nodes/node-a/rollback", http.StatusCreated, job))
+	defer server.Close()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"rollback", "node-a", "--server", server.URL, "--backup-ref", "config_apply:job_apply:plan_1", "--json"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("run returned %d, stderr=%q", code, stderr.String())
+	}
+	var got protocol.Job
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode JSON output: %v", err)
+	}
+	if got.ID != "job-rollback-json" {
+		t.Fatalf("job ID = %q, want job-rollback-json", got.ID)
+	}
+}
+
 func TestConfigGetPrintsDesiredConfigSummary(t *testing.T) {
 	desired := protocol.DesiredConfig{
 		Global: protocol.ProviderModelConfig{Provider: "openai", Model: "gpt-4o"},
@@ -1157,6 +1329,22 @@ func restartPayload(t *testing.T, runtimeType string, profile string, dryRun boo
 	})
 	if err != nil {
 		t.Fatalf("marshal restart payload: %v", err)
+	}
+	return string(payload)
+}
+
+func rollbackPayload(t *testing.T, runtimeType string, profile string, backupRef string, dryRun bool) string {
+	t.Helper()
+	payload, err := json.Marshal(protocol.RollbackJobPayload{
+		RuntimeType: runtimeType,
+		Profile:     profile,
+		BackupRef:   backupRef,
+		ConfigPath:  "/tmp/sideplane-test/config.json",
+		BackupPath:  "/tmp/sideplane-test/current.backup",
+		DryRun:      dryRun,
+	})
+	if err != nil {
+		t.Fatalf("marshal rollback payload: %v", err)
 	}
 	return string(payload)
 }

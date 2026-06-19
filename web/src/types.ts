@@ -17,6 +17,10 @@ export type {
   ListAuditEventsResponse,
   NodeState,
   ProviderModelConfig,
+  RollbackBackup,
+  RollbackJobPayload,
+  RollbackJobResult,
+  RollbackRequest,
   RestartJobResult,
   RestartRequest,
   RuntimeConfigSnapshot,
@@ -34,6 +38,7 @@ export type AuditAction =
   | 'job.fail'
   | 'config.apply'
   | 'restart'
+  | 'rollback'
   | 'config.desired.update'
 
 export interface AuditFilters {

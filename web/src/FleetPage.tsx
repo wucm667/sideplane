@@ -16,6 +16,7 @@ export default function FleetPage() {
     bannerText,
     changeView,
     createDeepProbe,
+    createRollback,
     createRestart,
     creatingByNode,
     effectiveByNode,
@@ -36,6 +37,7 @@ export default function FleetPage() {
     refreshFleet,
     refreshSelectedNodeAfterApply,
     refreshing,
+    rollingBackByNode,
     restartingByNode,
     selectedNode,
     setAuditFilters,
@@ -120,6 +122,7 @@ export default function FleetPage() {
           {view === 'node' && selectedNode && (
             <NodeDetailView
               creating={Boolean(creatingByNode[selectedNode.nodeId])}
+              rollingBack={Boolean(rollingBackByNode[selectedNode.nodeId])}
               restarting={Boolean(restartingByNode[selectedNode.nodeId])}
               jobs={jobsByNode[selectedNode.nodeId] ?? []}
               jobsError={jobsErrorByNode[selectedNode.nodeId]}
@@ -132,6 +135,7 @@ export default function FleetPage() {
               operatorToken={operatorToken}
               onBack={() => changeView('fleet')}
               onDeepProbe={() => createDeepProbe(selectedNode.nodeId)}
+              onRollback={(request) => createRollback(selectedNode.nodeId, request)}
               onRestart={(request) => createRestart(selectedNode.nodeId, request)}
               onJobStatusFilterChange={(status) => setNodeJobStatusFilter(selectedNode.nodeId, status)}
               onLoadMoreJobs={() => loadMoreNodeJobs(selectedNode.nodeId)}

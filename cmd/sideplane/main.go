@@ -55,6 +55,8 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		return runProbe(args[1:], stdout, stderr)
 	case "restart":
 		return runRestart(args[1:], stdout, stderr)
+	case "rollback":
+		return runRollback(args[1:], stdout, stderr)
 	case "jobs":
 		if len(args) >= 2 && args[1] == "list" {
 			return runJobsList(args[2:], stdout, stderr)
@@ -105,6 +107,7 @@ Commands:
   fleet status        Show fleet node status
   probe <nodeId>      Run a deep probe on a node
   restart <nodeId>    Create a standalone restart job
+  rollback <nodeId>   Create a rollback job from a backup ref
   jobs list <nodeId>  List node jobs
   audit list          List audit events
   config apply <id>   Create a config apply job
@@ -131,6 +134,84 @@ func printCommandHelp(w io.Writer, usage string, flags *flag.FlagSet) {
 	fmt.Fprintf(w, "usage: %s\n\n", usage)
 	flags.SetOutput(w)
 	flags.PrintDefaults()
+}
+
+func runRollback(args []string, stdout io.Writer, stderr io.Writer) int {
+	flags := flag.NewFlagSet("sideplane rollback", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+
+	serverURL := flags.String("server", "", "Sideplane server URL; can also be set with SIDEPLANE_SERVER_URL")
+	operatorTokenFlag := flags.String("operator-token", "", "operator bearer token; can also be set with SIDEPLANE_OPERATOR_TOKEN")
+	runtimeType := flags.String("runtime-type", "hermes", "runtime type")
+	profile := flags.String("profile", "default", "runtime profile")
+	backupRef := flags.String("backup-ref", "", "rollback backup reference")
+	live := flags.Bool("live", false, "request live rollback instead of dry-run")
+	yes := flags.Bool("yes", false, "confirm live rollback")
+	wait := flags.Bool("wait", false, "poll until the rollback job completes or fails")
+	jsonOutput := flags.Bool("json", false, "print JSON output")
+	usage := "sideplane rollback <nodeId> [--server URL] [--operator-token TOKEN] --backup-ref REF [--runtime-type TYPE] [--profile PROFILE] [--live --yes] [--wait] [--json]"
+	if commandHelpRequested(args) {
+		printCommandHelp(stdout, usage, flags)
+		return 0
+	}
+	if err := parseCommandFlags(flags, args, "live", "yes", "wait", "json"); err != nil {
+		return 2
+	}
+	if flags.NArg() != 1 {
+		fmt.Fprintln(stderr, "usage: "+usage)
+		return 1
+	}
+	if strings.TrimSpace(*backupRef) == "" {
+		fmt.Fprintln(stderr, "rollback: --backup-ref is required")
+		return 1
+	}
+	if *live && !*yes {
+		fmt.Fprintln(stderr, "rollback: --live requires --yes")
+		return 1
+	}
+	nodeID := strings.TrimSpace(flags.Arg(0))
+	if nodeID == "" {
+		fmt.Fprintln(stderr, "rollback: nodeId is required")
+		return 1
+	}
+
+	server := serverURLValue(*serverURL)
+	operatorToken := operatorTokenValue(*operatorTokenFlag)
+	path := "/api/nodes/" + url.PathEscape(nodeID) + "/rollback"
+	job, body, err := postJSON[protocol.Job](context.Background(), server, path, protocol.RollbackRequest{
+		RuntimeType: strings.TrimSpace(*runtimeType),
+		Profile:     strings.TrimSpace(*profile),
+		BackupRef:   strings.TrimSpace(*backupRef),
+		Live:        *live,
+	}, operatorToken)
+	if err != nil {
+		fmt.Fprintf(stderr, "rollback: %v\n", err)
+		return 1
+	}
+
+	if !*wait {
+		if *jsonOutput {
+			writeRawJSON(stdout, body)
+			return 0
+		}
+		printRollbackJobSummary(stdout, job)
+		return 0
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	finalJob, err := waitForNodeJob(ctx, server, nodeID, job.ID, operatorToken)
+	if err != nil {
+		fmt.Fprintf(stderr, "rollback wait: %v\n", err)
+		return 1
+	}
+	if *jsonOutput {
+		writeJSONValue(stdout, finalJob)
+		return 0
+	}
+	printRollbackJobSummary(stdout, finalJob)
+	printRollbackResultSummary(stdout, finalJob)
+	return 0
 }
 
 func runRestart(args []string, stdout io.Writer, stderr io.Writer) int {
@@ -1040,6 +1121,57 @@ func printRestartResultSummary(w io.Writer, job protocol.Job) {
 		return
 	}
 	fmt.Fprintf(w, "Controller: %s\n", valueOrDash(result.Controller))
+	fmt.Fprintf(w, "Health: %s\n", valueOrDash(result.HealthStatus))
+	if len(result.Steps) == 0 {
+		return
+	}
+	fmt.Fprintln(w, "Steps:")
+	table := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(table, "  NAME\tSTATUS\tDETAIL")
+	for _, step := range result.Steps {
+		fmt.Fprintf(table, "  %s\t%s\t%s\n", valueOrDash(step.Name), valueOrDash(step.Status), valueOrDash(step.Detail))
+	}
+	table.Flush()
+}
+
+func printRollbackJobSummary(w io.Writer, job protocol.Job) {
+	mode, runtimeType, profile, backupRef := rollbackJobLabels(job)
+	fmt.Fprintf(w, "Job: %s\n", job.ID)
+	fmt.Fprintf(w, "Mode: %s\n", valueOrDash(mode))
+	fmt.Fprintf(w, "Runtime: %s\n", valueOrDash(runtimeType))
+	fmt.Fprintf(w, "Profile: %s\n", valueOrDash(profile))
+	fmt.Fprintf(w, "Backup: %s\n", valueOrDash(backupRef))
+	fmt.Fprintf(w, "Status: %s\n", job.Status)
+}
+
+func rollbackJobLabels(job protocol.Job) (mode string, runtimeType string, profile string, backupRef string) {
+	if strings.TrimSpace(job.PayloadJSON) == "" {
+		return "", "", "", ""
+	}
+	var payload protocol.RollbackJobPayload
+	if err := json.Unmarshal([]byte(job.PayloadJSON), &payload); err != nil {
+		return "", "", "", ""
+	}
+	mode = "live"
+	if payload.DryRun {
+		mode = "dry-run"
+	}
+	return mode, payload.RuntimeType, payload.Profile, payload.BackupRef
+}
+
+func printRollbackResultSummary(w io.Writer, job protocol.Job) {
+	if strings.TrimSpace(job.Error) != "" {
+		fmt.Fprintf(w, "Error: %s\n", job.Error)
+	}
+	if strings.TrimSpace(job.ResultJSON) == "" {
+		return
+	}
+	var result protocol.RollbackJobResult
+	if err := json.Unmarshal([]byte(job.ResultJSON), &result); err != nil {
+		fmt.Fprintf(w, "Result: %s\n", strings.TrimSpace(job.ResultJSON))
+		return
+	}
+	fmt.Fprintf(w, "Result backup: %s\n", valueOrDash(result.BackupRef))
 	fmt.Fprintf(w, "Health: %s\n", valueOrDash(result.HealthStatus))
 	if len(result.Steps) == 0 {
 		return
