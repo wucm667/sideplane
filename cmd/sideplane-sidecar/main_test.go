@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/wucm667/sideplane/internal/sidecar"
+	spcrypto "github.com/wucm667/sideplane/pkg/crypto"
 )
 
 func TestResolveRuntimeConfigLoadsStateAndAppliesOverrides(t *testing.T) {
@@ -153,6 +155,88 @@ func TestRunRequiresNodeCredential(t *testing.T) {
 	}
 	if stdout.Len() != 0 {
 		t.Fatalf("stdout = %q, want empty", stdout.String())
+	}
+}
+
+func TestDoctorReportsStateAndReadableConfigWithoutCredential(t *testing.T) {
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "state.json")
+	if err := sidecar.WriteState(statePath, sidecar.SidecarState{
+		ServerURL:      "http://state-server:8080",
+		NodeID:         "state-node",
+		NodeCredential: "secret-node-credential",
+		EnrolledAt:     time.Date(2026, 6, 19, 12, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+	configPath := filepath.Join(dir, "hermes.json")
+	if err := os.WriteFile(configPath, []byte(`{"model":"test"}`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	keyPair, err := spcrypto.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("generate key pair: %v", err)
+	}
+	publicKey := spcrypto.PublicKeyString(keyPair.PublicKey)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{
+		"doctor",
+		"--state", statePath,
+		"--hermes-config-paths", configPath,
+		"--apply-work-dir", filepath.Join(dir, "apply"),
+		"--server-public-key", publicKey,
+		"--allow-live-apply",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("run returned %d, stderr=%q", code, stderr.String())
+	}
+	output := stdout.String()
+	for _, want := range []string{"Server URL: http://state-server:8080", "State found: yes", "Node ID: state-node", "Live apply: yes", "Public key: valid", configPath + " readable"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("doctor output missing %q:\n%s", want, output)
+		}
+	}
+	if strings.Contains(output, "secret-node-credential") {
+		t.Fatalf("doctor output leaked node credential:\n%s", output)
+	}
+}
+
+func TestDoctorJSONDoesNotRequireEnrollment(t *testing.T) {
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "missing-state.json")
+	missingConfig := filepath.Join(dir, "missing-hermes.json")
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{
+		"doctor",
+		"--server", "http://localhost:8080",
+		"--node-id", "node-doctor",
+		"--state", statePath,
+		"--hermes-config-paths", missingConfig,
+		"--server-public-key", "not-a-public-key",
+		"--json",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("run returned %d, stderr=%q", code, stderr.String())
+	}
+	var report doctorReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("decode doctor JSON: %v\n%s", err, stdout.String())
+	}
+	if report.StateFound {
+		t.Fatalf("stateFound = true, want false")
+	}
+	if report.ServerURL != "http://localhost:8080" || report.NodeID != "node-doctor" {
+		t.Fatalf("report = %#v, want server/node overrides", report)
+	}
+	if report.PublicKeyStatus != "invalid" {
+		t.Fatalf("publicKeyStatus = %q, want invalid", report.PublicKeyStatus)
+	}
+	if len(report.HermesConfigPaths) != 1 || report.HermesConfigPaths[0].Readable {
+		t.Fatalf("hermes config path status = %#v, want unreadable missing path", report.HermesConfigPaths)
 	}
 }
 
