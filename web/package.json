@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite --port 3000",
     "build": "tsc -b && vite build",
+    "generate:api": "python3 scripts/generate_api_types.py",
     "typecheck": "tsc -b --noEmit"
   },
   "dependencies": {
