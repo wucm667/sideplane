@@ -1,6 +1,7 @@
 package hermes
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -169,6 +170,9 @@ func (a *Adapter) snapshot(ctx context.Context) (*protocol.RuntimeConfigSnapshot
 	if err != nil {
 		return nil, fmt.Errorf("read hermes config: %w", err)
 	}
+	if err := validateConfigSyntax(path, contents); err != nil {
+		return nil, err
+	}
 	values := extractConfigValues(contents)
 	provider, model := extractProviderModel(values)
 	// Prefer the explicit top-level model block (model.provider / model.default)
@@ -177,7 +181,18 @@ func (a *Adapter) snapshot(ctx context.Context) (*protocol.RuntimeConfigSnapshot
 		provider, model = blockProvider, blockModel
 	}
 	warnings := []string{}
-	if provider == "" && model == "" {
+	if provider != "" || model != "" {
+		if provider == "" || model == "" {
+			provider = ""
+			model = ""
+			warnings = append(warnings, "provider/model incomplete in hermes config")
+		} else if err := spconfig.ValidateProviderModelSelection(protocol.ProviderModelConfig{Provider: provider, Model: model}); err != nil {
+			provider = ""
+			model = ""
+			warnings = append(warnings, "provider/model rejected in hermes config: "+err.Error())
+		}
+	}
+	if provider == "" && model == "" && len(warnings) == 0 {
 		warnings = append(warnings, "provider/model not found in hermes config")
 	}
 	sum := sha256.Sum256(contents)
@@ -203,6 +218,21 @@ func (a *Adapter) snapshot(ctx context.Context) (*protocol.RuntimeConfigSnapshot
 		return dockerSnapshot, nil
 	}
 	return fileSnapshot, nil
+}
+
+func validateConfigSyntax(path string, contents []byte) error {
+	if strings.ToLower(filepath.Ext(path)) != ".json" {
+		return nil
+	}
+	trimmed := bytes.TrimSpace(contents)
+	if len(trimmed) == 0 {
+		return nil
+	}
+	var decoded any
+	if err := json.Unmarshal(trimmed, &decoded); err != nil {
+		return fmt.Errorf("parse hermes JSON config: %w", err)
+	}
+	return nil
 }
 
 func (a *Adapter) snapshotFromDocker(ctx context.Context) (*protocol.RuntimeConfigSnapshot, error) {

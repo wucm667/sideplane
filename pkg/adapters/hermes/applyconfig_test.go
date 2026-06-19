@@ -119,3 +119,13 @@ func TestValidateModelConfig(t *testing.T) {
 		t.Error("validate should fail when config does not match desired")
 	}
 }
+
+func TestValidateModelConfigRejectsUnsafeProviderModel(t *testing.T) {
+	unsafeConfig := `model:
+  default: gpt-5#bad
+  provider: openai
+`
+	if err := ValidateModelConfig([]byte(unsafeConfig), protocol.ProviderModelConfig{Provider: "openai", Model: "gpt-5#bad"}); err == nil {
+		t.Fatal("validate should reject unsafe provider/model values")
+	}
+}

@@ -116,14 +116,22 @@ func RenderDesiredModel(current []byte, desired protocol.ProviderModelConfig) ([
 
 // ValidateModelConfig confirms the config parses to the desired provider/model.
 func ValidateModelConfig(contents []byte, desired protocol.ProviderModelConfig) error {
+	desiredProvider := strings.TrimSpace(desired.Provider)
+	desiredModel := strings.TrimSpace(desired.Model)
+	if err := spconfig.ValidateProviderModelSelection(protocol.ProviderModelConfig{Provider: desiredProvider, Model: desiredModel}); err != nil {
+		return err
+	}
 	provider, model, ok := ModelFields(contents)
 	if !ok {
 		return fmt.Errorf("hermes config is missing the top-level model provider/name")
 	}
-	if provider != strings.TrimSpace(desired.Provider) {
+	if err := spconfig.ValidateProviderModelSelection(protocol.ProviderModelConfig{Provider: provider, Model: model}); err != nil {
+		return fmt.Errorf("hermes config provider/model is invalid: %w", err)
+	}
+	if provider != desiredProvider {
 		return fmt.Errorf("rendered provider %q does not match desired %q", provider, desired.Provider)
 	}
-	if model != strings.TrimSpace(desired.Model) {
+	if model != desiredModel {
 		return fmt.Errorf("rendered model %q does not match desired %q", model, desired.Model)
 	}
 	return nil

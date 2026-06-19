@@ -218,6 +218,58 @@ session: api-token-test-value
 	}
 }
 
+func TestAdapterConfigSnapshotsRejectMalformedJSON(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "hermes.json")
+	if err := os.WriteFile(path, []byte(`{"model":`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	a := &Adapter{
+		lookup:      func(string) (string, error) { return "", errors.New("not found") },
+		configPaths: []string{path},
+		getenv:      func(string) string { return "" },
+	}
+	_, err := a.ConfigSnapshots(context.Background())
+	if err == nil {
+		t.Fatal("ConfigSnapshots error = nil, want malformed JSON error")
+	}
+	if !strings.Contains(err.Error(), "parse hermes JSON config") {
+		t.Fatalf("error = %q, want parse hermes JSON config detail", err.Error())
+	}
+}
+
+func TestAdapterConfigSnapshotsRejectUnsafeProviderModel(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "hermes.yaml")
+	contents := []byte(`model:
+  provider: openai#bad
+  default: gpt-5
+`)
+	if err := os.WriteFile(path, contents, 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	a := &Adapter{
+		lookup:      func(string) (string, error) { return "", errors.New("not found") },
+		configPaths: []string{path},
+		getenv:      func(string) string { return "" },
+	}
+	snapshots, err := a.ConfigSnapshots(context.Background())
+	if err != nil {
+		t.Fatalf("ConfigSnapshots error = %v, want nil warning", err)
+	}
+	if len(snapshots) != 1 {
+		t.Fatalf("len(snapshots) = %d, want 1", len(snapshots))
+	}
+	if snapshots[0].Provider != "" || snapshots[0].Model != "" {
+		t.Fatalf("provider/model = %q/%q, want blank rejected values", snapshots[0].Provider, snapshots[0].Model)
+	}
+	if len(snapshots[0].Warnings) == 0 || !strings.Contains(snapshots[0].Warnings[0], "provider/model rejected") {
+		t.Fatalf("warnings = %#v, want provider/model rejected warning", snapshots[0].Warnings)
+	}
+}
+
 func TestAdapterConfigSnapshotsParseConfiguredConfigFiles(t *testing.T) {
 	tests := []struct {
 		name         string
