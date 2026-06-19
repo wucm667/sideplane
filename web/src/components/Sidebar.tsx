@@ -72,6 +72,14 @@ export function Sidebar({
         </label>
         <button
           type="button"
+          className="h-8 rounded-lg border border-[var(--sp-border)] bg-[var(--sp-surface-2)] px-3 text-xs font-medium text-[var(--sp-muted)] hover:border-[var(--sp-border-strong)] disabled:cursor-not-allowed disabled:opacity-55"
+          disabled={!operatorToken.trim()}
+          onClick={() => onOperatorTokenChange('')}
+        >
+          Clear token
+        </button>
+        <button
+          type="button"
           className="flex h-9 items-center justify-between rounded-lg border border-[var(--sp-border)] bg-[var(--sp-surface-2)] px-3 text-xs font-medium text-[var(--sp-text)] hover:border-[var(--sp-border-strong)]"
           onClick={onThemeToggle}
         >

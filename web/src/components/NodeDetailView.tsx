@@ -44,8 +44,10 @@ export function NodeDetailView({
   const [removing, setRemoving] = useState(false)
   const [removeError, setRemoveError] = useState<string | null>(null)
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null)
-  const canEditConfig = Boolean(primarySnapshot?.configPath)
-  const canRemoveNode = operatorToken.trim().length > 0
+  const tokenReady = operatorToken.trim().length > 0
+  const canDeepProbe = tokenReady && !creating && !activeProbe
+  const canEditConfig = tokenReady && Boolean(primarySnapshot?.configPath)
+  const canRemoveNode = tokenReady
 
   const removeNode = async () => {
     if (!canRemoveNode || removing) return
@@ -103,7 +105,8 @@ export function NodeDetailView({
           <button
             type="button"
             className="h-9 rounded-lg border border-[var(--sp-border-strong)] bg-[var(--sp-surface)] px-3 text-sm font-medium hover:bg-[var(--sp-surface-2)] disabled:cursor-not-allowed disabled:opacity-60"
-            disabled={creating || activeProbe}
+            disabled={!canDeepProbe}
+            title={!tokenReady ? 'Set an operator token before creating jobs' : activeProbe ? 'A deep probe is already pending or running' : 'Create a deep probe job'}
             onClick={onDeepProbe}
           >
             {creating ? 'Creating…' : activeProbe ? 'Probe active' : 'Deep probe'}
@@ -114,7 +117,7 @@ export function NodeDetailView({
             type="button"
             className="h-9 rounded-lg bg-[var(--sp-accent)] px-3 text-sm font-medium text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-55"
             disabled={!canEditConfig}
-            title={canEditConfig ? 'Open the change configuration wizard' : 'Run a deep probe first to discover the config path'}
+            title={!tokenReady ? 'Set an operator token before changing config' : canEditConfig ? 'Open the change configuration wizard' : 'Run a deep probe first to discover the config path'}
             onClick={() => setWizardOpen(true)}
           >
             Edit config
