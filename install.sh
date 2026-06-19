@@ -173,8 +173,7 @@ echo "Next steps:"
 if [ "$install_server" -eq 1 ]; then
   echo "  1. Build sideplane-server and copy it to /usr/local/bin/sideplane-server"
   echo "  2. Edit /etc/sideplane/sideplane-server.env and set SIDEPLANE_OPERATOR_TOKEN"
-  echo "  3. Copy the built Web UI to /usr/share/sideplane/web or adjust SIDEPLANE_WEB_DIR"
-  echo "  4. Run: systemctl daemon-reload && systemctl enable --now sideplane-server"
+  echo "  3. Run: systemctl daemon-reload && systemctl enable --now sideplane-server"
 fi
 if [ "$install_sidecar" -eq 1 ]; then
   echo "  1. Build sideplane-sidecar and copy it to /usr/local/bin/sideplane-sidecar"

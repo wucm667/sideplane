@@ -9,11 +9,12 @@ Type=simple
 User=sideplane
 Group=sideplane
 EnvironmentFile=-/etc/sideplane/sideplane-server.env
-ExecStart=/usr/local/bin/sideplane-server --db ${SIDEPLANE_DB_PATH} --web-dir ${SIDEPLANE_WEB_DIR} --addr ${SIDEPLANE_ADDR}
+ExecStart=/usr/local/bin/sideplane-server
 Restart=on-failure
 RestartSec=5s
 NoNewPrivileges=true
 PrivateTmp=true
+ProtectHome=true
 ProtectSystem=strict
 ReadWritePaths=/var/lib/sideplane
 
