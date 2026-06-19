@@ -1,6 +1,7 @@
 package openclaw
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -147,9 +148,23 @@ func (a *Adapter) snapshot(_ context.Context) (*protocol.RuntimeConfigSnapshot, 
 	if err != nil {
 		return nil, fmt.Errorf("read openclaw config: %w", err)
 	}
+	if err := validateConfigSyntax(path, contents); err != nil {
+		return nil, err
+	}
 	provider, model := extractProviderModel(extractConfigValues(contents))
 	warnings := []string{}
-	if provider == "" || model == "" {
+	if provider != "" || model != "" {
+		if provider == "" || model == "" {
+			provider = ""
+			model = ""
+			warnings = append(warnings, "provider/model incomplete in openclaw config")
+		} else if err := spconfig.ValidateProviderModelSelection(protocol.ProviderModelConfig{Provider: provider, Model: model}); err != nil {
+			provider = ""
+			model = ""
+			warnings = append(warnings, "provider/model rejected in openclaw config: "+err.Error())
+		}
+	}
+	if provider == "" && model == "" && len(warnings) == 0 {
 		provider = ""
 		model = ""
 		warnings = append(warnings, "provider/model not found in openclaw config")
@@ -166,6 +181,21 @@ func (a *Adapter) snapshot(_ context.Context) (*protocol.RuntimeConfigSnapshot, 
 		Warnings:    warnings,
 	})
 	return &snapshot, nil
+}
+
+func validateConfigSyntax(path string, contents []byte) error {
+	if strings.ToLower(filepath.Ext(path)) != ".json" {
+		return nil
+	}
+	trimmed := bytes.TrimSpace(contents)
+	if len(trimmed) == 0 {
+		return nil
+	}
+	var decoded any
+	if err := json.Unmarshal(trimmed, &decoded); err != nil {
+		return fmt.Errorf("parse openclaw JSON config: %w", err)
+	}
+	return nil
 }
 
 func (a *Adapter) findConfigPath() (string, error) {

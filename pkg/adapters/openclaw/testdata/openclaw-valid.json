@@ -1,0 +1,7 @@
+{
+  "runtime": {
+    "provider": "openai",
+    "model": "gpt-5"
+  },
+  "apiKey": "example-secret-do-not-use"
+}

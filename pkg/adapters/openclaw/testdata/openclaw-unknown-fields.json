@@ -1,0 +1,12 @@
+{
+  "runtime": {
+    "provider": "anthropic",
+    "model": "claude-sonnet-4"
+  },
+  "operatorNotes": "unknown fields must not break discovery",
+  "profiles": {
+    "ops": {
+      "temperature": 0.2
+    }
+  }
+}

@@ -176,6 +176,96 @@ func TestAdapterConfigSnapshotMissingProviderModelWarning(t *testing.T) {
 	}
 }
 
+func TestAdapterConfigSnapshotsParseFixtureFiles(t *testing.T) {
+	tests := []struct {
+		name         string
+		path         string
+		wantProvider string
+		wantModel    string
+	}{
+		{
+			name:         "valid",
+			path:         filepath.Join("testdata", "openclaw-valid.json"),
+			wantProvider: "openai",
+			wantModel:    "gpt-5",
+		},
+		{
+			name:         "unknown fields",
+			path:         filepath.Join("testdata", "openclaw-unknown-fields.json"),
+			wantProvider: "anthropic",
+			wantModel:    "claude-sonnet-4",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a := newTestAdapter(tt.path)
+			snapshots, err := a.ConfigSnapshots(context.Background())
+			if err != nil {
+				t.Fatalf("ConfigSnapshots error = %v, want nil", err)
+			}
+			if len(snapshots) != 1 {
+				t.Fatalf("len(snapshots) = %d, want 1", len(snapshots))
+			}
+			if snapshots[0].Provider != tt.wantProvider || snapshots[0].Model != tt.wantModel {
+				t.Fatalf("provider/model = %q/%q, want %s/%s", snapshots[0].Provider, snapshots[0].Model, tt.wantProvider, tt.wantModel)
+			}
+			if len(snapshots[0].Warnings) != 0 {
+				t.Fatalf("warnings = %#v, want none", snapshots[0].Warnings)
+			}
+		})
+	}
+}
+
+func TestAdapterConfigSnapshotsMissingModelWarning(t *testing.T) {
+	a := newTestAdapter(filepath.Join("testdata", "openclaw-missing-model.json"))
+
+	snapshots, err := a.ConfigSnapshots(context.Background())
+	if err != nil {
+		t.Fatalf("ConfigSnapshots error = %v, want nil", err)
+	}
+	if len(snapshots) != 1 {
+		t.Fatalf("len(snapshots) = %d, want 1", len(snapshots))
+	}
+	if snapshots[0].Provider != "" || snapshots[0].Model != "" {
+		t.Fatalf("provider/model = %q/%q, want empty incomplete values", snapshots[0].Provider, snapshots[0].Model)
+	}
+	if !containsWarning(snapshots[0].Warnings, "provider/model incomplete in openclaw config") {
+		t.Fatalf("warnings = %#v, want incomplete provider/model warning", snapshots[0].Warnings)
+	}
+}
+
+func TestAdapterConfigSnapshotsRejectMalformedJSON(t *testing.T) {
+	a := newTestAdapter(filepath.Join("testdata", "openclaw-malformed.json"))
+
+	_, err := a.ConfigSnapshots(context.Background())
+	if err == nil {
+		t.Fatal("ConfigSnapshots error = nil, want malformed JSON error")
+	}
+	if !strings.Contains(err.Error(), "parse openclaw JSON config") {
+		t.Fatalf("error = %q, want parse openclaw JSON config detail", err.Error())
+	}
+}
+
+func TestAdapterConfigSnapshotsRejectUnsafeProviderModel(t *testing.T) {
+	path := writeConfig(t, `{"provider":"openai#bad","model":"gpt-5"}`)
+	a := newTestAdapter(path)
+
+	snapshots, err := a.ConfigSnapshots(context.Background())
+	if err != nil {
+		t.Fatalf("ConfigSnapshots error = %v, want nil warning", err)
+	}
+	if len(snapshots) != 1 {
+		t.Fatalf("len(snapshots) = %d, want 1", len(snapshots))
+	}
+	if snapshots[0].Provider != "" || snapshots[0].Model != "" {
+		t.Fatalf("provider/model = %q/%q, want blank rejected values", snapshots[0].Provider, snapshots[0].Model)
+	}
+	if !containsWarningFragment(snapshots[0].Warnings, "provider/model rejected in openclaw config") {
+		t.Fatalf("warnings = %#v, want provider/model rejected warning", snapshots[0].Warnings)
+	}
+}
+
 func TestAdapterConfigSnapshotsPresentWarningWhenNoConfig(t *testing.T) {
 	a := newTestAdapter(filepath.Join(t.TempDir(), "missing.conf"))
 
@@ -238,6 +328,15 @@ func TestAdapterConfigPathFromEnvironment(t *testing.T) {
 func containsWarning(warnings []string, want string) bool {
 	for _, warning := range warnings {
 		if warning == want {
+			return true
+		}
+	}
+	return false
+}
+
+func containsWarningFragment(warnings []string, want string) bool {
+	for _, warning := range warnings {
+		if strings.Contains(warning, want) {
 			return true
 		}
 	}
