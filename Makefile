@@ -1,7 +1,8 @@
-.PHONY: all build test test-race vet fmt web web-dev typecheck lint openapi-check clean docker install
+.PHONY: all build generate test test-race vet fmt web web-dev typecheck lint openapi-check smoke release-local clean docker install
 
 GO ?= go
 BIN_DIR ?= bin
+DIST_DIR ?= dist
 OPENAPI_PYYAML_VERSION ?= 6.0.2
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
@@ -19,6 +20,9 @@ build: web
 	$(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/sideplane-server ./cmd/sideplane-server
 	$(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/sideplane-sidecar ./cmd/sideplane-sidecar
 	$(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/sideplane ./cmd/sideplane
+
+generate:
+	cd web && npm run generate:api
 
 test:
 	$(GO) test ./...
@@ -46,8 +50,17 @@ openapi-check:
 	python3 -c "import yaml" 2>/dev/null || python3 -m pip install --user PyYAML==$(OPENAPI_PYYAML_VERSION)
 	python3 -c "import yaml; yaml.safe_load(open('docs/openapi.yaml'))"
 
+smoke:
+	scripts/smoke-readonly.sh
+
+release-local: web
+	mkdir -p $(DIST_DIR)
+	$(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(DIST_DIR)/sideplane-server ./cmd/sideplane-server
+	$(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(DIST_DIR)/sideplane-sidecar ./cmd/sideplane-sidecar
+	$(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(DIST_DIR)/sideplane ./cmd/sideplane
+
 clean:
-	rm -rf $(BIN_DIR) web/dist
+	rm -rf $(BIN_DIR) $(DIST_DIR) web/dist
 	mkdir -p web/dist
 	touch web/dist/.gitkeep
 
