@@ -21,6 +21,7 @@ type RolloutOrchestratorConfig struct {
 	Store      store.Store
 	Freshness  FreshnessPolicy
 	SigningKey spcrypto.KeyPair
+	Events     *EventHub
 	Interval   time.Duration
 	Logger     *slog.Logger
 	Now        func() time.Time
@@ -57,6 +58,7 @@ type RolloutOrchestrator struct {
 	freshness  FreshnessPolicy
 	signingKey spcrypto.KeyPair
 	logger     *slog.Logger
+	events     *EventHub
 	now        func() time.Time
 	engine     rollout.Engine
 }
@@ -74,6 +76,7 @@ func NewRolloutOrchestrator(cfg RolloutOrchestratorConfig) *RolloutOrchestrator 
 		store:      cfg.Store,
 		freshness:  cfg.Freshness,
 		signingKey: cfg.SigningKey,
+		events:     eventHubOrDefault(cfg.Events),
 		logger:     cfg.Logger,
 		now:        now,
 	}
@@ -112,6 +115,9 @@ func (o *RolloutOrchestrator) ReconcileOnce(ctx context.Context) error {
 			}
 			return err
 		}
+		if current.State != next.State {
+			publishRolloutEvent(o.events, next)
+		}
 	}
 	return nil
 }
@@ -122,6 +128,7 @@ func (o *RolloutOrchestrator) DispatchConfigApply(ctx context.Context, ro protoc
 	if err != nil {
 		return "", err
 	}
+	publishJobEvent(o.events, job)
 	return job.ID, nil
 }
 

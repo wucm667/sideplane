@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -2312,6 +2313,134 @@ func TestPublicSigningKeyAPI(t *testing.T) {
 	}
 }
 
+func TestEventsStreamReceivesNodeJobAndRolloutEvents(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	credential := enrollTestNode(t, nodeStore, "node-events")
+	handler, err := NewHandlerWithConfig(HandlerConfig{
+		Store:         nodeStore,
+		Freshness:     DefaultFreshnessPolicy(),
+		OperatorToken: "operator-token",
+		Events:        NewEventHub(),
+	})
+	if err != nil {
+		t.Fatalf("build handler: %v", err)
+	}
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	req, err := http.NewRequest(http.MethodGet, server.URL+"/api/events", nil)
+	if err != nil {
+		t.Fatalf("build events request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer operator-token")
+	res, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatalf("open event stream: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("events status = %d, want 200", res.StatusCode)
+	}
+	if contentType := res.Header.Get("Content-Type"); !strings.HasPrefix(contentType, "text/event-stream") {
+		t.Fatalf("Content-Type = %q, want text/event-stream", contentType)
+	}
+	reader := bufio.NewReader(res.Body)
+
+	doJSONRequest[protocol.HeartbeatResponse](t, server.Client(), http.MethodPost, server.URL+"/api/heartbeat", credential, protocol.HeartbeatRequest{
+		NodeID: "node-events",
+	})
+	nodeEvent := readSSEMessage(t, reader)
+	if nodeEvent.name != "node" {
+		t.Fatalf("event name = %q, want node", nodeEvent.name)
+	}
+	var nodePayload map[string]string
+	if err := json.Unmarshal([]byte(nodeEvent.data), &nodePayload); err != nil {
+		t.Fatalf("decode node event: %v", err)
+	}
+	if nodePayload["nodeId"] != "node-events" || nodePayload["state"] != "fresh" {
+		t.Fatalf("node event = %#v, want node-events/fresh", nodePayload)
+	}
+
+	job := doJSONRequest[protocol.Job](t, server.Client(), http.MethodPost, server.URL+"/api/nodes/node-events/jobs", "operator-token", protocol.CreateJobRequest{Type: protocol.JobTypeDeepProbe})
+	jobEvent := readSSEMessage(t, reader)
+	if jobEvent.name != "job" {
+		t.Fatalf("event name = %q, want job", jobEvent.name)
+	}
+	var jobPayload map[string]string
+	if err := json.Unmarshal([]byte(jobEvent.data), &jobPayload); err != nil {
+		t.Fatalf("decode job event: %v", err)
+	}
+	if jobPayload["jobId"] != job.ID || jobPayload["nodeId"] != "node-events" || jobPayload["status"] != "pending" {
+		t.Fatalf("job event = %#v, want created job pending", jobPayload)
+	}
+
+	rolloutResp := doJSONRequest[protocol.CreateRolloutResponse](t, server.Client(), http.MethodPost, server.URL+"/api/rollouts", "operator-token", protocol.CreateRolloutRequest{Spec: protocol.RolloutSpec{
+		NodeIDs:     []string{"node-events"},
+		RuntimeType: "hermes",
+		Target:      protocol.ProviderModelConfig{Provider: "openai", Model: "gpt-4o"},
+		BatchSize:   1,
+	}})
+	rolloutEvent := readSSEMessage(t, reader)
+	if rolloutEvent.name != "rollout" {
+		t.Fatalf("event name = %q, want rollout", rolloutEvent.name)
+	}
+	var rolloutPayload map[string]string
+	if err := json.Unmarshal([]byte(rolloutEvent.data), &rolloutPayload); err != nil {
+		t.Fatalf("decode rollout event: %v", err)
+	}
+	if rolloutPayload["rolloutId"] != rolloutResp.Rollout.ID || rolloutPayload["state"] != "pending" {
+		t.Fatalf("rollout event = %#v, want pending rollout", rolloutPayload)
+	}
+}
+
+func TestEventsStreamDisconnectRemovesClient(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	hub := NewEventHub()
+	handler, err := NewHandlerWithConfig(HandlerConfig{
+		Store:         nodeStore,
+		Freshness:     DefaultFreshnessPolicy(),
+		OperatorToken: "operator-token",
+		Events:        hub,
+	})
+	if err != nil {
+		t.Fatalf("build handler: %v", err)
+	}
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	req, err := http.NewRequest(http.MethodGet, server.URL+"/api/events", nil)
+	if err != nil {
+		t.Fatalf("build events request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer operator-token")
+	res, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatalf("open event stream: %v", err)
+	}
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("events status = %d, want 200", res.StatusCode)
+	}
+	waitForEventHubClients(t, hub, 1)
+	if err := res.Body.Close(); err != nil {
+		t.Fatalf("close event stream: %v", err)
+	}
+	waitForEventHubClients(t, hub, 0)
+}
+
+func TestEventHubDropsSlowClient(t *testing.T) {
+	hub := NewEventHub()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_ = hub.subscribe(ctx)
+
+	for i := 0; i < eventClientBuffer+1; i++ {
+		hub.publish("job", map[string]string{"jobId": "job-slow", "status": "pending"})
+	}
+	if got := hub.clientCount(); got != 0 {
+		t.Fatalf("client count = %d, want slow client dropped", got)
+	}
+}
+
 func TestHandlerLoadsPersistedSigningKey(t *testing.T) {
 	keyPath := filepath.Join(t.TempDir(), "signing-key.json")
 	first, err := NewHandlerWithConfig(HandlerConfig{
@@ -3214,6 +3343,74 @@ func readSigningKeyForTest(t *testing.T, handler http.Handler) string {
 		t.Fatalf("decode signing key response: %v", err)
 	}
 	return resp.PublicKey
+}
+
+type sseTestMessage struct {
+	name string
+	data string
+}
+
+func readSSEMessage(t *testing.T, reader *bufio.Reader) sseTestMessage {
+	t.Helper()
+	type result struct {
+		message sseTestMessage
+		err     error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		message, err := readSSEMessageSync(reader)
+		ch <- result{message: message, err: err}
+	}()
+
+	select {
+	case got := <-ch:
+		if got.err != nil {
+			t.Fatalf("read SSE message: %v", got.err)
+		}
+		return got.message
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for SSE message")
+		return sseTestMessage{}
+	}
+}
+
+func readSSEMessageSync(reader *bufio.Reader) (sseTestMessage, error) {
+	var message sseTestMessage
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			return sseTestMessage{}, err
+		}
+		line = strings.TrimRight(line, "\r\n")
+		if line == "" {
+			if message.name != "" || message.data != "" {
+				return message, nil
+			}
+			continue
+		}
+		if strings.HasPrefix(line, ":") {
+			continue
+		}
+		if value, ok := strings.CutPrefix(line, "event:"); ok {
+			message.name = strings.TrimSpace(value)
+			continue
+		}
+		if value, ok := strings.CutPrefix(line, "data:"); ok {
+			message.data = strings.TrimSpace(value)
+		}
+	}
+}
+
+func waitForEventHubClients(t *testing.T, hub *EventHub, want int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if got := hub.clientCount(); got == want {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("event hub client count = %d, want %d", hub.clientCount(), want)
 }
 
 func enrollTestNode(t *testing.T, nodeStore store.Store, nodeID string) string {

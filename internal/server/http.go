@@ -72,6 +72,7 @@ type HandlerConfig struct {
 	SigningKeyPath                  string
 	SigningKeyPair                  spcrypto.KeyPair
 	DisableSigningKey               bool
+	Events                          *EventHub
 	Logger                          *slog.Logger
 }
 
@@ -102,6 +103,7 @@ func NewHandlerWithConfig(cfg HandlerConfig) (http.Handler, error) {
 		freshness:    freshness,
 		operatorAuth: auth.NewOperatorToken(cfg.OperatorToken, cfg.AllowUnauthenticatedOperatorAPI),
 		signingKey:   keyPair,
+		events:       cfg.Events,
 		metrics:      NewMetrics(),
 		timedOutJobs: map[string]struct{}{},
 		logger:       cfg.Logger,
@@ -109,11 +111,13 @@ func NewHandlerWithConfig(cfg HandlerConfig) (http.Handler, error) {
 	if handler.logger == nil {
 		handler.logger = discardLogger()
 	}
+	handler.events = eventHubOrDefault(handler.events)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", jsonStatusHandler("ok"))
 	mux.HandleFunc("/readyz", handler.readyz)
 	mux.HandleFunc("/metrics", handler.metricsEndpoint)
+	mux.HandleFunc("/api/events", handler.eventsStream)
 	mux.HandleFunc("/api/audit", handler.auditEvents)
 	mux.HandleFunc("/api/signing-key", handler.publicSigningKey)
 	mux.HandleFunc("/api/config/desired", handler.desiredConfig)
@@ -136,6 +140,7 @@ type handler struct {
 	freshness    FreshnessPolicy
 	operatorAuth auth.OperatorToken
 	signingKey   spcrypto.KeyPair
+	events       *EventHub
 	metrics      *Metrics
 	timedOutMu   sync.Mutex
 	timedOutJobs map[string]struct{}
@@ -370,6 +375,8 @@ func (h *handler) heartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	heartbeatAccepted = true
+	node.State = h.freshness.StateFor(node.LastHeartbeatAt)
+	publishNodeEvent(h.events, node)
 
 	writeJSON(w, http.StatusOK, protocol.HeartbeatResponse{
 		Accepted:   true,
@@ -517,6 +524,7 @@ func (h *handler) createRollout(w http.ResponseWriter, r *http.Request) {
 		Detail:    fmt.Sprintf("rollout=%s nodes=%d runtime=%s live=%t", created.ID, len(nodeIDs), spec.RuntimeType, spec.Live),
 		CreatedAt: now,
 	})
+	publishRolloutEvent(h.events, created)
 	writeJSON(w, http.StatusCreated, protocol.CreateRolloutResponse{Rollout: created})
 }
 
@@ -606,6 +614,7 @@ func (h *handler) rolloutAction(w http.ResponseWriter, r *http.Request, rolloutI
 		Detail:    "rollout=" + rollout.ID,
 		CreatedAt: now,
 	})
+	publishRolloutEvent(h.events, *rollout)
 	writeJSON(w, http.StatusOK, protocol.RolloutActionResponse{Rollout: *rollout})
 }
 
@@ -1196,6 +1205,7 @@ func (h *handler) createNodeJob(w http.ResponseWriter, r *http.Request, nodeID s
 		Detail:     string(req.Type),
 		CreatedAt:  job.CreatedAt,
 	})
+	publishJobEvent(h.events, job)
 
 	writeJSON(w, http.StatusCreated, job)
 }
@@ -1269,6 +1279,7 @@ func (h *handler) createRestartJob(w http.ResponseWriter, r *http.Request, nodeI
 		Detail:     fmt.Sprintf("job=%s mode=%s target=%s", job.ID, mode, target),
 		CreatedAt:  job.CreatedAt,
 	})
+	publishJobEvent(h.events, job)
 
 	writeJSON(w, http.StatusCreated, job)
 }
@@ -1387,6 +1398,7 @@ func (h *handler) createRollbackJob(w http.ResponseWriter, r *http.Request, node
 		Detail:     fmt.Sprintf("job=%s mode=%s backupRef=%s target=%s", job.ID, mode, backup.Ref, runtimeTargetSummary(runtimeType, runtimeName, profile)),
 		CreatedAt:  job.CreatedAt,
 	})
+	publishJobEvent(h.events, job)
 
 	writeJSON(w, http.StatusCreated, job)
 }
@@ -1531,6 +1543,7 @@ func (h *handler) createConfigApplyJob(w http.ResponseWriter, r *http.Request, n
 		Detail:     fmt.Sprintf("%s %s plan=%s", runtimeType, mode, planID),
 		CreatedAt:  job.CreatedAt,
 	})
+	publishJobEvent(h.events, job)
 
 	writeJSON(w, http.StatusCreated, job)
 }
@@ -1592,6 +1605,7 @@ func (h *handler) claimNextJob(w http.ResponseWriter, r *http.Request) {
 
 	h.metrics.IncSidecarJobClaim(string(job.Type))
 	h.logger.Info("job claimed", "job_id", job.ID, "node_id", nodeID, "type", job.Type, "status", job.Status)
+	publishJobEvent(h.events, *job)
 	writeJSON(w, http.StatusOK, job)
 }
 
@@ -1683,6 +1697,7 @@ func (h *handler) submitJobResult(w http.ResponseWriter, r *http.Request) {
 			Detail:     string(job.Type) + " late_result_after_timeout",
 			CreatedAt:  now,
 		})
+		publishJobEvent(h.events, protocol.Job{ID: job.ID, NodeID: job.NodeID, Type: job.Type, Status: protocol.JobStatusFailed})
 		writeJSON(w, http.StatusOK, map[string]string{"status": "accepted_late"})
 		return
 	}
@@ -1705,6 +1720,7 @@ func (h *handler) submitJobResult(w http.ResponseWriter, r *http.Request) {
 		Detail:     string(job.Type),
 		CreatedAt:  now,
 	})
+	publishJobEvent(h.events, protocol.Job{ID: job.ID, NodeID: job.NodeID, Type: job.Type, Status: req.Status})
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "accepted"})
 }
@@ -1748,6 +1764,7 @@ func (h *handler) observeTimedOutJobs(ctx context.Context, jobs []protocol.Job) 
 			Detail:     string(job.Type) + " timeout",
 			CreatedAt:  createdAt,
 		})
+		publishJobEvent(h.events, job)
 	}
 }
 
