@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { AuditEvent, AuditFilters, ConfigApplyResult, DeepProbeResult, EffectiveConfigResponse, Job, JobStatus, ListAuditEventsResponse, ListNodesResponse, NodeState, NodeStatus, RestartRequest, RollbackRequest, RuntimeConfigSnapshot, RuntimeStatus } from './types.ts'
+import type { AuditEvent, AuditFilters, ConfigApplyResult, DeepProbeResult, EffectiveConfigResponse, Job, JobStatus, ListAuditEventsResponse, ListNodesResponse, NodeLabels, NodeLabelsResponse, NodeState, NodeStatus, RestartRequest, RollbackRequest, RuntimeConfigSnapshot, RuntimeStatus } from './types.ts'
 
 const NODE_REFRESH_MS = 10_000
 const ACTIVE_JOB_REFRESH_MS = 2_000
@@ -240,6 +240,8 @@ export function useFleetPageController() {
   const [creatingByNode, setCreatingByNode] = useState<Record<string, boolean>>({})
   const [restartingByNode, setRestartingByNode] = useState<Record<string, boolean>>({})
   const [rollingBackByNode, setRollingBackByNode] = useState<Record<string, boolean>>({})
+  const [savingLabelsByNode, setSavingLabelsByNode] = useState<Record<string, boolean>>({})
+  const [labelErrorByNode, setLabelErrorByNode] = useState<Record<string, string>>({})
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -253,6 +255,7 @@ export function useFleetPageController() {
   const [effectiveErrorByNode, setEffectiveErrorByNode] = useState<Record<string, string>>({})
   const [theme, setTheme] = useState<Theme>(loadStoredTheme)
   const [view, setView] = useState<View>('fleet')
+  const [selector, setSelector] = useState('')
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
   const mountedRef = useRef(false)
 
@@ -344,7 +347,14 @@ export function useFleetPageController() {
   }, [jobLimitByNode, jobStatusByNode, loadNodeJobs])
 
   const loadNodes = useCallback(async () => {
-    const res = await fetch('/api/nodes')
+    const params = new URLSearchParams()
+    const selectorValue = selector.trim()
+    if (selectorValue) {
+      params.set('selector', selectorValue)
+    }
+    const query = params.toString()
+    const path = query ? `/api/nodes?${query}` : '/api/nodes'
+    const res = await fetch(path)
     if (!res.ok) {
       throw new Error(await apiErrorMessage(res))
     }
@@ -354,7 +364,7 @@ export function useFleetPageController() {
     setNodes(data)
     setError(null)
     return data
-  }, [])
+  }, [selector])
 
   const refreshFleet = useCallback(async (showRefreshing = true) => {
     if (!mountedRef.current) return
@@ -518,6 +528,50 @@ export function useFleetPageController() {
     }
   }, [loadNodeJobs, operatorToken])
 
+  const saveNodeLabels = useCallback(async (nodeId: string, labels: NodeLabels) => {
+    if (!mountedRef.current) return
+    setSavingLabelsByNode((current) => ({ ...current, [nodeId]: true }))
+    try {
+      const headers: HeadersInit = { 'Content-Type': 'application/json' }
+      const token = operatorToken.trim()
+      if (token) {
+        headers.Authorization = `Bearer ${token}`
+      }
+
+      const res = await fetch(`/api/nodes/${encodeURIComponent(nodeId)}/labels`, {
+        method: 'PUT',
+        headers,
+        body: JSON.stringify({ labels }),
+      })
+      if (!res.ok) {
+        if (res.status === 401) {
+          throw new Error('Operator token required or invalid')
+        }
+        throw new Error(await apiErrorMessage(res))
+      }
+      const response = (await res.json()) as NodeLabelsResponse
+      if (!mountedRef.current) return
+      setNodes((current) => current?.map((node) => (
+        node.nodeId === nodeId ? { ...node, labels: response.labels ?? {} } : node
+      )) ?? current)
+      setLabelErrorByNode((current) => {
+        const next = { ...current }
+        delete next[nodeId]
+        return next
+      })
+    } catch (e) {
+      if (!mountedRef.current) return
+      setLabelErrorByNode((current) => ({
+        ...current,
+        [nodeId]: e instanceof Error ? e.message : 'Unknown error',
+      }))
+    } finally {
+      if (mountedRef.current) {
+        setSavingLabelsByNode((current) => ({ ...current, [nodeId]: false }))
+      }
+    }
+  }, [operatorToken])
+
   const loadAuditEvents = useCallback(async () => {
     try {
       const params = new URLSearchParams({ limit: String(auditLimit) })
@@ -679,12 +733,17 @@ export function useFleetPageController() {
     refreshSelectedNodeAfterApply,
     refreshing,
     rollingBackByNode,
+    savingLabelsByNode,
     restartingByNode,
     selectedNode,
+    selector,
     setOperatorToken,
     setAuditFilters,
     setAuditLimit,
     setNodeJobStatusFilter,
+    setSelector,
+    labelErrorByNode,
+    saveNodeLabels,
     stats,
     theme,
     toggleTheme,

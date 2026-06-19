@@ -19,9 +19,11 @@ interface FleetOverviewProps {
   loading: boolean
   nodes: NodeStatus[]
   refreshing: boolean
+  selector: string
   stats: { healthy: number; stale: number; offline: number; drift: number }
   onOpenNode: (nodeId: string) => void
   onRefresh: () => void
+  onSelectorChange: (selector: string) => void
 }
 
 export function FleetOverview({
@@ -32,9 +34,11 @@ export function FleetOverview({
   loading,
   nodes,
   refreshing,
+  selector,
   stats,
   onOpenNode,
   onRefresh,
+  onSelectorChange,
 }: FleetOverviewProps) {
   const [sort, setSort] = useState<{ key: SortKey; direction: SortDirection }>({ key: 'state', direction: 'asc' })
   const [searchQuery, setSearchQuery] = useState('')
@@ -85,12 +89,18 @@ export function FleetOverview({
         </div>
       )}
 
-      <div className="mb-3">
+      <div className="mb-3 grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
         <input
           className="h-9 w-full rounded-lg border border-[var(--sp-border)] bg-[var(--sp-surface)] px-3 font-mono text-xs text-[var(--sp-text)] outline-none focus:border-[var(--sp-accent)] sm:max-w-sm"
           value={searchQuery}
           placeholder="Filter nodes..."
           onChange={(event) => setSearchQuery(event.target.value)}
+        />
+        <input
+          className="h-9 w-full rounded-lg border border-[var(--sp-border)] bg-[var(--sp-surface)] px-3 font-mono text-xs text-[var(--sp-text)] outline-none focus:border-[var(--sp-accent)] sm:max-w-sm"
+          value={selector}
+          placeholder="Selector role=canary,zone=lab"
+          onChange={(event) => onSelectorChange(event.target.value)}
         />
       </div>
 
@@ -141,6 +151,7 @@ function nodeSearchText(node: NodeStatus): string {
     node.nodeId,
     node.hostname,
     node.state,
+    labelsText(node.labels),
     runtimeText,
   ].filter(Boolean).join(' ').toLowerCase()
 }
@@ -206,6 +217,15 @@ function FleetRow({ activeProbe, node, onOpen }: { activeProbe: boolean; node: N
           {activeProbe && <span className="rounded bg-sky-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-sky-600">probe</span>}
         </div>
         <div className="mt-1 truncate font-mono text-xs text-[var(--sp-faint)]">{node.hostname || '-'}</div>
+        {Object.keys(node.labels ?? {}).length > 0 && (
+          <div className="mt-2 flex flex-wrap gap-1">
+            {labelPairs(node.labels).slice(0, 3).map(([key, value]) => (
+              <span key={key} className="rounded border border-[var(--sp-border)] bg-[var(--sp-surface-2)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--sp-muted)]">
+                {key}={value}
+              </span>
+            ))}
+          </div>
+        )}
       </div>
 
       <div>
@@ -241,6 +261,14 @@ function FleetRow({ activeProbe, node, onOpen }: { activeProbe: boolean; node: N
       <div className="hidden justify-end text-[var(--sp-faint)] lg:flex">›</div>
     </button>
   )
+}
+
+function labelPairs(labels: NodeStatus['labels']): [string, string][] {
+  return Object.entries(labels ?? {}).sort(([a], [b]) => a.localeCompare(b))
+}
+
+function labelsText(labels: NodeStatus['labels']): string {
+  return labelPairs(labels).map(([key, value]) => `${key} ${value}`).join(' ')
 }
 
 export function TableMessage({ message }: { message: string }) {

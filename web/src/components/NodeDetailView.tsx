@@ -1,7 +1,7 @@
-import { useState, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import ConfigWizard from '../ConfigWizard.tsx'
 import { apiErrorMessage, compactHash, formatDate, formatRelativeTime, hasActiveConfigApply, hasActiveDeepProbe, hasActiveRestart, hasActiveRollback, jobBadgeClasses, latestConfigSnapshots, latestRollbackBackup, runtimeKey, snapshotForRuntime, stateBadgeClasses } from '../helpers.ts'
-import type { ConfigApplyResult, ConfigDiffEntry, DeepProbeResult, EffectiveConfigResponse, Job, JobStatus, NodeStatus, RestartJobResult, RestartRequest, RollbackJobResult, RollbackRequest, RuntimeConfigSnapshot, RuntimeStatus } from '../types.ts'
+import type { ConfigApplyResult, ConfigDiffEntry, DeepProbeResult, EffectiveConfigResponse, Job, JobStatus, NodeLabels, NodeStatus, RestartJobResult, RestartRequest, RollbackJobResult, RollbackRequest, RuntimeConfigSnapshot, RuntimeStatus } from '../types.ts'
 
 export function NodeDetailView({
   creating,
@@ -15,6 +15,8 @@ export function NodeDetailView({
   node,
   effective,
   effectiveError,
+  labelError,
+  labelsSaving,
   operatorToken,
   onBack,
   onDeepProbe,
@@ -22,6 +24,7 @@ export function NodeDetailView({
   onRestart,
   onJobStatusFilterChange,
   onLoadMoreJobs,
+  onSaveLabels,
   onApplied,
 }: {
   creating: boolean
@@ -35,6 +38,8 @@ export function NodeDetailView({
   node: NodeStatus
   effective?: EffectiveConfigResponse
   effectiveError?: string
+  labelError?: string
+  labelsSaving: boolean
   operatorToken: string
   onBack: () => void
   onDeepProbe: () => void
@@ -42,6 +47,7 @@ export function NodeDetailView({
   onRestart: (request: RestartRequest) => void
   onJobStatusFilterChange: (status: JobStatus | '') => void
   onLoadMoreJobs: () => void
+  onSaveLabels: (labels: NodeLabels) => void
   onApplied: () => void
 }) {
   const activeProbe = hasActiveDeepProbe(jobs)
@@ -148,6 +154,13 @@ export function NodeDetailView({
             )}
           </div>
           <div className="mt-2 font-mono text-sm text-[var(--sp-muted)]">{node.hostname || '-'} · sidecar {node.sidecarVersion || 'dev'}</div>
+          <LabelEditor
+            error={labelError}
+            labels={node.labels ?? {}}
+            saving={labelsSaving}
+            tokenReady={tokenReady}
+            onSave={onSaveLabels}
+          />
         </div>
         <div className="flex flex-wrap gap-2">
           <button
@@ -331,6 +344,97 @@ export function NodeDetailView({
       )}
     </div>
   )
+}
+
+function LabelEditor({
+  error,
+  labels,
+  saving,
+  tokenReady,
+  onSave,
+}: {
+  error?: string
+  labels: NodeLabels
+  saving: boolean
+  tokenReady: boolean
+  onSave: (labels: NodeLabels) => void
+}) {
+  const [draft, setDraft] = useState(formatLabelDraft(labels))
+  const [draftError, setDraftError] = useState<string | null>(null)
+
+  useEffect(() => {
+    setDraft(formatLabelDraft(labels))
+  }, [labels])
+
+  const save = () => {
+    const parsed = parseLabelDraft(draft)
+    if (typeof parsed === 'string') {
+      setDraftError(parsed)
+      return
+    }
+    setDraftError(null)
+    onSave(parsed)
+  }
+
+  const pairs = labelPairs(labels)
+  return (
+    <div className="mt-3 max-w-2xl rounded-lg border border-[var(--sp-border)] bg-[var(--sp-surface)] p-3">
+      <div className="mb-2 flex flex-wrap gap-1.5">
+        {pairs.length > 0 ? pairs.map(([key, value]) => (
+          <span key={key} className="rounded border border-[var(--sp-border)] bg-[var(--sp-surface-2)] px-2 py-1 font-mono text-[11px] text-[var(--sp-muted)]">
+            {key}={value}
+          </span>
+        )) : <span className="text-xs text-[var(--sp-faint)]">No labels</span>}
+      </div>
+      <div className="flex flex-col gap-2 sm:flex-row">
+        <input
+          className="h-9 min-w-0 flex-1 rounded-lg border border-[var(--sp-border)] bg-[var(--sp-surface-2)] px-3 font-mono text-xs text-[var(--sp-text)] outline-none focus:border-[var(--sp-accent)] disabled:cursor-not-allowed disabled:opacity-60"
+          value={draft}
+          disabled={!tokenReady || saving}
+          placeholder="role=canary,zone=lab"
+          onChange={(event) => setDraft(event.target.value)}
+        />
+        <button
+          type="button"
+          className="h-9 rounded-lg border border-[var(--sp-border-strong)] bg-[var(--sp-surface)] px-3 text-sm font-medium hover:bg-[var(--sp-surface-2)] disabled:cursor-not-allowed disabled:opacity-60"
+          disabled={!tokenReady || saving}
+          title={tokenReady ? 'Save labels' : 'Set an operator token before editing labels'}
+          onClick={save}
+        >
+          {saving ? 'Saving...' : 'Save labels'}
+        </button>
+      </div>
+      {(draftError || error) && (
+        <div className="mt-2 text-xs text-rose-600">{draftError || error}</div>
+      )}
+    </div>
+  )
+}
+
+function formatLabelDraft(labels: NodeLabels): string {
+  return labelPairs(labels).map(([key, value]) => `${key}=${value}`).join(',')
+}
+
+function parseLabelDraft(value: string): NodeLabels | string {
+  const trimmed = value.trim()
+  if (!trimmed) return {}
+  const labels: NodeLabels = {}
+  for (const part of trimmed.split(',')) {
+    const entry = part.trim()
+    if (!entry) return 'label entry is empty'
+    const index = entry.indexOf('=')
+    if (index <= 0) return `invalid label ${entry}`
+    const key = entry.slice(0, index).trim()
+    const labelValue = entry.slice(index + 1).trim()
+    if (!key) return 'label key is required'
+    if (labels[key] !== undefined) return `duplicate label ${key}`
+    labels[key] = labelValue
+  }
+  return labels
+}
+
+function labelPairs(labels: NodeLabels): [string, string][] {
+  return Object.entries(labels).sort(([a], [b]) => a.localeCompare(b))
 }
 
 function JobDetail({ job }: { job: Job }) {

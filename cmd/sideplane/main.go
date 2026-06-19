@@ -89,6 +89,9 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		if len(args) >= 2 && args[1] == "inspect" {
 			return runNodeInspect(args[2:], stdout, stderr)
 		}
+		if len(args) >= 2 && args[1] == "label" {
+			return runNodeLabel(args[2:], stdout, stderr)
+		}
 		if len(args) >= 2 && args[1] == "remove" {
 			return runNodeRemove(args[2:], stdout, stderr)
 		}
@@ -122,6 +125,7 @@ Commands:
   config get          Show desired configuration
   config set          Update global desired configuration
   node inspect <id>   Show full node detail
+  node label <id>     Set or remove node labels
   node remove <id>    Remove a node from the fleet
   enrollment create   Create a one-time enrollment token
   version             Print version
@@ -558,7 +562,7 @@ func runNodeInspect(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 1
 	}
 
-	nodes, _, err := getNodeList(context.Background(), serverURLValue(*serverURL))
+	nodes, _, err := getNodeList(context.Background(), serverURLValue(*serverURL), "")
 	if err != nil {
 		fmt.Fprintf(stderr, "node inspect: %v\n", err)
 		return 1
@@ -577,6 +581,80 @@ func runNodeInspect(args []string, stdout io.Writer, stderr io.Writer) int {
 
 	fmt.Fprintf(stderr, "node inspect: node %q not found\n", nodeID)
 	return 1
+}
+
+func runNodeLabel(args []string, stdout io.Writer, stderr io.Writer) int {
+	flags := flag.NewFlagSet("sideplane node label", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+
+	serverURL := flags.String("server", "", "Sideplane server URL; can also be set with SIDEPLANE_SERVER_URL")
+	operatorTokenFlag := flags.String("operator-token", "", "operator bearer token; can also be set with SIDEPLANE_OPERATOR_TOKEN")
+	var removeLabels stringList
+	flags.Var(&removeLabels, "remove", "label key to remove; may be repeated")
+	jsonOutput := flags.Bool("json", false, "print raw JSON response")
+	usage := "sideplane node label <nodeId> key=value [key2=value2 ...] [--remove key] [--server URL] [--operator-token TOKEN] [--json]"
+	if commandHelpRequested(args) {
+		printCommandHelp(stdout, usage, flags)
+		return 0
+	}
+	if err := parseCommandFlags(flags, args, "json"); err != nil {
+		return 2
+	}
+	if flags.NArg() < 1 {
+		fmt.Fprintln(stderr, "usage: "+usage)
+		return 1
+	}
+	nodeID := strings.TrimSpace(flags.Arg(0))
+	if nodeID == "" {
+		fmt.Fprintln(stderr, "node label: nodeId is required")
+		return 1
+	}
+	if flags.NArg() == 1 && len(removeLabels) == 0 {
+		fmt.Fprintln(stderr, "node label: provide key=value or --remove key")
+		return 1
+	}
+
+	labels := map[string]string{}
+	server := serverURLValue(*serverURL)
+	operatorToken := operatorTokenValue(*operatorTokenFlag)
+	path := "/api/nodes/" + url.PathEscape(nodeID) + "/labels"
+	current, _, err := getJSON[protocol.NodeLabelsResponse](context.Background(), server, path, operatorToken)
+	if err != nil {
+		fmt.Fprintf(stderr, "node label: %v\n", err)
+		return 1
+	}
+	for key, value := range current.Labels {
+		labels[key] = value
+	}
+	for _, key := range removeLabels {
+		key = strings.TrimSpace(key)
+		if key == "" {
+			fmt.Fprintln(stderr, "node label: --remove key is required")
+			return 1
+		}
+		delete(labels, key)
+	}
+	for _, assignment := range flags.Args()[1:] {
+		key, value, ok := strings.Cut(assignment, "=")
+		key = strings.TrimSpace(key)
+		if !ok || key == "" {
+			fmt.Fprintf(stderr, "node label: invalid label %q, want key=value\n", assignment)
+			return 1
+		}
+		labels[key] = strings.TrimSpace(value)
+	}
+
+	updated, body, err := putJSON[protocol.NodeLabelsResponse](context.Background(), server, path, protocol.NodeLabelsRequest{Labels: labels}, operatorToken)
+	if err != nil {
+		fmt.Fprintf(stderr, "node label: %v\n", err)
+		return 1
+	}
+	if *jsonOutput {
+		writeRawJSON(stdout, body)
+		return 0
+	}
+	printNodeLabels(stdout, updated)
+	return 0
 }
 
 func runNodeRemove(args []string, stdout io.Writer, stderr io.Writer) int {
@@ -781,8 +859,9 @@ func runFleetStatus(args []string, stdout io.Writer, stderr io.Writer) int {
 	flags.SetOutput(stderr)
 
 	serverURL := flags.String("server", "", "Sideplane server URL; can also be set with SIDEPLANE_SERVER_URL")
+	selector := flags.String("selector", "", "label selector with AND semantics, for example role=canary,zone=lab")
 	jsonOutput := flags.Bool("json", false, "print raw JSON response")
-	usage := "sideplane fleet status [--server URL] [--json]"
+	usage := "sideplane fleet status [--server URL] [--selector key=value[,key2=value2]] [--json]"
 	if commandHelpRequested(args) {
 		printCommandHelp(stdout, usage, flags)
 		return 0
@@ -796,7 +875,7 @@ func runFleetStatus(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 
 	server := serverURLValue(*serverURL)
-	nodes, body, err := getNodeList(context.Background(), server)
+	nodes, body, err := getNodeList(context.Background(), server, strings.TrimSpace(*selector))
 	if err != nil {
 		fmt.Fprintf(stderr, "fleet status: %v\n", err)
 		return 1
@@ -811,8 +890,14 @@ func runFleetStatus(args []string, stdout io.Writer, stderr io.Writer) int {
 	return 0
 }
 
-func getNodeList(ctx context.Context, server string) ([]cliNodeStatus, []byte, error) {
-	_, body, err := getJSON[json.RawMessage](ctx, server, "/api/nodes", "")
+func getNodeList(ctx context.Context, server string, selector string) ([]cliNodeStatus, []byte, error) {
+	path := "/api/nodes"
+	if selector = strings.TrimSpace(selector); selector != "" {
+		params := url.Values{}
+		params.Set("selector", selector)
+		path += "?" + params.Encode()
+	}
+	_, body, err := getJSON[json.RawMessage](ctx, server, path, "")
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1286,6 +1371,7 @@ func printNodeInspect(w io.Writer, node cliNodeStatus) {
 	fmt.Fprintf(w, "Sidecar: %s\n", valueOrDash(node.SidecarVersion))
 	fmt.Fprintf(w, "Config hash: %s\n", valueOrDash(node.ConfigHash))
 	fmt.Fprintf(w, "Drift: %s\n", yesNo(node.Drift))
+	fmt.Fprintf(w, "Labels: %s\n", labelsInline(node.Labels))
 	fmt.Fprintf(w, "Last error: %s\n", valueOrDash(node.LastError))
 	fmt.Fprintln(w, "Runtimes:")
 	if len(node.Runtimes) == 0 {
@@ -1310,6 +1396,49 @@ func printNodeInspect(w io.Writer, node cliNodeStatus) {
 		)
 	}
 	table.Flush()
+}
+
+func printNodeLabels(w io.Writer, resp protocol.NodeLabelsResponse) {
+	fmt.Fprintf(w, "Node: %s\n", resp.NodeID)
+	fmt.Fprintln(w, "Labels:")
+	if len(resp.Labels) == 0 {
+		fmt.Fprintln(w, "  (none)")
+		return
+	}
+	for _, key := range sortedLabelKeys(resp.Labels) {
+		fmt.Fprintf(w, "  %s=%s\n", key, resp.Labels[key])
+	}
+}
+
+func labelsInline(labels map[string]string) string {
+	if len(labels) == 0 {
+		return "-"
+	}
+	parts := make([]string, 0, len(labels))
+	for _, key := range sortedLabelKeys(labels) {
+		parts = append(parts, key+"="+labels[key])
+	}
+	return strings.Join(parts, ",")
+}
+
+func sortedLabelKeys(labels map[string]string) []string {
+	keys := make([]string, 0, len(labels))
+	for key := range labels {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+type stringList []string
+
+func (s *stringList) String() string {
+	return strings.Join(*s, ",")
+}
+
+func (s *stringList) Set(value string) error {
+	*s = append(*s, value)
+	return nil
 }
 
 func warningsLabel(warnings []string) string {

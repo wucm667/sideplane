@@ -28,12 +28,23 @@ export type {
   RuntimeStatus,
 } from './generated/api.ts'
 
-export type NodeStatus = NodeStatusWithDrift
+export type NodeLabels = Record<string, string>
+export type NodeStatus = NodeStatusWithDrift & { labels?: NodeLabels }
+
+export interface NodeLabelsRequest {
+  labels: NodeLabels
+}
+
+export interface NodeLabelsResponse {
+  nodeId: string
+  labels: NodeLabels
+}
 
 export type AuditAction =
   | 'enrollment.token.create'
   | 'node.enroll'
   | 'node.delete'
+  | 'node.labels.update'
   | 'job.create'
   | 'job.complete'
   | 'job.fail'

@@ -108,6 +108,30 @@ func TestFleetStatusJSONOutput(t *testing.T) {
 	}
 }
 
+func TestFleetStatusSelectorQuery(t *testing.T) {
+	response := cliListNodesResponse{Nodes: []cliNodeStatus{}, Total: 0, Limit: 100, Offset: 0}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/nodes" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.URL.Query().Get("selector"); got != "role=canary,zone=lab" {
+			t.Fatalf("selector query = %q, want role=canary,zone=lab", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(response); err != nil {
+			t.Fatalf("encode nodes: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"fleet", "status", "--server", server.URL, "--selector", "role=canary,zone=lab"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("run returned %d, stderr=%q", code, stderr.String())
+	}
+}
+
 func TestNodeInspectPrintsNodeDetail(t *testing.T) {
 	now := time.Now().UTC()
 	nodes := []cliNodeStatus{{
@@ -118,6 +142,7 @@ func TestNodeInspectPrintsNodeDetail(t *testing.T) {
 			LastHeartbeatAt: now.Add(-time.Minute),
 			SidecarVersion:  "dev",
 			ConfigHash:      "sha256:abc",
+			Labels:          map[string]string{"role": "canary", "zone": "lab"},
 			Runtimes: []protocol.RuntimeStatus{{
 				Name:       "hermes",
 				Type:       "hermes",
@@ -141,7 +166,68 @@ func TestNodeInspectPrintsNodeDetail(t *testing.T) {
 		t.Fatalf("run returned %d, stderr=%q", code, stderr.String())
 	}
 	output := stdout.String()
-	for _, want := range []string{"Node: node-a", "Hostname: host-a", "Drift: yes", "hermes", "openai", "gpt-4o", "config path unreadable"} {
+	for _, want := range []string{"Node: node-a", "Hostname: host-a", "Drift: yes", "Labels: role=canary,zone=lab", "hermes", "openai", "gpt-4o", "config path unreadable"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output missing %q:\n%s", want, output)
+		}
+	}
+}
+
+func TestNodeLabelSetsRemovesAndPrintsLabels(t *testing.T) {
+	var sawGet bool
+	var sawPut bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/nodes/node-a/labels" {
+			t.Fatalf("path = %s, want /api/nodes/node-a/labels", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer dev-token" {
+			t.Fatalf("Authorization = %q, want Bearer dev-token", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch r.Method {
+		case http.MethodGet:
+			sawGet = true
+			if err := json.NewEncoder(w).Encode(protocol.NodeLabelsResponse{
+				NodeID: "node-a",
+				Labels: map[string]string{"role": "old", "zone": "lab"},
+			}); err != nil {
+				t.Fatalf("encode labels: %v", err)
+			}
+		case http.MethodPut:
+			sawPut = true
+			var req protocol.NodeLabelsRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatalf("decode labels request: %v", err)
+			}
+			if req.Labels["role"] != "canary" || req.Labels["env"] != "dev" {
+				t.Fatalf("labels request = %#v, want role canary and env dev", req.Labels)
+			}
+			if _, ok := req.Labels["zone"]; ok {
+				t.Fatalf("labels request kept removed zone: %#v", req.Labels)
+			}
+			if err := json.NewEncoder(w).Encode(protocol.NodeLabelsResponse{
+				NodeID: "node-a",
+				Labels: req.Labels,
+			}); err != nil {
+				t.Fatalf("encode labels response: %v", err)
+			}
+		default:
+			t.Fatalf("unexpected method %s", r.Method)
+		}
+	}))
+	defer server.Close()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"node", "label", "node-a", "role=canary", "env=dev", "--remove", "zone", "--server", server.URL, "--operator-token", "dev-token"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("run returned %d, stderr=%q", code, stderr.String())
+	}
+	if !sawGet || !sawPut {
+		t.Fatalf("sawGet=%t sawPut=%t, want both", sawGet, sawPut)
+	}
+	output := stdout.String()
+	for _, want := range []string{"Node: node-a", "env=dev", "role=canary"} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("output missing %q:\n%s", want, output)
 		}
@@ -233,6 +319,7 @@ func TestHelpListsCommands(t *testing.T) {
 		"config get",
 		"config set",
 		"node inspect <id>",
+		"node label <id>",
 		"node remove <id>",
 		"enrollment create",
 		"version",
@@ -249,6 +336,7 @@ func TestPerCommandHelpPrintsFlags(t *testing.T) {
 		{"restart", "--help"},
 		{"rollback", "--help"},
 		{"jobs", "list", "--help"},
+		{"node", "label", "--help"},
 		{"enrollment", "create", "--help"},
 	}
 	for _, args := range tests {
@@ -376,6 +464,7 @@ func TestCommandsRejectMissingRequiredArguments(t *testing.T) {
 		{name: "config apply node", args: []string{"config", "apply"}, want: "usage: sideplane config apply"},
 		{name: "config preview node", args: []string{"config", "preview"}, want: "usage: sideplane config preview"},
 		{name: "node inspect id", args: []string{"node", "inspect"}, want: "usage: sideplane node inspect"},
+		{name: "node label id", args: []string{"node", "label"}, want: "usage: sideplane node label"},
 		{name: "node remove id", args: []string{"node", "remove"}, want: "usage: sideplane node remove"},
 		{name: "rollback backup", args: []string{"rollback", "node-a"}, want: "--backup-ref is required"},
 	}

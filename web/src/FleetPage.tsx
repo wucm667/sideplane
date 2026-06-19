@@ -29,6 +29,7 @@ export default function FleetPage() {
     jobLimitByNode,
     jobsLoadingByNode,
     jobStatusByNode,
+    labelErrorByNode,
     loading,
     loadMoreNodeJobs,
     nodes,
@@ -38,12 +39,16 @@ export default function FleetPage() {
     refreshSelectedNodeAfterApply,
     refreshing,
     rollingBackByNode,
+    saveNodeLabels,
+    savingLabelsByNode,
     restartingByNode,
     selectedNode,
+    selector,
     setAuditFilters,
     setAuditLimit,
     setNodeJobStatusFilter,
     setOperatorToken,
+    setSelector,
     stats,
     theme,
     toggleTheme,
@@ -114,9 +119,11 @@ export default function FleetPage() {
               loading={loading}
               nodes={nodes}
               refreshing={refreshing}
+              selector={selector}
               stats={stats}
               onOpenNode={openNode}
               onRefresh={() => refreshFleet()}
+              onSelectorChange={setSelector}
             />
           )}
           {view === 'node' && selectedNode && (
@@ -132,6 +139,8 @@ export default function FleetPage() {
               node={selectedNode}
               effective={effectiveByNode[selectedNode.nodeId]}
               effectiveError={effectiveErrorByNode[selectedNode.nodeId]}
+              labelError={labelErrorByNode[selectedNode.nodeId]}
+              labelsSaving={Boolean(savingLabelsByNode[selectedNode.nodeId])}
               operatorToken={operatorToken}
               onBack={() => changeView('fleet')}
               onDeepProbe={() => createDeepProbe(selectedNode.nodeId)}
@@ -139,6 +148,7 @@ export default function FleetPage() {
               onRestart={(request) => createRestart(selectedNode.nodeId, request)}
               onJobStatusFilterChange={(status) => setNodeJobStatusFilter(selectedNode.nodeId, status)}
               onLoadMoreJobs={() => loadMoreNodeJobs(selectedNode.nodeId)}
+              onSaveLabels={(labels) => saveNodeLabels(selectedNode.nodeId, labels)}
               onApplied={refreshSelectedNodeAfterApply}
             />
           )}
