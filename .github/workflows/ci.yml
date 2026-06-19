@@ -29,6 +29,15 @@ jobs:
       - name: Install web dependencies
         run: npm ci
         working-directory: web
+      - name: Verify generated API types
+        run: |
+          cd web
+          npm run generate:api
+          cd ..
+          git diff --exit-code -- web/src/generated/ || {
+            echo "Generated API types are out of date; run 'cd web && npm run generate:api'." >&2
+            exit 1
+          }
       - name: Build web assets for embed
         run: npm run build
         working-directory: web
