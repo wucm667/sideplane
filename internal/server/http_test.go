@@ -2500,6 +2500,10 @@ func (s staticNodeStore) ListNodeJobsFiltered(context.Context, string, store.Job
 	return nil, nil
 }
 
+func (s staticNodeStore) PruneTerminalJobs(context.Context, time.Time) (int64, error) {
+	return 0, nil
+}
+
 func (s staticNodeStore) AppendAuditEvent(context.Context, protocol.AuditEvent) (protocol.AuditEvent, error) {
 	return protocol.AuditEvent{}, nil
 }
@@ -2510,6 +2514,10 @@ func (s staticNodeStore) ListAuditEvents(context.Context, int) ([]protocol.Audit
 
 func (s staticNodeStore) ListAuditEventsFiltered(context.Context, store.AuditFilter) ([]protocol.AuditEvent, error) {
 	return nil, nil
+}
+
+func (s staticNodeStore) PruneAuditEvents(context.Context, time.Time) (int64, error) {
+	return 0, nil
 }
 
 func (s staticNodeStore) GetDesiredConfig(context.Context) (protocol.DesiredConfig, error) {

@@ -459,6 +459,30 @@ func (s *MemoryNodeStore) ListNodeJobsFiltered(_ context.Context, nodeID string,
 	return jobs, nil
 }
 
+// PruneTerminalJobs removes completed and failed jobs finished before before.
+func (s *MemoryNodeStore) PruneTerminalJobs(_ context.Context, before time.Time) (int64, error) {
+	if before.IsZero() {
+		return 0, errors.New("job retention cutoff is required")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var deleted int64
+	cutoff := before.UTC()
+	for id, job := range s.jobs {
+		if job.Status != protocol.JobStatusCompleted && job.Status != protocol.JobStatusFailed {
+			continue
+		}
+		if job.FinishedAt.IsZero() || !job.FinishedAt.Before(cutoff) {
+			continue
+		}
+		delete(s.jobs, id)
+		deleted++
+	}
+	return deleted, nil
+}
+
 // AppendAuditEvent stores an audit event and assigns an ID when needed.
 func (s *MemoryNodeStore) AppendAuditEvent(_ context.Context, event protocol.AuditEvent) (protocol.AuditEvent, error) {
 	event.Actor = strings.TrimSpace(event.Actor)
@@ -501,6 +525,29 @@ func (s *MemoryNodeStore) ListAuditEvents(_ context.Context, limit int) ([]proto
 // ListAuditEventsFiltered returns recent audit events matching all filters.
 func (s *MemoryNodeStore) ListAuditEventsFiltered(_ context.Context, filter AuditFilter) ([]protocol.AuditEvent, error) {
 	return s.listAuditEvents(filter, 500), nil
+}
+
+// PruneAuditEvents removes audit events created before before.
+func (s *MemoryNodeStore) PruneAuditEvents(_ context.Context, before time.Time) (int64, error) {
+	if before.IsZero() {
+		return 0, errors.New("audit retention cutoff is required")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	cutoff := before.UTC()
+	events := s.auditEvents[:0]
+	var deleted int64
+	for _, event := range s.auditEvents {
+		if !event.CreatedAt.IsZero() && event.CreatedAt.Before(cutoff) {
+			deleted++
+			continue
+		}
+		events = append(events, event)
+	}
+	s.auditEvents = events
+	return deleted, nil
 }
 
 func (s *MemoryNodeStore) listAuditEvents(filter AuditFilter, maxLimit int) []protocol.AuditEvent {

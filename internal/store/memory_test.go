@@ -319,6 +319,10 @@ func TestMemoryNodeStoreListNodeJobsFiltered(t *testing.T) {
 	}
 }
 
+func TestMemoryNodeStorePrunesTerminalJobsAndAuditEvents(t *testing.T) {
+	assertRetentionPruning(t, NewMemoryNodeStore())
+}
+
 func TestMemoryNodeStoreRejectsActiveConfigApplyForSamePath(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemoryNodeStore()
@@ -545,6 +549,107 @@ func assertAuditFiltering(t *testing.T, auditStore AuditStore) {
 		t.Fatalf("filter with limit: %v", err)
 	}
 	assertAuditEventKeys(t, got, []string{"node-a/job.fail"})
+}
+
+func assertRetentionPruning(t *testing.T, store Store) {
+	t.Helper()
+	ctx := context.Background()
+	now := time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)
+	cutoff := now.Add(-24 * time.Hour)
+
+	if _, err := store.RecordHeartbeat(ctx, protocol.HeartbeatRequest{NodeID: "node-retention"}, now); err != nil {
+		t.Fatalf("record heartbeat: %v", err)
+	}
+
+	oldCompleted, err := store.CreateJob(ctx, protocol.CreateJobRequest{Type: protocol.JobTypeDeepProbe}, "node-retention", now.Add(-72*time.Hour))
+	if err != nil {
+		t.Fatalf("create old completed job: %v", err)
+	}
+	if _, err := store.ClaimNextJob(ctx, "node-retention", oldCompleted.CreatedAt.Add(time.Second)); err != nil {
+		t.Fatalf("claim old completed job: %v", err)
+	}
+	if err := store.CompleteJob(ctx, oldCompleted.ID, protocol.JobResultRequest{Status: protocol.JobStatusCompleted}, oldCompleted.CreatedAt.Add(2*time.Second)); err != nil {
+		t.Fatalf("complete old job: %v", err)
+	}
+
+	oldFailed, err := store.CreateJob(ctx, protocol.CreateJobRequest{Type: protocol.JobTypeDeepProbe}, "node-retention", now.Add(-71*time.Hour))
+	if err != nil {
+		t.Fatalf("create old failed job: %v", err)
+	}
+	if _, err := store.ClaimNextJob(ctx, "node-retention", oldFailed.CreatedAt.Add(time.Second)); err != nil {
+		t.Fatalf("claim old failed job: %v", err)
+	}
+	if err := store.FailJob(ctx, oldFailed.ID, protocol.JobResultRequest{Status: protocol.JobStatusFailed, Error: "probe failed"}, oldFailed.CreatedAt.Add(2*time.Second)); err != nil {
+		t.Fatalf("fail old job: %v", err)
+	}
+
+	recentCompleted, err := store.CreateJob(ctx, protocol.CreateJobRequest{Type: protocol.JobTypeDeepProbe}, "node-retention", now.Add(-2*time.Hour))
+	if err != nil {
+		t.Fatalf("create recent completed job: %v", err)
+	}
+	if _, err := store.ClaimNextJob(ctx, "node-retention", recentCompleted.CreatedAt.Add(time.Second)); err != nil {
+		t.Fatalf("claim recent completed job: %v", err)
+	}
+	if err := store.CompleteJob(ctx, recentCompleted.ID, protocol.JobResultRequest{Status: protocol.JobStatusCompleted}, recentCompleted.CreatedAt.Add(2*time.Second)); err != nil {
+		t.Fatalf("complete recent job: %v", err)
+	}
+
+	claimed, err := store.CreateJob(ctx, protocol.CreateJobRequest{Type: protocol.JobTypeRestart}, "node-retention", now.Add(-70*time.Hour))
+	if err != nil {
+		t.Fatalf("create claimed job: %v", err)
+	}
+	if _, err := store.ClaimNextJob(ctx, "node-retention", claimed.CreatedAt.Add(time.Second)); err != nil {
+		t.Fatalf("claim active job: %v", err)
+	}
+	pending, err := store.CreateJob(ctx, protocol.CreateJobRequest{Type: protocol.JobTypeRollback}, "node-retention", claimed.CreatedAt.Add(2*time.Minute))
+	if err != nil {
+		t.Fatalf("create pending job: %v", err)
+	}
+
+	deletedJobs, err := store.PruneTerminalJobs(ctx, cutoff)
+	if err != nil {
+		t.Fatalf("prune terminal jobs: %v", err)
+	}
+	if deletedJobs != 2 {
+		t.Fatalf("deleted jobs = %d, want 2", deletedJobs)
+	}
+	for _, jobID := range []string{oldCompleted.ID, oldFailed.ID} {
+		got, err := store.GetJob(ctx, jobID)
+		if err != nil {
+			t.Fatalf("get pruned job %s: %v", jobID, err)
+		}
+		if got != nil {
+			t.Fatalf("job %s remains after pruning: %#v", jobID, got)
+		}
+	}
+	for _, jobID := range []string{recentCompleted.ID, claimed.ID, pending.ID} {
+		got, err := store.GetJob(ctx, jobID)
+		if err != nil {
+			t.Fatalf("get retained job %s: %v", jobID, err)
+		}
+		if got == nil {
+			t.Fatalf("job %s was pruned unexpectedly", jobID)
+		}
+	}
+
+	if _, err := store.AppendAuditEvent(ctx, protocol.AuditEvent{Actor: "operator", Action: "old", TargetNode: "node-retention", CreatedAt: now.Add(-72 * time.Hour)}); err != nil {
+		t.Fatalf("append old audit event: %v", err)
+	}
+	if _, err := store.AppendAuditEvent(ctx, protocol.AuditEvent{Actor: "operator", Action: "recent", TargetNode: "node-retention", CreatedAt: now.Add(-2 * time.Hour)}); err != nil {
+		t.Fatalf("append recent audit event: %v", err)
+	}
+	deletedEvents, err := store.PruneAuditEvents(ctx, cutoff)
+	if err != nil {
+		t.Fatalf("prune audit events: %v", err)
+	}
+	if deletedEvents != 1 {
+		t.Fatalf("deleted audit events = %d, want 1", deletedEvents)
+	}
+	events, err := store.ListAuditEventsFiltered(ctx, AuditFilter{NodeID: "node-retention"})
+	if err != nil {
+		t.Fatalf("list audit events after pruning: %v", err)
+	}
+	assertAuditEventKeys(t, events, []string{"node-retention/recent"})
 }
 
 func assertAuditEventKeys(t *testing.T, events []protocol.AuditEvent, want []string) {

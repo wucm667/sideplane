@@ -19,6 +19,10 @@ const (
 	MaxJobListLimit = 500
 	// DefaultHeartbeatRetention is the default number of recent heartbeats to keep per node.
 	DefaultHeartbeatRetention = 100
+	// DefaultJobRetention is the default age to retain completed and failed jobs.
+	DefaultJobRetention = 30 * 24 * time.Hour
+	// DefaultAuditRetention is the default age to retain audit events.
+	DefaultAuditRetention = 180 * 24 * time.Hour
 )
 
 var (
@@ -89,6 +93,7 @@ type JobStore interface {
 	FailJob(ctx context.Context, jobID string, result protocol.JobResultRequest, now time.Time) error
 	ListNodeJobs(ctx context.Context, nodeID string) ([]protocol.Job, error)
 	ListNodeJobsFiltered(ctx context.Context, nodeID string, filter JobFilter) ([]protocol.Job, error)
+	PruneTerminalJobs(ctx context.Context, before time.Time) (int64, error)
 }
 
 // JobFilter constrains node job listing.
@@ -112,6 +117,7 @@ type AuditStore interface {
 	AppendAuditEvent(ctx context.Context, event protocol.AuditEvent) (protocol.AuditEvent, error)
 	ListAuditEvents(ctx context.Context, limit int) ([]protocol.AuditEvent, error)
 	ListAuditEventsFiltered(ctx context.Context, filter AuditFilter) ([]protocol.AuditEvent, error)
+	PruneAuditEvents(ctx context.Context, before time.Time) (int64, error)
 }
 
 // AuditFilter constrains audit event listing.

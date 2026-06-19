@@ -22,6 +22,7 @@ Production operators should still treat it as pre-1.0 infrastructure. Run it on 
 - Deep-probe, config-apply, restart/rollback-aware job lifecycle with paginated recent job status in the UI.
 - Operator audit log with node/action filtering and deletion audit events.
 - Node removal API and UI flow for decommissioned fleet entries.
+- Conservative retention pruning for old completed/failed jobs and audit events.
 - Prometheus-compatible `/metrics`, including job counters and fleet freshness/drift gauges.
 - Compact infrastructure-console Web UI served directly by `sideplane-server`.
 - Docker Compose, server and sidecar systemd units, and a Linux install script for local systemd setup.
@@ -118,11 +119,14 @@ Server flags can be configured with environment variables. Explicit CLI flags ta
 | `SIDEPLANE_STALE_AFTER` | `2m` | Heartbeat age before a node is stale. |
 | `SIDEPLANE_OFFLINE_AFTER` | `10m` | Heartbeat age before a node is offline. Must exceed stale duration. |
 | `SIDEPLANE_HEARTBEAT_RETENTION` | `100` | Number of recent heartbeat records retained per node. |
+| `SIDEPLANE_JOB_RETENTION` | `720h` | Age to retain completed and failed jobs. Pending and claimed jobs are never pruned. Set `0` to disable. |
+| `SIDEPLANE_AUDIT_RETENTION` | `4320h` | Age to retain audit events. Set `0` to disable. |
 | `SIDEPLANE_ALLOW_UNAUTHENTICATED_OPERATOR_API` | false | Development-only escape hatch for mutating operator APIs. |
 
 Matching flags are available on `sideplane-server`: `--addr`, `--db`,
 `--web-dir`, `--operator-token`, `--signing-key`, `--stale-after`,
-`--offline-after`, `--heartbeat-retention`, and
+`--offline-after`, `--heartbeat-retention`, `--job-retention`,
+`--audit-retention`, and
 `--allow-unauthenticated-operator-api`.
 
 Sidecar runtime flags also support env vars. Explicit CLI flags take precedence over env vars, then values loaded from the sidecar state file.

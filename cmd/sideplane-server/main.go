@@ -25,6 +25,7 @@ import (
 const version = "dev"
 const shutdownTimeout = 10 * time.Second
 const heartbeatPruneInterval = 10 * time.Minute
+const retentionPruneInterval = time.Hour
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
@@ -40,6 +41,8 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	staleAfter := flags.Duration("stale-after", server.DefaultStaleAfter, "duration after last heartbeat before a node is stale")
 	offlineAfter := flags.Duration("offline-after", server.DefaultOfflineAfter, "duration after last heartbeat before a node is offline")
 	heartbeatRetention := flags.Int("heartbeat-retention", store.DefaultHeartbeatRetention, "number of recent heartbeats to keep per node")
+	jobRetention := flags.Duration("job-retention", store.DefaultJobRetention, "age to retain completed and failed jobs; set 0 to disable pruning")
+	auditRetention := flags.Duration("audit-retention", store.DefaultAuditRetention, "age to retain audit events; set 0 to disable pruning")
 	operatorTokenFlag := flags.String("operator-token", "", "bearer token required for mutating operator API requests; can also be set with SIDEPLANE_OPERATOR_TOKEN")
 	allowUnauthenticatedOperatorAPIFlag := flags.Bool("allow-unauthenticated-operator-api", false, "DEVELOPMENT ONLY: allow mutating operator API requests without an operator token; can also be set with SIDEPLANE_ALLOW_UNAUTHENTICATED_OPERATOR_API=true")
 	signingKeyPath := flags.String("signing-key", "", "path to server config-plan signing key; can also be set with SIDEPLANE_SIGNING_KEY")
@@ -61,6 +64,8 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		staleAfter:         staleAfter,
 		offlineAfter:       offlineAfter,
 		heartbeatRetention: heartbeatRetention,
+		jobRetention:       jobRetention,
+		auditRetention:     auditRetention,
 	}); err != nil {
 		fmt.Fprintf(stderr, "invalid environment configuration: %v\n", err)
 		return 1
@@ -76,6 +81,14 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 	if *heartbeatRetention <= 0 {
 		fmt.Fprintln(stderr, "invalid heartbeat retention: heartbeat-retention must be positive")
+		return 1
+	}
+	if *jobRetention < 0 {
+		fmt.Fprintln(stderr, "invalid job retention: job-retention must be zero or positive")
+		return 1
+	}
+	if *auditRetention < 0 {
+		fmt.Fprintln(stderr, "invalid audit retention: audit-retention must be zero or positive")
 		return 1
 	}
 
@@ -155,6 +168,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	startHeartbeatPruner(ctx, nodeStore, *heartbeatRetention, heartbeatPruneInterval, logger)
+	startRetentionPruner(ctx, nodeStore, *jobRetention, *auditRetention, retentionPruneInterval, logger)
 
 	logger.Info(
 		"starting sideplane-server",
@@ -164,6 +178,8 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		"stale_after", staleAfter.String(),
 		"offline_after", offlineAfter.String(),
 		"heartbeat_retention", *heartbeatRetention,
+		"job_retention", jobRetention.String(),
+		"audit_retention", auditRetention.String(),
 		"schema_version", schemaVersion,
 	)
 
@@ -202,6 +218,8 @@ type serverFlagValues struct {
 	staleAfter         *time.Duration
 	offlineAfter       *time.Duration
 	heartbeatRetention *int
+	jobRetention       *time.Duration
+	auditRetention     *time.Duration
 }
 
 func startHeartbeatPruner(ctx context.Context, nodeStore store.NodeStore, keep int, interval time.Duration, logger *slog.Logger) {
@@ -229,6 +247,43 @@ func startHeartbeatPruner(ctx context.Context, nodeStore store.NodeStore, keep i
 	}()
 }
 
+func startRetentionPruner(ctx context.Context, dataStore store.Store, jobRetention time.Duration, auditRetention time.Duration, interval time.Duration, logger *slog.Logger) {
+	if dataStore == nil || interval <= 0 {
+		return
+	}
+	if jobRetention == 0 && auditRetention == 0 {
+		return
+	}
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				now := time.Now().UTC()
+				if jobRetention > 0 {
+					deleted, err := dataStore.PruneTerminalJobs(ctx, now.Add(-jobRetention))
+					if err != nil {
+						logger.Warn("prune terminal jobs failed", "error", err)
+					} else if deleted > 0 {
+						logger.Info("pruned old terminal jobs", "deleted", deleted, "retention", jobRetention.String())
+					}
+				}
+				if auditRetention > 0 {
+					deleted, err := dataStore.PruneAuditEvents(ctx, now.Add(-auditRetention))
+					if err != nil {
+						logger.Warn("prune audit events failed", "error", err)
+					} else if deleted > 0 {
+						logger.Info("pruned old audit events", "deleted", deleted, "retention", auditRetention.String())
+					}
+				}
+			}
+		}
+	}()
+}
+
 func visitedFlags(flags *flag.FlagSet) map[string]bool {
 	visited := map[string]bool{}
 	flags.Visit(func(f *flag.Flag) {
@@ -248,6 +303,12 @@ func applyServerEnvFallbacks(setFlags map[string]bool, values serverFlagValues) 
 		return err
 	}
 	if err := applyIntEnvFallback(setFlags, "heartbeat-retention", "SIDEPLANE_HEARTBEAT_RETENTION", values.heartbeatRetention); err != nil {
+		return err
+	}
+	if err := applyDurationEnvFallback(setFlags, "job-retention", "SIDEPLANE_JOB_RETENTION", values.jobRetention); err != nil {
+		return err
+	}
+	if err := applyDurationEnvFallback(setFlags, "audit-retention", "SIDEPLANE_AUDIT_RETENTION", values.auditRetention); err != nil {
 		return err
 	}
 	return nil

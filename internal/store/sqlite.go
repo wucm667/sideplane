@@ -892,6 +892,32 @@ LIMIT ?
 	return jobs, nil
 }
 
+// PruneTerminalJobs removes completed and failed jobs finished before before.
+func (s *SQLiteNodeStore) PruneTerminalJobs(ctx context.Context, before time.Time) (int64, error) {
+	if s == nil || s.db == nil {
+		return 0, errors.New("sqlite node store is closed")
+	}
+	if before.IsZero() {
+		return 0, errors.New("job retention cutoff is required")
+	}
+
+	result, err := s.db.ExecContext(ctx, `
+DELETE FROM jobs
+WHERE status IN (?, ?)
+AND finished_at IS NOT NULL
+AND finished_at != ''
+AND julianday(finished_at) < julianday(?)
+`, string(protocol.JobStatusCompleted), string(protocol.JobStatusFailed), formatDBTime(before.UTC()))
+	if err != nil {
+		return 0, fmt.Errorf("prune terminal jobs: %w", err)
+	}
+	deleted, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("count pruned terminal jobs: %w", err)
+	}
+	return deleted, nil
+}
+
 // AppendAuditEvent stores an audit event and assigns an ID when needed.
 func (s *SQLiteNodeStore) AppendAuditEvent(ctx context.Context, event protocol.AuditEvent) (protocol.AuditEvent, error) {
 	if s == nil || s.db == nil {
@@ -953,6 +979,30 @@ func (s *SQLiteNodeStore) ListAuditEventsFiltered(ctx context.Context, filter Au
 		return nil, errors.New("sqlite node store is closed")
 	}
 	return s.listAuditEvents(ctx, filter, 500)
+}
+
+// PruneAuditEvents removes audit events created before before.
+func (s *SQLiteNodeStore) PruneAuditEvents(ctx context.Context, before time.Time) (int64, error) {
+	if s == nil || s.db == nil {
+		return 0, errors.New("sqlite node store is closed")
+	}
+	if before.IsZero() {
+		return 0, errors.New("audit retention cutoff is required")
+	}
+
+	result, err := s.db.ExecContext(ctx, `
+DELETE FROM audit_events
+WHERE created_at != ''
+AND julianday(created_at) < julianday(?)
+`, formatDBTime(before.UTC()))
+	if err != nil {
+		return 0, fmt.Errorf("prune audit events: %w", err)
+	}
+	deleted, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("count pruned audit events: %w", err)
+	}
+	return deleted, nil
 }
 
 func (s *SQLiteNodeStore) listAuditEvents(ctx context.Context, filter AuditFilter, maxLimit int) ([]protocol.AuditEvent, error) {

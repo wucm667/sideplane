@@ -642,6 +642,17 @@ func TestSQLiteListNodeJobsFiltered(t *testing.T) {
 	}
 }
 
+func TestSQLitePrunesTerminalJobsAndAuditEvents(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenSQLiteNodeStore(ctx, filepath.Join(t.TempDir(), "sideplane.db"))
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer store.Close()
+
+	assertRetentionPruning(t, store)
+}
+
 func TestSQLiteRejectsActiveConfigApplyForSamePath(t *testing.T) {
 	ctx := context.Background()
 	store, err := OpenSQLiteNodeStore(ctx, filepath.Join(t.TempDir(), "sideplane.db"))
