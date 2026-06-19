@@ -87,6 +87,15 @@ type RestartJobPayload struct {
 	DryRun      bool   `json:"dryRun"`
 }
 
+// RestartRequest is the operator API request to enqueue a restart job.
+type RestartRequest struct {
+	RuntimeType string `json:"runtimeType,omitempty"`
+	RuntimeName string `json:"runtimeName,omitempty"`
+	Profile     string `json:"profile,omitempty"`
+	Reason      string `json:"reason,omitempty"`
+	Live        bool   `json:"live,omitempty"`
+}
+
 // RestartJobResult is the structured sidecar result for restart jobs.
 type RestartJobResult struct {
 	Controller   string            `json:"controller,omitempty"`

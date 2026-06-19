@@ -23,6 +23,8 @@ const (
 	ActionJobFail = "job.fail"
 	// ActionConfigApply records operator creation of a signed config apply plan.
 	ActionConfigApply = "config.apply"
+	// ActionRestart records operator creation of a standalone restart job.
+	ActionRestart = "restart"
 	// ActionDesiredConfigUpdate records operator updates to desired config.
 	ActionDesiredConfigUpdate = "config.desired.update"
 )

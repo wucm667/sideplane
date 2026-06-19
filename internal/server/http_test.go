@@ -337,6 +337,134 @@ func TestCreateConfigApplyJobUnknownNode(t *testing.T) {
 	assertStatus(t, rec, http.StatusNotFound)
 }
 
+func TestCreateRestartJobDryRunDefaultAndAudit(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	enrollTestNode(t, nodeStore, "node-restart")
+	handler := newDevHandlerWithStore(t, nodeStore)
+
+	body, err := json.Marshal(protocol.RestartRequest{
+		RuntimeType: "hermes",
+		Profile:     "default",
+		Reason:      "operator test restart",
+	})
+	if err != nil {
+		t.Fatalf("marshal restart request: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/nodes/node-restart/restart", bytes.NewReader(body))
+	handler.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusCreated)
+
+	var job protocol.Job
+	if err := json.NewDecoder(rec.Body).Decode(&job); err != nil {
+		t.Fatalf("decode restart job: %v", err)
+	}
+	if job.NodeID != "node-restart" || job.Type != protocol.JobTypeRestart || job.Status != protocol.JobStatusPending {
+		t.Fatalf("restart job = %#v, want pending restart for node-restart", job)
+	}
+
+	var payload protocol.RestartJobPayload
+	if err := json.Unmarshal([]byte(job.PayloadJSON), &payload); err != nil {
+		t.Fatalf("decode restart payload: %v", err)
+	}
+	if payload.RuntimeType != "hermes" || payload.Profile != "default" || payload.Reason != "operator test restart" {
+		t.Fatalf("restart payload = %#v, want target and reason", payload)
+	}
+	if !payload.DryRun {
+		t.Fatalf("restart payload dryRun = false, want dry-run default")
+	}
+
+	auditRec := httptest.NewRecorder()
+	handler.ServeHTTP(auditRec, httptest.NewRequest(http.MethodGet, "/api/audit?action=restart&nodeId=node-restart", nil))
+	assertStatus(t, auditRec, http.StatusOK)
+	var auditResp protocol.ListAuditEventsResponse
+	if err := json.NewDecoder(auditRec.Body).Decode(&auditResp); err != nil {
+		t.Fatalf("decode audit response: %v", err)
+	}
+	if len(auditResp.Events) != 1 {
+		t.Fatalf("audit events = %d, want 1: %#v", len(auditResp.Events), auditResp.Events)
+	}
+	event := auditResp.Events[0]
+	if event.Action != audit.ActionRestart || event.TargetNode != "node-restart" {
+		t.Fatalf("audit event = %#v, want restart for node-restart", event)
+	}
+	for _, fragment := range []string{"job=" + job.ID, "mode=dry-run", "type=hermes", "profile=default"} {
+		if !strings.Contains(event.Detail, fragment) {
+			t.Fatalf("audit detail = %q, want %q", event.Detail, fragment)
+		}
+	}
+}
+
+func TestCreateRestartJobLivePayload(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	enrollTestNode(t, nodeStore, "node-restart")
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/nodes/node-restart/restart", strings.NewReader(`{"runtimeType":"openclaw","live":true}`))
+	newDevHandlerWithStore(t, nodeStore).ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusCreated)
+
+	var job protocol.Job
+	if err := json.NewDecoder(rec.Body).Decode(&job); err != nil {
+		t.Fatalf("decode restart job: %v", err)
+	}
+	var payload protocol.RestartJobPayload
+	if err := json.Unmarshal([]byte(job.PayloadJSON), &payload); err != nil {
+		t.Fatalf("decode restart payload: %v", err)
+	}
+	if payload.DryRun {
+		t.Fatalf("restart payload dryRun = true, want live payload")
+	}
+	if payload.RuntimeType != "openclaw" {
+		t.Fatalf("restart payload runtimeType = %q, want openclaw", payload.RuntimeType)
+	}
+}
+
+func TestCreateRestartJobRejectsUnknownNodeAndInvalidPayload(t *testing.T) {
+	tests := []struct {
+		name       string
+		path       string
+		body       string
+		wantStatus int
+	}{
+		{
+			name:       "unknown node",
+			path:       "/api/nodes/missing/restart",
+			body:       `{}`,
+			wantStatus: http.StatusNotFound,
+		},
+		{
+			name:       "malformed JSON",
+			path:       "/api/nodes/node-restart/restart",
+			body:       `{`,
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "unsupported runtime type",
+			path:       "/api/nodes/node-restart/restart",
+			body:       `{"runtimeType":"unknown"}`,
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "unknown field",
+			path:       "/api/nodes/node-restart/restart",
+			body:       `{"runtimeType":"hermes","configPath":"/tmp/not-used"}`,
+			wantStatus: http.StatusBadRequest,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			nodeStore := store.NewMemoryNodeStore()
+			enrollTestNode(t, nodeStore, "node-restart")
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, tt.path, strings.NewReader(tt.body))
+			newDevHandlerWithStore(t, nodeStore).ServeHTTP(rec, req)
+			assertStatus(t, rec, tt.wantStatus)
+		})
+	}
+}
+
 func TestMutatingOperatorAPIsRejectWhenOperatorTokenNotConfigured(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -363,6 +491,14 @@ func TestMutatingOperatorAPIsRejectWhenOperatorTokenNotConfigured(t *testing.T) 
 				seedDesiredAndProbe(t, nodeStore, "node-apply", "/etc/hermes/config.json")
 			},
 			req: httptest.NewRequest(http.MethodPost, "/api/nodes/node-apply/config-apply", strings.NewReader(`{}`)),
+		},
+		{
+			name: "restart",
+			setup: func(t *testing.T, nodeStore store.Store) {
+				t.Helper()
+				enrollTestNode(t, nodeStore, "node-restart")
+			},
+			req: httptest.NewRequest(http.MethodPost, "/api/nodes/node-restart/restart", strings.NewReader(`{}`)),
 		},
 		{
 			name: "desired config",

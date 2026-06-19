@@ -435,7 +435,7 @@ func hasKnownProviderModel(value protocol.ProviderModelConfig) bool {
 
 // nodeJobsRouter handles node-scoped API routes under /api/nodes/{nodeId}.
 func (h *handler) nodeJobsRouter(w http.ResponseWriter, r *http.Request) {
-	// Parse path: /api/nodes/{nodeId}/{jobs|config-apply}
+	// Parse path: /api/nodes/{nodeId}/{jobs|config-apply|restart}
 	path := strings.TrimPrefix(r.URL.Path, "/api/nodes/")
 	parts := strings.Split(path, "/")
 	nodeID := strings.TrimSpace(parts[0])
@@ -476,6 +476,13 @@ func (h *handler) nodeJobsRouter(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.createConfigApplyJob(w, r, nodeID)
+	case "restart":
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", http.MethodPost)
+			writeAPIError(w, http.StatusMethodNotAllowed, http.StatusText(http.StatusMethodNotAllowed))
+			return
+		}
+		h.createRestartJob(w, r, nodeID)
 	default:
 		writeAPIError(w, http.StatusNotFound, http.StatusText(http.StatusNotFound))
 	}
@@ -634,6 +641,99 @@ func (h *handler) createNodeJob(w http.ResponseWriter, r *http.Request, nodeID s
 	})
 
 	writeJSON(w, http.StatusCreated, job)
+}
+
+func (h *handler) createRestartJob(w http.ResponseWriter, r *http.Request, nodeID string) {
+	if !h.authorizeOperator(w, r) {
+		return
+	}
+	defer r.Body.Close()
+
+	var req protocol.RestartRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeAPIError(w, http.StatusBadRequest, "invalid restart JSON")
+		return
+	}
+
+	runtimeType := strings.TrimSpace(req.RuntimeType)
+	if runtimeType != "" && runtimeType != "hermes" && runtimeType != "openclaw" {
+		writeAPIError(w, http.StatusBadRequest, "unsupported runtime type")
+		return
+	}
+	runtimeName := strings.TrimSpace(req.RuntimeName)
+	profile := strings.TrimSpace(req.Profile)
+	reason := strings.TrimSpace(req.Reason)
+
+	exists, err := h.store.NodeExists(r.Context(), nodeID)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "lookup node")
+		return
+	}
+	if !exists {
+		writeAPIError(w, http.StatusNotFound, "node not found")
+		return
+	}
+
+	payload, err := json.Marshal(protocol.RestartJobPayload{
+		RuntimeType: runtimeType,
+		RuntimeName: runtimeName,
+		Profile:     profile,
+		Reason:      reason,
+		DryRun:      !req.Live,
+	})
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "marshal restart payload")
+		return
+	}
+
+	now := time.Now().UTC()
+	job, err := h.store.CreateJob(r.Context(), protocol.CreateJobRequest{
+		Type:        protocol.JobTypeRestart,
+		PayloadJSON: string(payload),
+	}, nodeID, now)
+	if err != nil {
+		if errors.Is(err, store.ErrActiveJobExists) {
+			writeAPIError(w, http.StatusConflict, "active restart job already exists")
+			return
+		}
+		writeAPIError(w, http.StatusInternalServerError, "create restart job")
+		return
+	}
+
+	mode := "dry-run"
+	if req.Live {
+		mode = "live"
+	}
+	target := runtimeTargetSummary(runtimeType, runtimeName, profile)
+	h.metrics.IncJobCreated(string(protocol.JobTypeRestart))
+	h.audit(r.Context(), protocol.AuditEvent{
+		Actor:      audit.ActorOperator,
+		Action:     audit.ActionRestart,
+		TargetNode: nodeID,
+		Detail:     fmt.Sprintf("job=%s mode=%s target=%s", job.ID, mode, target),
+		CreatedAt:  job.CreatedAt,
+	})
+
+	writeJSON(w, http.StatusCreated, job)
+}
+
+func runtimeTargetSummary(runtimeType, runtimeName, profile string) string {
+	parts := []string{}
+	if runtimeType != "" {
+		parts = append(parts, "type="+runtimeType)
+	}
+	if runtimeName != "" {
+		parts = append(parts, "name="+runtimeName)
+	}
+	if profile != "" {
+		parts = append(parts, "profile="+profile)
+	}
+	if len(parts) == 0 {
+		return "default"
+	}
+	return strings.Join(parts, " ")
 }
 
 // createConfigApplyJob builds a signed config plan from the desired config and
