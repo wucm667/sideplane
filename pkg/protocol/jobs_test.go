@@ -116,6 +116,7 @@ func TestRollbackBackupAndJobPayloadJSONRoundTrip(t *testing.T) {
 		PlanID:      "plan_123",
 		RuntimeType: "hermes",
 		Profile:     "default",
+		ConfigHash:  "sha256:before",
 		ConfigPath:  "/tmp/sideplane-test/config.json",
 		BackupPath:  "/tmp/sideplane-test/current.backup",
 		CreatedAt:   time.Date(2026, 6, 19, 10, 0, 0, 0, time.UTC),
@@ -141,6 +142,9 @@ func TestRollbackBackupAndJobPayloadJSONRoundTrip(t *testing.T) {
 	}
 	if decodedResult.Backup.Ref != backup.Ref || decodedResult.Backup.ConfigPath != backup.ConfigPath {
 		t.Fatalf("decoded backup = %#v, want ref/config path", decodedResult.Backup)
+	}
+	if decodedResult.Backup.ConfigHash != backup.ConfigHash {
+		t.Fatalf("decoded backup configHash = %q, want %q", decodedResult.Backup.ConfigHash, backup.ConfigHash)
 	}
 
 	payload := RollbackJobPayload{

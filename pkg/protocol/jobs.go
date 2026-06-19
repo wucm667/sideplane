@@ -89,9 +89,28 @@ type RollbackBackup struct {
 	PlanID      string    `json:"planId,omitempty"`
 	RuntimeType string    `json:"runtimeType,omitempty"`
 	Profile     string    `json:"profile,omitempty"`
+	ConfigHash  string    `json:"configHash,omitempty"`
 	ConfigPath  string    `json:"configPath,omitempty"`
 	BackupPath  string    `json:"backupPath,omitempty"`
 	CreatedAt   time.Time `json:"createdAt,omitzero"`
+}
+
+// RollbackBackupInventoryItem is the operator-facing backup list shape. It
+// omits sidecar-local file paths while retaining the stable rollback Ref.
+type RollbackBackupInventoryItem struct {
+	Ref         string    `json:"ref"`
+	SourceJobID string    `json:"sourceJobId"`
+	RuntimeType string    `json:"runtimeType,omitempty"`
+	Profile     string    `json:"profile,omitempty"`
+	ConfigHash  string    `json:"configHash,omitempty"`
+	CreatedAt   time.Time `json:"createdAt,omitzero"`
+}
+
+// ListRollbackBackupsResponse is a paginated node backup inventory response.
+type ListRollbackBackupsResponse struct {
+	Backups []RollbackBackupInventoryItem `json:"backups"`
+	Total   int                           `json:"total"`
+	Limit   int                           `json:"limit"`
 }
 
 // RestartJobPayload is the explicit operator request executed by a sidecar.

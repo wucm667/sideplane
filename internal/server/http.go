@@ -29,6 +29,8 @@ const (
 	defaultEnrollmentTokenTTL = time.Hour
 	defaultJSONBodyLimit      = int64(1 << 20)
 	largeJSONBodyLimit        = int64(4 << 20)
+	defaultBackupListLimit    = 50
+	maxBackupListLimit        = 500
 )
 
 // NewHandler returns the Sideplane server HTTP handler.
@@ -517,7 +519,7 @@ func hasKnownProviderModel(value protocol.ProviderModelConfig) bool {
 
 // nodeJobsRouter handles node-scoped API routes under /api/nodes/{nodeId}.
 func (h *handler) nodeJobsRouter(w http.ResponseWriter, r *http.Request) {
-	// Parse path: /api/nodes/{nodeId}/{labels|jobs|config-apply|restart|rollback}
+	// Parse path: /api/nodes/{nodeId}/{labels|backups|jobs|config-apply|restart|rollback}
 	path := strings.TrimPrefix(r.URL.Path, "/api/nodes/")
 	parts := strings.Split(path, "/")
 	nodeID := strings.TrimSpace(parts[0])
@@ -551,6 +553,13 @@ func (h *handler) nodeJobsRouter(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Allow", http.MethodGet+", "+http.MethodPut)
 			writeAPIError(w, http.StatusMethodNotAllowed, http.StatusText(http.StatusMethodNotAllowed))
 		}
+	case "backups":
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			writeAPIError(w, http.StatusMethodNotAllowed, http.StatusText(http.StatusMethodNotAllowed))
+			return
+		}
+		h.listNodeBackups(w, r, nodeID)
 	case "jobs":
 		switch r.Method {
 		case http.MethodGet:
@@ -585,6 +594,68 @@ func (h *handler) nodeJobsRouter(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeAPIError(w, http.StatusNotFound, http.StatusText(http.StatusNotFound))
 	}
+}
+
+func (h *handler) listNodeBackups(w http.ResponseWriter, r *http.Request, nodeID string) {
+	if !h.authorizeOperator(w, r) {
+		return
+	}
+	limit, err := parseBackupLimit(r)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	exists, err := h.store.NodeExists(r.Context(), nodeID)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "lookup node")
+		return
+	}
+	if !exists {
+		writeAPIError(w, http.StatusNotFound, "node not found")
+		return
+	}
+
+	jobs, err := h.store.ListNodeJobsFiltered(r.Context(), nodeID, store.JobFilter{Limit: store.MaxJobListLimit})
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "list node jobs")
+		return
+	}
+	backups := store.ListRollbackBackups(jobs)
+	total := len(backups)
+	if len(backups) > limit {
+		backups = backups[:limit]
+	}
+	response := make([]protocol.RollbackBackupInventoryItem, len(backups))
+	for i, backup := range backups {
+		response[i] = protocol.RollbackBackupInventoryItem{
+			Ref:         backup.Ref,
+			SourceJobID: backup.SourceJobID,
+			RuntimeType: backup.RuntimeType,
+			Profile:     backup.Profile,
+			ConfigHash:  backup.ConfigHash,
+			CreatedAt:   backup.CreatedAt,
+		}
+	}
+	writeJSON(w, http.StatusOK, protocol.ListRollbackBackupsResponse{
+		Backups: response,
+		Total:   total,
+		Limit:   limit,
+	})
+}
+
+func parseBackupLimit(r *http.Request) (int, error) {
+	limit := defaultBackupListLimit
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed <= 0 {
+			return 0, fmt.Errorf("limit must be a positive integer")
+		}
+		limit = parsed
+	}
+	if limit > maxBackupListLimit {
+		limit = maxBackupListLimit
+	}
+	return limit, nil
 }
 
 func (h *handler) getNodeLabels(w http.ResponseWriter, r *http.Request, nodeID string) {

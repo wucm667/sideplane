@@ -170,6 +170,7 @@ func seedRollbackBackup(t *testing.T, nodeStore store.Store, nodeID, planID, con
 		PlanID:     planID,
 		DryRun:     false,
 		BackupPath: backupPath,
+		Backup:     &protocol.RollbackBackup{ConfigHash: "sha256:" + planID},
 		Steps:      []protocol.ConfigApplyStep{{Name: "backup_created", Status: "completed"}},
 	})
 	if err != nil {
@@ -565,6 +566,88 @@ func TestCreateRollbackJobRequiresKnownBackupAndWritesAudit(t *testing.T) {
 			t.Fatalf("audit detail = %q, want %q", event.Detail, fragment)
 		}
 	}
+}
+
+func TestListNodeBackupsAPI(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	enrollTestNode(t, nodeStore, "node-backups")
+	first := seedRollbackBackup(t, nodeStore, "node-backups", "plan_first", "/tmp/sideplane-test/config.json", "/tmp/sideplane-test/first.backup")
+	time.Sleep(time.Millisecond)
+	second := seedRollbackBackup(t, nodeStore, "node-backups", "plan_second", "/tmp/sideplane-test/config.json", "/tmp/sideplane-test/second.backup")
+	handler, err := NewHandlerWithConfig(HandlerConfig{
+		Store:         nodeStore,
+		Freshness:     DefaultFreshnessPolicy(),
+		OperatorToken: "dev-token",
+	})
+	if err != nil {
+		t.Fatalf("build handler: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/nodes/node-backups/backups?limit=1", nil)
+	req.Header.Set("Authorization", "Bearer dev-token")
+	handler.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusOK)
+
+	var resp protocol.ListRollbackBackupsResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode backups response: %v", err)
+	}
+	if resp.Total != 2 || resp.Limit != 1 || len(resp.Backups) != 1 {
+		t.Fatalf("backup page = %#v, want total 2 limit 1 one item", resp)
+	}
+	if resp.Backups[0].Ref != second.Ref || resp.Backups[0].SourceJobID != second.SourceJobID {
+		t.Fatalf("first backup = %#v, want newest second backup %#v", resp.Backups[0], second)
+	}
+	if resp.Backups[0].RuntimeType != "hermes" || resp.Backups[0].ConfigHash != "sha256:plan_second" {
+		t.Fatalf("backup metadata = %#v, want hermes and config hash", resp.Backups[0])
+	}
+	payload, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatalf("marshal backups response: %v", err)
+	}
+	for _, forbidden := range []string{first.BackupPath, first.ConfigPath, second.BackupPath, second.ConfigPath} {
+		if strings.Contains(string(payload), forbidden) {
+			t.Fatalf("backup inventory leaked sidecar-local path %q: %s", forbidden, payload)
+		}
+	}
+}
+
+func TestListNodeBackupsAPIEmptyAndAuth(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	enrollTestNode(t, nodeStore, "node-empty-backups")
+	handler, err := NewHandlerWithConfig(HandlerConfig{
+		Store:         nodeStore,
+		Freshness:     DefaultFreshnessPolicy(),
+		OperatorToken: "dev-token",
+	})
+	if err != nil {
+		t.Fatalf("build handler: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/nodes/node-empty-backups/backups", nil)
+	handler.ServeHTTP(rec, req)
+	assertAPIError(t, rec, http.StatusUnauthorized, "unauthorized", http.StatusText(http.StatusUnauthorized))
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/nodes/node-empty-backups/backups", nil)
+	req.Header.Set("Authorization", "Bearer dev-token")
+	handler.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusOK)
+	var resp protocol.ListRollbackBackupsResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode empty backups response: %v", err)
+	}
+	if resp.Total != 0 || len(resp.Backups) != 0 || resp.Limit != defaultBackupListLimit {
+		t.Fatalf("empty backups response = %#v, want empty default page", resp)
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/nodes/missing/backups", nil)
+	req.Header.Set("Authorization", "Bearer dev-token")
+	handler.ServeHTTP(rec, req)
+	assertAPIError(t, rec, http.StatusNotFound, "not_found", "node not found")
 }
 
 func TestCreateRollbackJobRejectsMissingOrUnknownBackup(t *testing.T) {
