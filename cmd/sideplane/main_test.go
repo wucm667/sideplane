@@ -169,8 +169,13 @@ func TestHelpListsCommands(t *testing.T) {
 		"Usage: sideplane <command>",
 		"fleet status",
 		"probe <nodeId>",
+		"jobs list <nodeId>",
+		"audit list",
+		"config apply <id>",
+		"config preview <id>",
 		"config get",
 		"config set",
+		"node inspect <id>",
 		"node remove <id>",
 		"enrollment create",
 		"version",
@@ -178,6 +183,88 @@ func TestHelpListsCommands(t *testing.T) {
 		if !strings.Contains(output, want) {
 			t.Fatalf("help missing %q:\n%s", want, output)
 		}
+	}
+}
+
+func TestPerCommandHelpPrintsFlags(t *testing.T) {
+	tests := [][]string{
+		{"config", "apply", "--help"},
+		{"jobs", "list", "--help"},
+		{"enrollment", "create", "--help"},
+	}
+	for _, args := range tests {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+			code := run(args, &stdout, &stderr)
+			if code != 0 {
+				t.Fatalf("run returned %d, stderr=%q", code, stderr.String())
+			}
+			output := stdout.String()
+			if !strings.Contains(output, "usage: sideplane") || !strings.Contains(output, "--server") {
+				t.Fatalf("help output missing usage/server flag:\n%s", output)
+			}
+		})
+	}
+}
+
+func TestEnvFallbackAndFlagPrecedence(t *testing.T) {
+	envServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer env-token" {
+			t.Fatalf("env Authorization = %q, want Bearer env-token", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		if err := json.NewEncoder(w).Encode(protocol.Job{
+			ID:        "job-env",
+			NodeID:    "node-a",
+			Type:      protocol.JobTypeDeepProbe,
+			Status:    protocol.JobStatusPending,
+			CreatedAt: time.Now().UTC(),
+		}); err != nil {
+			t.Fatalf("encode env job: %v", err)
+		}
+	}))
+	defer envServer.Close()
+
+	flagServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer flag-token" {
+			t.Fatalf("flag Authorization = %q, want Bearer flag-token", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		if err := json.NewEncoder(w).Encode(protocol.Job{
+			ID:        "job-flag",
+			NodeID:    "node-a",
+			Type:      protocol.JobTypeDeepProbe,
+			Status:    protocol.JobStatusPending,
+			CreatedAt: time.Now().UTC(),
+		}); err != nil {
+			t.Fatalf("encode flag job: %v", err)
+		}
+	}))
+	defer flagServer.Close()
+
+	t.Setenv(serverURLEnv, envServer.URL)
+	t.Setenv("SIDEPLANE_OPERATOR_TOKEN", "env-token")
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"probe", "node-a"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("env fallback run returned %d, stderr=%q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "job job-env pending") {
+		t.Fatalf("stdout = %q, want env server job", stdout.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"probe", "node-a", "--server", flagServer.URL, "--operator-token", "flag-token"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("flag precedence run returned %d, stderr=%q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "job job-flag pending") {
+		t.Fatalf("stdout = %q, want flag server job", stdout.String())
 	}
 }
 

@@ -194,10 +194,15 @@ The `sideplane` CLI is a compact operator client for the REST API. It uses
 | --- | --- | --- |
 | `sideplane fleet status` | Show fleet node status. | `--server`, `--json` |
 | `sideplane probe <nodeId>` | Create a deep-probe job. | `--server`, `--operator-token`, `--wait`, `--json` |
+| `sideplane jobs list <nodeId>` | List node jobs with optional filters. | `--server`, `--operator-token`, `--limit`, `--status`, `--json` |
+| `sideplane audit list` | List audit events newest first. | `--server`, `--node-id`, `--action`, `--limit`, `--json` |
+| `sideplane config preview <nodeId>` | Show effective desired config and diff. | `--server`, `--runtime-type`, `--profile`, `--actual-hash`, `--json` |
+| `sideplane config apply <nodeId>` | Create a dry-run or live config apply job. | `--server`, `--operator-token`, `--runtime-type`, `--profile`, `--config-path`, `--live`, `--yes`, `--wait`, `--json` |
 | `sideplane config get` | Show desired configuration. | `--server`, `--json` |
 | `sideplane config set` | Update global desired provider/model. | `--server`, `--operator-token`, `--provider`, `--model` |
+| `sideplane node inspect <nodeId>` | Show detailed node state and runtime status. | `--server`, `--json` |
 | `sideplane node remove <nodeId>` | Remove a decommissioned node record. | `--server`, `--operator-token`, `--yes` |
-| `sideplane enrollment create` | Create a one-time sidecar enrollment token. | `--server`, `--operator-token`, `--ttl`, `--json` |
+| `sideplane enrollment create` | Create a one-time sidecar enrollment token. | `--server`, `--operator-token`, `--expires-in` |
 | `sideplane version` | Print CLI version. | none |
 
 ## Web Operator Notes

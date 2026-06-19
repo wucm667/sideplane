@@ -115,6 +115,21 @@ Commands:
 `)
 }
 
+func commandHelpRequested(args []string) bool {
+	for _, arg := range args {
+		if isHelpArg(arg) {
+			return true
+		}
+	}
+	return false
+}
+
+func printCommandHelp(w io.Writer, usage string, flags *flag.FlagSet) {
+	fmt.Fprintf(w, "usage: %s\n\n", usage)
+	flags.SetOutput(w)
+	flags.PrintDefaults()
+}
+
 func runConfigApply(args []string, stdout io.Writer, stderr io.Writer) int {
 	flags := flag.NewFlagSet("sideplane config apply", flag.ContinueOnError)
 	flags.SetOutput(stderr)
@@ -128,11 +143,16 @@ func runConfigApply(args []string, stdout io.Writer, stderr io.Writer) int {
 	yes := flags.Bool("yes", false, "confirm live apply")
 	wait := flags.Bool("wait", false, "poll until the config apply job completes or fails")
 	jsonOutput := flags.Bool("json", false, "print JSON output")
+	usage := "sideplane config apply <nodeId> [--server URL] [--operator-token TOKEN] [--runtime-type TYPE] [--profile PROFILE] [--config-path PATH] [--live --yes] [--wait] [--json]"
+	if commandHelpRequested(args) {
+		printCommandHelp(stdout, usage, flags)
+		return 0
+	}
 	if err := parseCommandFlags(flags, args, "live", "yes", "wait", "json"); err != nil {
 		return 2
 	}
 	if flags.NArg() != 1 {
-		fmt.Fprintln(stderr, "usage: sideplane config apply <nodeId> [--server URL] [--operator-token TOKEN] [--runtime-type TYPE] [--profile PROFILE] [--config-path PATH] [--live --yes] [--wait] [--json]")
+		fmt.Fprintln(stderr, "usage: "+usage)
 		return 1
 	}
 	if *live && !*yes {
@@ -193,11 +213,16 @@ func runConfigPreview(args []string, stdout io.Writer, stderr io.Writer) int {
 	profile := flags.String("profile", "default", "runtime profile")
 	actualHash := flags.String("actual-hash", "", "optional actual config hash to display")
 	jsonOutput := flags.Bool("json", false, "print JSON output")
+	usage := "sideplane config preview <nodeId> [--server URL] [--runtime-type TYPE] [--profile PROFILE] [--actual-hash HASH] [--json]"
+	if commandHelpRequested(args) {
+		printCommandHelp(stdout, usage, flags)
+		return 0
+	}
 	if err := parseCommandFlags(flags, args, "json"); err != nil {
 		return 2
 	}
 	if flags.NArg() != 1 {
-		fmt.Fprintln(stderr, "usage: sideplane config preview <nodeId> [--server URL] [--runtime-type TYPE] [--profile PROFILE] [--actual-hash HASH] [--json]")
+		fmt.Fprintln(stderr, "usage: "+usage)
 		return 1
 	}
 	nodeID := strings.TrimSpace(flags.Arg(0))
@@ -240,11 +265,16 @@ func runAuditList(args []string, stdout io.Writer, stderr io.Writer) int {
 	action := flags.String("action", "", "optional audit action filter")
 	limit := flags.Int("limit", 0, "maximum audit events to list")
 	jsonOutput := flags.Bool("json", false, "print JSON output")
+	usage := "sideplane audit list [--server URL] [--node-id NODE] [--action ACTION] [--limit N] [--json]"
+	if commandHelpRequested(args) {
+		printCommandHelp(stdout, usage, flags)
+		return 0
+	}
 	if err := parseCommandFlags(flags, args, "json"); err != nil {
 		return 2
 	}
 	if flags.NArg() != 0 {
-		fmt.Fprintln(stderr, "usage: sideplane audit list [--server URL] [--node-id NODE] [--action ACTION] [--limit N] [--json]")
+		fmt.Fprintln(stderr, "usage: "+usage)
 		return 1
 	}
 	if *limit < 0 {
@@ -284,14 +314,20 @@ func runJobsList(args []string, stdout io.Writer, stderr io.Writer) int {
 	flags.SetOutput(stderr)
 
 	serverURL := flags.String("server", "", "Sideplane server URL; can also be set with SIDEPLANE_SERVER_URL")
+	operatorTokenFlag := flags.String("operator-token", "", "operator bearer token; can also be set with SIDEPLANE_OPERATOR_TOKEN")
 	limit := flags.Int("limit", 0, "maximum jobs to list")
 	status := flags.String("status", "", "optional job status filter: pending, claimed, completed, failed")
 	jsonOutput := flags.Bool("json", false, "print JSON output")
+	usage := "sideplane jobs list <nodeId> [--server URL] [--operator-token TOKEN] [--limit N] [--status STATUS] [--json]"
+	if commandHelpRequested(args) {
+		printCommandHelp(stdout, usage, flags)
+		return 0
+	}
 	if err := parseCommandFlags(flags, args, "json"); err != nil {
 		return 2
 	}
 	if flags.NArg() != 1 {
-		fmt.Fprintln(stderr, "usage: sideplane jobs list <nodeId> [--server URL] [--limit N] [--status STATUS] [--json]")
+		fmt.Fprintln(stderr, "usage: "+usage)
 		return 1
 	}
 	if *limit < 0 {
@@ -321,7 +357,7 @@ func runJobsList(args []string, stdout io.Writer, stderr io.Writer) int {
 	if query := params.Encode(); query != "" {
 		path += "?" + query
 	}
-	jobs, body, err := getJSON[[]protocol.Job](context.Background(), serverURLValue(*serverURL), path, operatorTokenValue(""))
+	jobs, body, err := getJSON[[]protocol.Job](context.Background(), serverURLValue(*serverURL), path, operatorTokenValue(*operatorTokenFlag))
 	if err != nil {
 		fmt.Fprintf(stderr, "jobs list: %v\n", err)
 		return 1
@@ -340,11 +376,16 @@ func runNodeInspect(args []string, stdout io.Writer, stderr io.Writer) int {
 
 	serverURL := flags.String("server", "", "Sideplane server URL; can also be set with SIDEPLANE_SERVER_URL")
 	jsonOutput := flags.Bool("json", false, "print JSON output")
+	usage := "sideplane node inspect <nodeId> [--server URL] [--json]"
+	if commandHelpRequested(args) {
+		printCommandHelp(stdout, usage, flags)
+		return 0
+	}
 	if err := parseCommandFlags(flags, args, "json"); err != nil {
 		return 2
 	}
 	if flags.NArg() != 1 {
-		fmt.Fprintln(stderr, "usage: sideplane node inspect <nodeId> [--server URL] [--json]")
+		fmt.Fprintln(stderr, "usage: "+usage)
 		return 1
 	}
 
@@ -382,11 +423,16 @@ func runNodeRemove(args []string, stdout io.Writer, stderr io.Writer) int {
 	serverURL := flags.String("server", "", "Sideplane server URL; can also be set with SIDEPLANE_SERVER_URL")
 	operatorTokenFlag := flags.String("operator-token", "", "operator bearer token; can also be set with SIDEPLANE_OPERATOR_TOKEN")
 	yes := flags.Bool("yes", false, "skip confirmation")
+	usage := "sideplane node remove <nodeId> [--server URL] [--operator-token TOKEN] [--yes]"
+	if commandHelpRequested(args) {
+		printCommandHelp(stdout, usage, flags)
+		return 0
+	}
 	if err := parseCommandFlags(flags, args, "yes"); err != nil {
 		return 2
 	}
 	if flags.NArg() != 1 {
-		fmt.Fprintln(stderr, "usage: sideplane node remove <nodeId> [--server URL] [--operator-token TOKEN] [--yes]")
+		fmt.Fprintln(stderr, "usage: "+usage)
 		return 1
 	}
 
@@ -432,6 +478,11 @@ func runConfigGet(args []string, stdout io.Writer, stderr io.Writer) int {
 
 	serverURL := flags.String("server", "", "Sideplane server URL; can also be set with SIDEPLANE_SERVER_URL")
 	jsonOutput := flags.Bool("json", false, "print raw JSON response")
+	usage := "sideplane config get [--server URL] [--json]"
+	if commandHelpRequested(args) {
+		printCommandHelp(stdout, usage, flags)
+		return 0
+	}
 	if err := parseCommandFlags(flags, args, "json"); err != nil {
 		return 2
 	}
@@ -461,6 +512,11 @@ func runConfigSet(args []string, stdout io.Writer, stderr io.Writer) int {
 	operatorTokenFlag := flags.String("operator-token", "", "operator bearer token; can also be set with SIDEPLANE_OPERATOR_TOKEN")
 	provider := flags.String("provider", "", "global provider")
 	model := flags.String("model", "", "global model")
+	usage := "sideplane config set [--server URL] [--operator-token TOKEN] --provider PROVIDER --model MODEL"
+	if commandHelpRequested(args) {
+		printCommandHelp(stdout, usage, flags)
+		return 0
+	}
 	if err := parseCommandFlags(flags, args); err != nil {
 		return 2
 	}
@@ -502,11 +558,16 @@ func runProbe(args []string, stdout io.Writer, stderr io.Writer) int {
 	operatorTokenFlag := flags.String("operator-token", "", "operator bearer token; can also be set with SIDEPLANE_OPERATOR_TOKEN")
 	wait := flags.Bool("wait", false, "poll until the deep probe job completes or fails")
 	jsonOutput := flags.Bool("json", false, "print JSON output")
+	usage := "sideplane probe <nodeId> [--server URL] [--operator-token TOKEN] [--wait] [--json]"
+	if commandHelpRequested(args) {
+		printCommandHelp(stdout, usage, flags)
+		return 0
+	}
 	if err := parseCommandFlags(flags, args, "json", "wait"); err != nil {
 		return 2
 	}
 	if flags.NArg() != 1 {
-		fmt.Fprintln(stderr, "usage: sideplane probe <nodeId> [--server URL] [--operator-token TOKEN] [--wait] [--json]")
+		fmt.Fprintln(stderr, "usage: "+usage)
 		return 1
 	}
 
@@ -558,6 +619,11 @@ func runFleetStatus(args []string, stdout io.Writer, stderr io.Writer) int {
 
 	serverURL := flags.String("server", "", "Sideplane server URL; can also be set with SIDEPLANE_SERVER_URL")
 	jsonOutput := flags.Bool("json", false, "print raw JSON response")
+	usage := "sideplane fleet status [--server URL] [--json]"
+	if commandHelpRequested(args) {
+		printCommandHelp(stdout, usage, flags)
+		return 0
+	}
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
@@ -1067,19 +1133,23 @@ func runEnrollmentCreate(args []string, stdout io.Writer, stderr io.Writer) int 
 	flags := flag.NewFlagSet("sideplane enrollment create", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 
-	serverURL := flags.String("server", "", "Sideplane server URL")
+	serverURL := flags.String("server", "", "Sideplane server URL; can also be set with SIDEPLANE_SERVER_URL")
 	expiresIn := flags.Duration("expires-in", 0, "optional duration before the token expires")
 	operatorTokenFlag := flags.String("operator-token", "", "operator bearer token; can also be set with SIDEPLANE_OPERATOR_TOKEN")
+	usage := "sideplane enrollment create [--server URL] [--operator-token TOKEN] [--expires-in DURATION]"
+	if commandHelpRequested(args) {
+		printCommandHelp(stdout, usage, flags)
+		return 0
+	}
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
-
-	operatorToken := strings.TrimSpace(*operatorTokenFlag)
-	if operatorToken == "" {
-		operatorToken = strings.TrimSpace(os.Getenv(auth.OperatorTokenEnv))
+	if flags.NArg() != 0 {
+		fmt.Fprintln(stderr, "usage: "+usage)
+		return 1
 	}
 
-	resp, err := createEnrollmentToken(context.Background(), *serverURL, *expiresIn, operatorToken)
+	resp, err := createEnrollmentToken(context.Background(), serverURLValue(*serverURL), *expiresIn, operatorTokenValue(*operatorTokenFlag))
 	if err != nil {
 		fmt.Fprintf(stderr, "create enrollment token: %v\n", err)
 		return 1
