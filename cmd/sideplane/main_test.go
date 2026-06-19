@@ -81,6 +81,81 @@ func TestFleetStatusPrintsCompactTable(t *testing.T) {
 	}
 }
 
+func TestNodeInspectPrintsNodeDetail(t *testing.T) {
+	now := time.Now().UTC()
+	nodes := []cliNodeStatus{{
+		NodeStatus: protocol.NodeStatus{
+			NodeID:          "node-a",
+			Hostname:        "host-a",
+			State:           protocol.NodeStateFresh,
+			LastHeartbeatAt: now.Add(-time.Minute),
+			SidecarVersion:  "dev",
+			ConfigHash:      "sha256:abc",
+			Runtimes: []protocol.RuntimeStatus{{
+				Name:       "hermes",
+				Type:       "hermes",
+				State:      "running",
+				Version:    "1.2.3",
+				Provider:   "openai",
+				Model:      "gpt-4o",
+				ConfigHash: "sha256:def",
+			}},
+		},
+		Drift: true,
+	}}
+	server := httptest.NewServer(jsonHandler(t, http.MethodGet, "/api/nodes", nodes))
+	defer server.Close()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"node", "inspect", "node-a", "--server", server.URL}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("run returned %d, stderr=%q", code, stderr.String())
+	}
+	output := stdout.String()
+	for _, want := range []string{"Node: node-a", "Hostname: host-a", "Drift: yes", "hermes", "openai", "gpt-4o"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output missing %q:\n%s", want, output)
+		}
+	}
+}
+
+func TestNodeInspectJSONAndMissingNode(t *testing.T) {
+	nodes := []cliNodeStatus{{
+		NodeStatus: protocol.NodeStatus{
+			NodeID:          "node-a",
+			State:           protocol.NodeStateFresh,
+			LastHeartbeatAt: time.Now().UTC(),
+		},
+	}}
+	server := httptest.NewServer(jsonHandler(t, http.MethodGet, "/api/nodes", nodes))
+	defer server.Close()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"node", "inspect", "node-a", "--server", server.URL, "--json"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("run returned %d, stderr=%q", code, stderr.String())
+	}
+	var got cliNodeStatus
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode JSON output: %v\n%s", err, stdout.String())
+	}
+	if got.NodeID != "node-a" {
+		t.Fatalf("nodeId = %q, want node-a", got.NodeID)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"node", "inspect", "missing", "--server", server.URL}, &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("run returned %d, want 1", code)
+	}
+	if !strings.Contains(stderr.String(), `node "missing" not found`) {
+		t.Fatalf("stderr = %q, want missing node message", stderr.String())
+	}
+}
+
 func TestHelpListsCommands(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -413,4 +488,20 @@ func TestNodeRemovePromptsForConfirmation(t *testing.T) {
 			t.Fatalf("output missing %q:\n%s", want, output)
 		}
 	}
+}
+
+func jsonHandler(t *testing.T, method string, path string, response any) http.Handler {
+	t.Helper()
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != method {
+			t.Fatalf("method = %s, want %s", r.Method, method)
+		}
+		if r.URL.Path != path {
+			t.Fatalf("path = %s, want %s", r.URL.Path, path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(response); err != nil {
+			t.Fatalf("encode response: %v", err)
+		}
+	})
 }

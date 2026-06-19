@@ -60,6 +60,9 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 			return runConfigSet(args[2:], stdout, stderr)
 		}
 	case "node":
+		if len(args) >= 2 && args[1] == "inspect" {
+			return runNodeInspect(args[2:], stdout, stderr)
+		}
 		if len(args) >= 2 && args[1] == "remove" {
 			return runNodeRemove(args[2:], stdout, stderr)
 		}
@@ -86,10 +89,52 @@ Commands:
   probe <nodeId>      Run a deep probe on a node
   config get          Show desired configuration
   config set          Update global desired configuration
+  node inspect <id>   Show full node detail
   node remove <id>    Remove a node from the fleet
   enrollment create   Create a one-time enrollment token
   version             Print version
 `)
+}
+
+func runNodeInspect(args []string, stdout io.Writer, stderr io.Writer) int {
+	flags := flag.NewFlagSet("sideplane node inspect", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+
+	serverURL := flags.String("server", "", "Sideplane server URL; can also be set with SIDEPLANE_SERVER_URL")
+	jsonOutput := flags.Bool("json", false, "print JSON output")
+	if err := parseCommandFlags(flags, args, "json"); err != nil {
+		return 2
+	}
+	if flags.NArg() != 1 {
+		fmt.Fprintln(stderr, "usage: sideplane node inspect <nodeId> [--server URL] [--json]")
+		return 1
+	}
+
+	nodeID := strings.TrimSpace(flags.Arg(0))
+	if nodeID == "" {
+		fmt.Fprintln(stderr, "node inspect: nodeId is required")
+		return 1
+	}
+
+	nodes, _, err := getJSON[[]cliNodeStatus](context.Background(), serverURLValue(*serverURL), "/api/nodes", "")
+	if err != nil {
+		fmt.Fprintf(stderr, "node inspect: %v\n", err)
+		return 1
+	}
+	for _, node := range nodes {
+		if node.NodeID != nodeID {
+			continue
+		}
+		if *jsonOutput {
+			writeJSONValue(stdout, node)
+			return 0
+		}
+		printNodeInspect(stdout, node)
+		return 0
+	}
+
+	fmt.Fprintf(stderr, "node inspect: node %q not found\n", nodeID)
+	return 1
 }
 
 func runNodeRemove(args []string, stdout io.Writer, stderr io.Writer) int {
@@ -546,6 +591,43 @@ func printFleetStatusTable(w io.Writer, nodes []cliNodeStatus) {
 	table.Flush()
 }
 
+func printNodeInspect(w io.Writer, node cliNodeStatus) {
+	fmt.Fprintf(w, "Node: %s\n", node.NodeID)
+	fmt.Fprintf(w, "State: %s\n", node.State)
+	fmt.Fprintf(w, "Hostname: %s\n", valueOrDash(node.Hostname))
+	heartbeat := "-"
+	if !node.LastHeartbeatAt.IsZero() {
+		heartbeat = node.LastHeartbeatAt.Format(time.RFC3339) + " (" + ageLabel(node.LastHeartbeatAt) + ")"
+	}
+	fmt.Fprintf(w, "Heartbeat: %s\n", heartbeat)
+	fmt.Fprintf(w, "Sidecar: %s\n", valueOrDash(node.SidecarVersion))
+	fmt.Fprintf(w, "Config hash: %s\n", valueOrDash(node.ConfigHash))
+	fmt.Fprintf(w, "Drift: %s\n", yesNo(node.Drift))
+	fmt.Fprintf(w, "Last error: %s\n", valueOrDash(node.LastError))
+	fmt.Fprintln(w, "Runtimes:")
+	if len(node.Runtimes) == 0 {
+		fmt.Fprintln(w, "  (none)")
+		return
+	}
+	table := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(table, "  NAME\tTYPE\tSTATE\tVERSION\tPROVIDER\tMODEL\tCONFIG HASH\tLAST ERROR")
+	for _, runtime := range node.Runtimes {
+		fmt.Fprintf(
+			table,
+			"  %s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			valueOrDash(runtime.Name),
+			valueOrDash(runtime.Type),
+			valueOrDash(runtime.State),
+			valueOrDash(runtime.Version),
+			valueOrDash(runtime.Provider),
+			valueOrDash(runtime.Model),
+			valueOrDash(runtime.ConfigHash),
+			valueOrDash(runtime.LastError),
+		)
+	}
+	table.Flush()
+}
+
 func runtimeSummary(runtimes []protocol.RuntimeStatus) string {
 	if len(runtimes) == 0 {
 		return "-"
@@ -565,6 +647,14 @@ func runtimeSummary(runtimes []protocol.RuntimeStatus) string {
 		parts = append(parts, name)
 	}
 	return strings.Join(parts, ",")
+}
+
+func valueOrDash(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "-"
+	}
+	return value
 }
 
 func yesNo(value bool) string {
