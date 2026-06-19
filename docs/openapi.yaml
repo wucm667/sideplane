@@ -1,0 +1,883 @@
+openapi: 3.1.0
+info:
+  title: Sideplane REST API
+  version: 0.1.0
+  summary: Control-plane API for self-hosted Sideplane agent fleets.
+  description: >
+    Sideplane exposes a compact REST API for operator workflows and sidecar
+    polling. Sidecars initiate outbound enrollment, heartbeat, job claim, and
+    job-result requests. Operator mutating endpoints require an operator bearer
+    token when configured. Node endpoints require node bearer credentials.
+servers:
+  - url: http://localhost:8080
+    description: Local development server
+tags:
+  - name: Health
+  - name: Metrics
+  - name: Operator
+  - name: Sidecar
+security: []
+paths:
+  /healthz:
+    get:
+      tags: [Health]
+      summary: Health check.
+      operationId: getHealth
+      responses:
+        "200":
+          description: Server is reachable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatusResponse"
+  /readyz:
+    get:
+      tags: [Health]
+      summary: Readiness check.
+      operationId: getReady
+      responses:
+        "200":
+          description: Server is ready to serve requests.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatusResponse"
+  /metrics:
+    get:
+      tags: [Metrics]
+      summary: Prometheus-compatible metrics.
+      operationId: getMetrics
+      responses:
+        "200":
+          description: Prometheus text exposition format.
+          content:
+            text/plain:
+              schema:
+                type: string
+  /api/enrollment-tokens:
+    post:
+      tags: [Operator]
+      summary: Create a one-time enrollment token.
+      operationId: createEnrollmentToken
+      security:
+        - operatorBearer: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateEnrollmentTokenRequest"
+            example:
+              expiresAt: "2026-06-19T12:00:00Z"
+      responses:
+        "201":
+          description: Plaintext enrollment token returned once.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateEnrollmentTokenResponse"
+              example:
+                token: "enroll_example_token"
+                expiresAt: "2026-06-19T12:00:00Z"
+        "401":
+          $ref: "#/components/responses/TextError"
+  /api/enroll:
+    post:
+      tags: [Sidecar]
+      summary: Exchange an enrollment token for node credentials.
+      operationId: enrollNode
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EnrollNodeRequest"
+            example:
+              token: "enroll_example_token"
+              nodeId: "node-example"
+              hostname: "example-host"
+              sidecarVersion: "dev"
+      responses:
+        "200":
+          description: Node credential returned once.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EnrollNodeResponse"
+              example:
+                nodeId: "node-example"
+                nodeCredential: "node_example_credential"
+        "401":
+          $ref: "#/components/responses/TextError"
+        "409":
+          $ref: "#/components/responses/TextError"
+  /api/heartbeat:
+    post:
+      tags: [Sidecar]
+      summary: Record sidecar heartbeat and lightweight runtime status.
+      operationId: recordHeartbeat
+      security:
+        - nodeBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/HeartbeatRequest"
+      responses:
+        "200":
+          description: Heartbeat accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HeartbeatResponse"
+        "401":
+          $ref: "#/components/responses/TextError"
+  /api/nodes:
+    get:
+      tags: [Operator]
+      summary: List freshness-adjusted fleet nodes.
+      operationId: listNodes
+      responses:
+        "200":
+          description: Fleet nodes.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/NodeStatusWithDrift"
+  /api/nodes/{nodeId}:
+    delete:
+      tags: [Operator]
+      summary: Remove a decommissioned node from inventory.
+      operationId: deleteNode
+      security:
+        - operatorBearer: []
+      parameters:
+        - $ref: "#/components/parameters/NodeId"
+      responses:
+        "204":
+          description: Node removed.
+        "401":
+          $ref: "#/components/responses/TextError"
+        "404":
+          $ref: "#/components/responses/TextError"
+  /api/nodes/{nodeId}/jobs:
+    get:
+      tags: [Operator]
+      summary: List jobs for a node.
+      operationId: listNodeJobs
+      parameters:
+        - $ref: "#/components/parameters/NodeId"
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            default: 50
+          description: Bounded maximum number of newest-first jobs.
+        - name: status
+          in: query
+          required: false
+          schema:
+            $ref: "#/components/schemas/JobStatus"
+      responses:
+        "200":
+          description: Node jobs, newest first.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Job"
+        "400":
+          $ref: "#/components/responses/TextError"
+    post:
+      tags: [Operator]
+      summary: Create an operator job for a node.
+      operationId: createNodeJob
+      security:
+        - operatorBearer: []
+      parameters:
+        - $ref: "#/components/parameters/NodeId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateJobRequest"
+            example:
+              type: deep_probe
+      responses:
+        "201":
+          description: Job created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Job"
+        "401":
+          $ref: "#/components/responses/TextError"
+        "404":
+          $ref: "#/components/responses/TextError"
+        "409":
+          $ref: "#/components/responses/TextError"
+  /api/nodes/{nodeId}/config-apply:
+    post:
+      tags: [Operator]
+      summary: Create a signed config apply job.
+      operationId: createConfigApplyJob
+      security:
+        - operatorBearer: []
+      parameters:
+        - $ref: "#/components/parameters/NodeId"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConfigApplyRequest"
+            example:
+              runtimeType: hermes
+              profile: default
+              dryRun: true
+      responses:
+        "201":
+          description: Config apply job created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Job"
+        "400":
+          $ref: "#/components/responses/TextError"
+        "401":
+          $ref: "#/components/responses/TextError"
+        "404":
+          $ref: "#/components/responses/TextError"
+        "409":
+          $ref: "#/components/responses/TextError"
+  /api/sidecar/jobs/next:
+    get:
+      tags: [Sidecar]
+      summary: Claim the next pending job for a node.
+      operationId: claimNextJob
+      security:
+        - nodeBearer: []
+      parameters:
+        - name: nodeId
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Claimed job.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Job"
+        "204":
+          description: No pending jobs.
+        "401":
+          $ref: "#/components/responses/TextError"
+  /api/sidecar/jobs/{jobId}/result:
+    post:
+      tags: [Sidecar]
+      summary: Submit a sidecar job result.
+      operationId: submitJobResult
+      security:
+        - nodeBearer: []
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/JobResultRequest"
+      responses:
+        "200":
+          description: Job result accepted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AcceptedResponse"
+        "400":
+          $ref: "#/components/responses/TextError"
+        "401":
+          $ref: "#/components/responses/TextError"
+        "404":
+          $ref: "#/components/responses/TextError"
+  /api/config/desired:
+    get:
+      tags: [Operator]
+      summary: Get desired layered provider/model configuration.
+      operationId: getDesiredConfig
+      responses:
+        "200":
+          description: Desired config.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DesiredConfig"
+    put:
+      tags: [Operator]
+      summary: Replace desired layered provider/model configuration.
+      operationId: putDesiredConfig
+      security:
+        - operatorBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DesiredConfig"
+      responses:
+        "200":
+          description: Updated desired config.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DesiredConfig"
+        "400":
+          $ref: "#/components/responses/TextError"
+        "401":
+          $ref: "#/components/responses/TextError"
+  /api/config/effective:
+    get:
+      tags: [Operator]
+      summary: Preview effective config for the persisted desired state.
+      operationId: getEffectiveConfig
+      parameters:
+        - name: nodeId
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: runtimeType
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: profile
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Effective config and diff.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EffectiveConfigResponse"
+        "400":
+          $ref: "#/components/responses/TextError"
+  /api/config/effective/preview:
+    post:
+      tags: [Operator]
+      summary: Preview effective config with a proposed target override.
+      operationId: previewEffectiveConfig
+      security:
+        - operatorBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EffectiveConfigPreviewRequest"
+      responses:
+        "200":
+          description: Effective config and diff.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EffectiveConfigResponse"
+        "400":
+          $ref: "#/components/responses/TextError"
+        "401":
+          $ref: "#/components/responses/TextError"
+  /api/audit:
+    get:
+      tags: [Operator]
+      summary: List audit events.
+      operationId: listAuditEvents
+      parameters:
+        - name: nodeId
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: action
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            default: 100
+      responses:
+        "200":
+          description: Audit events.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListAuditEventsResponse"
+  /api/signing-key:
+    get:
+      tags: [Sidecar]
+      summary: Get the server public signing key.
+      operationId: getPublicSigningKey
+      responses:
+        "200":
+          description: Public signing key.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PublicSigningKeyResponse"
+        "503":
+          $ref: "#/components/responses/TextError"
+components:
+  securitySchemes:
+    operatorBearer:
+      type: http
+      scheme: bearer
+      description: Operator bearer token from `SIDEPLANE_OPERATOR_TOKEN`.
+    nodeBearer:
+      type: http
+      scheme: bearer
+      description: Node credential returned by enrollment.
+  parameters:
+    NodeId:
+      name: nodeId
+      in: path
+      required: true
+      schema:
+        type: string
+  responses:
+    TextError:
+      description: Plain text error response used by the current server.
+      content:
+        text/plain:
+          schema:
+            type: string
+  schemas:
+    StatusResponse:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+    AcceptedResponse:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [accepted, accepted_late]
+    CreateEnrollmentTokenRequest:
+      type: object
+      properties:
+        expiresAt:
+          type: string
+          format: date-time
+    CreateEnrollmentTokenResponse:
+      type: object
+      required: [token, expiresAt]
+      properties:
+        token:
+          type: string
+        expiresAt:
+          type: string
+          format: date-time
+    EnrollNodeRequest:
+      type: object
+      required: [token]
+      properties:
+        token:
+          type: string
+        nodeId:
+          type: string
+        hostname:
+          type: string
+        sidecarVersion:
+          type: string
+    EnrollNodeResponse:
+      type: object
+      required: [nodeId, nodeCredential]
+      properties:
+        nodeId:
+          type: string
+        nodeCredential:
+          type: string
+    NodeState:
+      type: string
+      enum: [fresh, stale, offline]
+    RuntimeStatus:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        type:
+          type: string
+        version:
+          type: string
+        state:
+          type: string
+        provider:
+          type: string
+        model:
+          type: string
+        configHash:
+          type: string
+        lastError:
+          type: string
+    NodeStatus:
+      type: object
+      required: [nodeId, state, lastHeartbeatAt]
+      properties:
+        nodeId:
+          type: string
+        hostname:
+          type: string
+        state:
+          $ref: "#/components/schemas/NodeState"
+        sidecarVersion:
+          type: string
+        lastHeartbeatAt:
+          type: string
+          format: date-time
+        runtimes:
+          type: array
+          items:
+            $ref: "#/components/schemas/RuntimeStatus"
+        configHash:
+          type: string
+        lastError:
+          type: string
+    NodeStatusWithDrift:
+      allOf:
+        - $ref: "#/components/schemas/NodeStatus"
+        - type: object
+          required: [drift]
+          properties:
+            drift:
+              type: boolean
+    HeartbeatRequest:
+      type: object
+      required: [nodeId, sentAt]
+      properties:
+        nodeId:
+          type: string
+        hostname:
+          type: string
+        sidecarVersion:
+          type: string
+        sentAt:
+          type: string
+          format: date-time
+        runtimes:
+          type: array
+          items:
+            $ref: "#/components/schemas/RuntimeStatus"
+        configHash:
+          type: string
+        lastError:
+          type: string
+    HeartbeatResponse:
+      type: object
+      required: [accepted, serverTime, node]
+      properties:
+        accepted:
+          type: boolean
+        serverTime:
+          type: string
+          format: date-time
+        node:
+          $ref: "#/components/schemas/NodeStatus"
+    JobType:
+      type: string
+      enum: [deep_probe, config_apply]
+    JobStatus:
+      type: string
+      enum: [pending, claimed, completed, failed]
+    Job:
+      type: object
+      required: [id, nodeId, type, status, createdAt]
+      properties:
+        id:
+          type: string
+        nodeId:
+          type: string
+        type:
+          $ref: "#/components/schemas/JobType"
+        status:
+          $ref: "#/components/schemas/JobStatus"
+        payloadJson:
+          type: string
+          description: Serialized job payload. May be omitted or summarized for unauthenticated list calls.
+        resultJson:
+          type: string
+          description: Serialized job result. Hidden from unauthenticated list calls when operator auth is configured.
+        error:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        claimedAt:
+          type: string
+          format: date-time
+        claimExpiresAt:
+          type: string
+          format: date-time
+        finishedAt:
+          type: string
+          format: date-time
+    CreateJobRequest:
+      type: object
+      required: [type]
+      properties:
+        type:
+          $ref: "#/components/schemas/JobType"
+        payloadJson:
+          type: string
+    JobResultRequest:
+      type: object
+      required: [status]
+      properties:
+        status:
+          $ref: "#/components/schemas/JobStatus"
+        resultJson:
+          type: string
+        error:
+          type: string
+    DeepProbeResult:
+      type: object
+      required: [runtimes, configSnapshots]
+      properties:
+        runtimes:
+          type: array
+          items:
+            $ref: "#/components/schemas/RuntimeStatus"
+        configSnapshots:
+          type: array
+          items:
+            $ref: "#/components/schemas/RuntimeConfigSnapshot"
+    ConfigApplyStep:
+      type: object
+      required: [name, status]
+      properties:
+        name:
+          type: string
+        status:
+          type: string
+        detail:
+          type: string
+    ConfigApplyResult:
+      type: object
+      required: [planId, dryRun, steps]
+      properties:
+        planId:
+          type: string
+        dryRun:
+          type: boolean
+        backupPath:
+          type: string
+          description: Sidecar-local backup reference or path.
+        tempPath:
+          type: string
+          description: Sidecar-local temporary validation path.
+        steps:
+          type: array
+          items:
+            $ref: "#/components/schemas/ConfigApplyStep"
+    RuntimeConfigSnapshot:
+      type: object
+      required: [runtimeName, runtimeType]
+      properties:
+        runtimeName:
+          type: string
+        runtimeType:
+          type: string
+        configPath:
+          type: string
+          description: Operator-configured or sidecar-local path, never file contents.
+        source:
+          type: string
+        profile:
+          type: string
+        provider:
+          type: string
+        model:
+          type: string
+        configHash:
+          type: string
+        warnings:
+          type: array
+          items:
+            type: string
+    ProviderModelConfig:
+      type: object
+      properties:
+        provider:
+          type: string
+        model:
+          type: string
+    DesiredConfig:
+      type: object
+      properties:
+        global:
+          $ref: "#/components/schemas/ProviderModelConfig"
+        nodeOverrides:
+          type: object
+          additionalProperties:
+            $ref: "#/components/schemas/ProviderModelConfig"
+        runtimeProfileOverrides:
+          type: object
+          additionalProperties:
+            $ref: "#/components/schemas/ProviderModelConfig"
+        nodeRuntimeProfileOverrides:
+          type: object
+          additionalProperties:
+            $ref: "#/components/schemas/ProviderModelConfig"
+    ConfigDiffEntry:
+      type: object
+      required: [field, change]
+      properties:
+        field:
+          type: string
+        actual:
+          type: string
+        desired:
+          type: string
+        change:
+          type: string
+          enum: [update, missingActual]
+    EffectiveConfigResponse:
+      type: object
+      required: [nodeId, effective, diff]
+      properties:
+        nodeId:
+          type: string
+        runtimeType:
+          type: string
+        profile:
+          type: string
+        effective:
+          $ref: "#/components/schemas/ProviderModelConfig"
+        desiredHash:
+          type: string
+        actual:
+          $ref: "#/components/schemas/RuntimeConfigSnapshot"
+        diff:
+          type: array
+          items:
+            $ref: "#/components/schemas/ConfigDiffEntry"
+    EffectiveConfigPreviewRequest:
+      type: object
+      required: [nodeId, desired]
+      properties:
+        nodeId:
+          type: string
+        runtimeType:
+          type: string
+        profile:
+          type: string
+        desired:
+          $ref: "#/components/schemas/ProviderModelConfig"
+    ConfigApplyRequest:
+      type: object
+      properties:
+        runtimeType:
+          type: string
+        profile:
+          type: string
+        dryRun:
+          type: boolean
+          default: true
+    ConfigPlanBody:
+      type: object
+      required: [runtimeType, desired, dryRun]
+      properties:
+        runtimeType:
+          type: string
+        profile:
+          type: string
+        desired:
+          $ref: "#/components/schemas/ProviderModelConfig"
+        dryRun:
+          type: boolean
+    ConfigPlan:
+      type: object
+      required: [id, schema, version, createdAt, targetNodeId, mode, body]
+      properties:
+        id:
+          type: string
+        schema:
+          type: string
+          const: sideplane.config-plan.v1
+        version:
+          type: integer
+          const: 1
+        createdAt:
+          type: string
+          format: date-time
+        targetNodeId:
+          type: string
+        mode:
+          type: string
+          enum: [dry_run, live]
+        body:
+          $ref: "#/components/schemas/ConfigPlanBody"
+    SignedConfigPlan:
+      type: object
+      required: [plan, signature]
+      properties:
+        plan:
+          $ref: "#/components/schemas/ConfigPlan"
+        signature:
+          type: string
+    PublicSigningKeyResponse:
+      type: object
+      required: [algorithm, publicKey]
+      properties:
+        algorithm:
+          type: string
+          const: ed25519
+        publicKey:
+          type: string
+    AuditEvent:
+      type: object
+      required: [id, actor, action, createdAt]
+      properties:
+        id:
+          type: string
+        actor:
+          type: string
+        action:
+          type: string
+        targetNode:
+          type: string
+        detail:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+    ListAuditEventsResponse:
+      type: object
+      required: [events]
+      properties:
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/AuditEvent"
