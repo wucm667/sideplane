@@ -1065,6 +1065,66 @@ func TestCreateJobAPIRejectsMalformedJSON(t *testing.T) {
 	assertStatus(t, rec, http.StatusBadRequest)
 }
 
+func TestJSONAPIBodySizeLimits(t *testing.T) {
+	t.Run("heartbeat uses default limit", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		body := `{"nodeId":"` + strings.Repeat("x", int(defaultJSONBodyLimit)+1) + `"}`
+		req := httptest.NewRequest(http.MethodPost, "/api/heartbeat", strings.NewReader(body))
+
+		NewHandler().ServeHTTP(rec, req)
+
+		assertAPIError(t, rec, http.StatusRequestEntityTooLarge, "request_entity_too_large", "request body too large")
+	})
+
+	t.Run("operator job create uses default limit", func(t *testing.T) {
+		nodeStore := store.NewMemoryNodeStore()
+		enrollTestNode(t, nodeStore, "node-large")
+
+		rec := httptest.NewRecorder()
+		body := `{"type":"deep_probe","payloadJson":"` + strings.Repeat("x", int(defaultJSONBodyLimit)+1) + `"}`
+		req := httptest.NewRequest(http.MethodPost, "/api/nodes/node-large/jobs", strings.NewReader(body))
+
+		newDevHandlerWithStore(t, nodeStore).ServeHTTP(rec, req)
+
+		assertAPIError(t, rec, http.StatusRequestEntityTooLarge, "request_entity_too_large", "request body too large")
+	})
+
+	t.Run("config apply uses large limit", func(t *testing.T) {
+		nodeStore := store.NewMemoryNodeStore()
+
+		rec := httptest.NewRecorder()
+		body := `{"profile":"` + strings.Repeat("x", int(defaultJSONBodyLimit)+1) + `"}`
+		req := httptest.NewRequest(http.MethodPost, "/api/nodes/node-large/config-apply", strings.NewReader(body))
+
+		newDevHandlerWithStore(t, nodeStore).ServeHTTP(rec, req)
+
+		if rec.Code == http.StatusRequestEntityTooLarge {
+			t.Fatalf("config apply returned 413 for a body under the large limit: %s", rec.Body.String())
+		}
+	})
+
+	t.Run("sidecar job result uses large limit", func(t *testing.T) {
+		nodeStore := store.NewMemoryNodeStore()
+		credential := enrollTestNode(t, nodeStore, "node-large")
+		job, err := nodeStore.CreateJob(context.Background(), protocol.CreateJobRequest{Type: protocol.JobTypeDeepProbe}, "node-large", time.Now().UTC())
+		if err != nil {
+			t.Fatalf("create job: %v", err)
+		}
+		if _, err := nodeStore.ClaimNextJob(context.Background(), "node-large", time.Now().UTC()); err != nil {
+			t.Fatalf("claim job: %v", err)
+		}
+
+		rec := httptest.NewRecorder()
+		body := `{"status":"completed","resultJson":"` + strings.Repeat("x", int(largeJSONBodyLimit)+1) + `"}`
+		req := httptest.NewRequest(http.MethodPost, "/api/sidecar/jobs/"+job.ID+"/result", strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+credential)
+
+		NewHandlerWithStore(nodeStore).ServeHTTP(rec, req)
+
+		assertAPIError(t, rec, http.StatusRequestEntityTooLarge, "request_entity_too_large", "request body too large")
+	})
+}
+
 func TestCreateJobAPIRejectsUnsupportedType(t *testing.T) {
 	nodeStore := store.NewMemoryNodeStore()
 	enrollTestNode(t, nodeStore, "node-jobs")

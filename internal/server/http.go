@@ -24,7 +24,11 @@ import (
 	"github.com/wucm667/sideplane/pkg/protocol"
 )
 
-const defaultEnrollmentTokenTTL = time.Hour
+const (
+	defaultEnrollmentTokenTTL = time.Hour
+	defaultJSONBodyLimit      = int64(1 << 20)
+	largeJSONBodyLimit        = int64(4 << 20)
+)
 
 // NewHandler returns the Sideplane server HTTP handler.
 func NewHandler() http.Handler {
@@ -223,11 +227,9 @@ func (h *handler) createEnrollmentToken(w http.ResponseWriter, r *http.Request) 
 	if !h.authorizeOperator(w, r) {
 		return
 	}
-	defer r.Body.Close()
-
 	var req protocol.CreateEnrollmentTokenRequest
-	if err := decodeOptionalJSON(r.Body, &req); err != nil {
-		writeAPIError(w, http.StatusBadRequest, "invalid enrollment token JSON")
+	if err := decodeOptionalJSONRequest(w, r, defaultJSONBodyLimit, &req); err != nil {
+		writeJSONDecodeError(w, err, "invalid enrollment token JSON")
 		return
 	}
 
@@ -263,13 +265,9 @@ func (h *handler) enrollNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	defer r.Body.Close()
-
 	var req protocol.EnrollNodeRequest
-	decoder := json.NewDecoder(r.Body)
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&req); err != nil {
-		writeAPIError(w, http.StatusBadRequest, "invalid enroll JSON")
+	if err := decodeJSONRequest(w, r, defaultJSONBodyLimit, &req); err != nil {
+		writeJSONDecodeError(w, err, "invalid enroll JSON")
 		return
 	}
 	if strings.TrimSpace(req.Token) == "" {
@@ -318,13 +316,9 @@ func (h *handler) heartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	defer r.Body.Close()
-
 	var req protocol.HeartbeatRequest
-	decoder := json.NewDecoder(r.Body)
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&req); err != nil {
-		writeAPIError(w, http.StatusBadRequest, "invalid heartbeat JSON")
+	if err := decodeJSONRequest(w, r, defaultJSONBodyLimit, &req); err != nil {
+		writeJSONDecodeError(w, err, "invalid heartbeat JSON")
 		return
 	}
 
@@ -610,13 +604,9 @@ func (h *handler) createNodeJob(w http.ResponseWriter, r *http.Request, nodeID s
 	if !h.authorizeOperator(w, r) {
 		return
 	}
-	defer r.Body.Close()
-
 	var req protocol.CreateJobRequest
-	decoder := json.NewDecoder(r.Body)
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&req); err != nil {
-		writeAPIError(w, http.StatusBadRequest, "invalid job JSON")
+	if err := decodeJSONRequest(w, r, defaultJSONBodyLimit, &req); err != nil {
+		writeJSONDecodeError(w, err, "invalid job JSON")
 		return
 	}
 
@@ -665,13 +655,9 @@ func (h *handler) createRestartJob(w http.ResponseWriter, r *http.Request, nodeI
 	if !h.authorizeOperator(w, r) {
 		return
 	}
-	defer r.Body.Close()
-
 	var req protocol.RestartRequest
-	decoder := json.NewDecoder(r.Body)
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&req); err != nil && !errors.Is(err, io.EOF) {
-		writeAPIError(w, http.StatusBadRequest, "invalid restart JSON")
+	if err := decodeOptionalJSONRequest(w, r, defaultJSONBodyLimit, &req); err != nil {
+		writeJSONDecodeError(w, err, "invalid restart JSON")
 		return
 	}
 
@@ -759,13 +745,9 @@ func (h *handler) createRollbackJob(w http.ResponseWriter, r *http.Request, node
 	if !h.authorizeOperator(w, r) {
 		return
 	}
-	defer r.Body.Close()
-
 	var req protocol.RollbackRequest
-	decoder := json.NewDecoder(r.Body)
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&req); err != nil && !errors.Is(err, io.EOF) {
-		writeAPIError(w, http.StatusBadRequest, "invalid rollback JSON")
+	if err := decodeOptionalJSONRequest(w, r, defaultJSONBodyLimit, &req); err != nil {
+		writeJSONDecodeError(w, err, "invalid rollback JSON")
 		return
 	}
 	backupRef := strings.TrimSpace(req.BackupRef)
@@ -879,13 +861,9 @@ func (h *handler) createConfigApplyJob(w http.ResponseWriter, r *http.Request, n
 	if !h.authorizeOperator(w, r) {
 		return
 	}
-	defer r.Body.Close()
-
 	var req protocol.ConfigApplyRequest
-	decoder := json.NewDecoder(r.Body)
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&req); err != nil && !errors.Is(err, io.EOF) {
-		writeAPIError(w, http.StatusBadRequest, "invalid config apply JSON")
+	if err := decodeOptionalJSONRequest(w, r, largeJSONBodyLimit, &req); err != nil {
+		writeJSONDecodeError(w, err, "invalid config apply JSON")
 		return
 	}
 
@@ -1116,13 +1094,9 @@ func (h *handler) submitJobResult(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	defer r.Body.Close()
-
 	var req protocol.JobResultRequest
-	decoder := json.NewDecoder(r.Body)
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&req); err != nil {
-		writeAPIError(w, http.StatusBadRequest, "invalid result JSON")
+	if err := decodeJSONRequest(w, r, largeJSONBodyLimit, &req); err != nil {
+		writeJSONDecodeError(w, err, "invalid result JSON")
 		return
 	}
 	req.ResultJSON = spconfig.RedactString(req.ResultJSON)
@@ -1297,12 +1271,9 @@ func (h *handler) desiredConfig(w http.ResponseWriter, r *http.Request) {
 		if !h.authorizeOperator(w, r) {
 			return
 		}
-		defer r.Body.Close()
 		var desired protocol.DesiredConfig
-		decoder := json.NewDecoder(r.Body)
-		decoder.DisallowUnknownFields()
-		if err := decoder.Decode(&desired); err != nil {
-			writeAPIError(w, http.StatusBadRequest, "invalid desired config JSON")
+		if err := decodeJSONRequest(w, r, defaultJSONBodyLimit, &desired); err != nil {
+			writeJSONDecodeError(w, err, "invalid desired config JSON")
 			return
 		}
 		if err := spconfig.ValidateDesiredConfigValues(desired); err != nil {
@@ -1358,13 +1329,9 @@ func (h *handler) previewEffectiveConfig(w http.ResponseWriter, r *http.Request)
 	if !h.authorizeOperator(w, r) {
 		return
 	}
-	defer r.Body.Close()
-
 	var req protocol.EffectiveConfigPreviewRequest
-	decoder := json.NewDecoder(r.Body)
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&req); err != nil {
-		writeAPIError(w, http.StatusBadRequest, "invalid config preview JSON")
+	if err := decodeJSONRequest(w, r, defaultJSONBodyLimit, &req); err != nil {
+		writeJSONDecodeError(w, err, "invalid config preview JSON")
 		return
 	}
 	if err := spconfig.ValidateProviderModelSelection(req.Desired); err != nil {
@@ -1489,6 +1456,15 @@ func writeAPIError(w http.ResponseWriter, status int, message string) {
 	})
 }
 
+func writeJSONDecodeError(w http.ResponseWriter, err error, message string) {
+	var maxBytesErr *http.MaxBytesError
+	if errors.As(err, &maxBytesErr) {
+		writeAPIError(w, http.StatusRequestEntityTooLarge, "request body too large")
+		return
+	}
+	writeAPIError(w, http.StatusBadRequest, message)
+}
+
 func (h *handler) authorizeOperator(w http.ResponseWriter, r *http.Request) bool {
 	if h.operatorAuth.AuthorizeHeader(r.Header.Get("Authorization")) {
 		return true
@@ -1514,4 +1490,19 @@ func decodeOptionalJSON(body io.Reader, dst any) error {
 		return err
 	}
 	return nil
+}
+
+func decodeJSONRequest(w http.ResponseWriter, r *http.Request, limit int64, dst any) error {
+	body := http.MaxBytesReader(w, r.Body, limit)
+	defer body.Close()
+
+	decoder := json.NewDecoder(body)
+	decoder.DisallowUnknownFields()
+	return decoder.Decode(dst)
+}
+
+func decodeOptionalJSONRequest(w http.ResponseWriter, r *http.Request, limit int64, dst any) error {
+	body := http.MaxBytesReader(w, r.Body, limit)
+	defer body.Close()
+	return decodeOptionalJSON(body, dst)
 }
