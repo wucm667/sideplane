@@ -1440,6 +1440,147 @@ func TestAuditAPIRecordsFleetOperations(t *testing.T) {
 	}
 }
 
+func TestOperatorWorkflowEndToEnd(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	handler, err := NewHandlerWithConfig(HandlerConfig{
+		Store:         nodeStore,
+		Freshness:     DefaultFreshnessPolicy(),
+		OperatorToken: "operator-token",
+	})
+	if err != nil {
+		t.Fatalf("build handler: %v", err)
+	}
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+	client := server.Client()
+
+	tokenResp := doJSONRequest[protocol.CreateEnrollmentTokenResponse](t, client, http.MethodPost, server.URL+"/api/enrollment-tokens", "operator-token", protocol.CreateEnrollmentTokenRequest{})
+	enrollResp := doJSONRequest[protocol.EnrollNodeResponse](t, client, http.MethodPost, server.URL+"/api/enroll", "", protocol.EnrollNodeRequest{
+		Token:    tokenResp.Token,
+		NodeID:   "node-e2e",
+		Hostname: "worker-e2e",
+	})
+	if enrollResp.NodeID != "node-e2e" || enrollResp.NodeCredential == "" {
+		t.Fatalf("enroll response = %#v, want node id and credential", enrollResp)
+	}
+
+	heartbeatResp := doJSONRequest[protocol.HeartbeatResponse](t, client, http.MethodPost, server.URL+"/api/heartbeat", enrollResp.NodeCredential, protocol.HeartbeatRequest{
+		NodeID:         enrollResp.NodeID,
+		Hostname:       "worker-e2e",
+		SidecarVersion: "test-version",
+		Runtimes: []protocol.RuntimeStatus{{
+			Name:       "hermes",
+			Type:       "hermes",
+			State:      "present",
+			Provider:   "anthropic",
+			Model:      "claude-3.7-sonnet",
+			ConfigHash: "sha256:actual",
+		}},
+	})
+	if !heartbeatResp.Accepted {
+		t.Fatalf("heartbeat accepted = false")
+	}
+
+	nodes := doJSONRequest[[]protocol.NodeStatus](t, client, http.MethodGet, server.URL+"/api/nodes", "", nil)
+	if len(nodes) != 1 || nodes[0].NodeID != "node-e2e" || nodes[0].State != protocol.NodeStateFresh {
+		t.Fatalf("nodes = %#v, want fresh node-e2e", nodes)
+	}
+
+	probeJob := doJSONRequest[protocol.Job](t, client, http.MethodPost, server.URL+"/api/nodes/node-e2e/jobs", "operator-token", protocol.CreateJobRequest{Type: protocol.JobTypeDeepProbe})
+	if probeJob.Type != protocol.JobTypeDeepProbe || probeJob.Status != protocol.JobStatusPending {
+		t.Fatalf("probe job = %#v, want pending deep_probe", probeJob)
+	}
+	claimedProbe := doJSONRequest[protocol.Job](t, client, http.MethodGet, server.URL+"/api/sidecar/jobs/next?nodeId=node-e2e", enrollResp.NodeCredential, nil)
+	if claimedProbe.ID != probeJob.ID || claimedProbe.Status != protocol.JobStatusClaimed {
+		t.Fatalf("claimed probe = %#v, want %s claimed", claimedProbe, probeJob.ID)
+	}
+
+	probeResult, err := json.Marshal(protocol.DeepProbeResult{
+		Runtimes: []protocol.RuntimeStatus{{
+			Name:       "hermes",
+			Type:       "hermes",
+			State:      "present",
+			Provider:   "anthropic",
+			Model:      "claude-3.7-sonnet",
+			ConfigHash: "sha256:actual",
+		}},
+		ConfigSnapshots: []protocol.RuntimeConfigSnapshot{{
+			RuntimeName: "hermes",
+			RuntimeType: "hermes",
+			ConfigPath:  "/tmp/sideplane-test/hermes/config.yaml",
+			Source:      "file",
+			Provider:    "anthropic",
+			Model:       "claude-3.7-sonnet",
+			ConfigHash:  "sha256:actual",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("marshal probe result: %v", err)
+	}
+	submitJobResult(t, client, server.URL, probeJob.ID, enrollResp.NodeCredential, protocol.JobResultRequest{
+		Status:     protocol.JobStatusCompleted,
+		ResultJSON: string(probeResult),
+	})
+
+	doJSONRequest[protocol.DesiredConfig](t, client, http.MethodPut, server.URL+"/api/config/desired", "operator-token", protocol.DesiredConfig{
+		Global: protocol.ProviderModelConfig{Provider: "openai", Model: "gpt-4o"},
+	})
+	applyJob := doJSONRequest[protocol.Job](t, client, http.MethodPost, server.URL+"/api/nodes/node-e2e/config-apply", "operator-token", protocol.ConfigApplyRequest{})
+	if applyJob.Type != protocol.JobTypeConfigApply || applyJob.Status != protocol.JobStatusPending {
+		t.Fatalf("apply job = %#v, want pending config_apply", applyJob)
+	}
+	claimedApply := doJSONRequest[protocol.Job](t, client, http.MethodGet, server.URL+"/api/sidecar/jobs/next?nodeId=node-e2e", enrollResp.NodeCredential, nil)
+	if claimedApply.ID != applyJob.ID || claimedApply.Status != protocol.JobStatusClaimed {
+		t.Fatalf("claimed apply = %#v, want %s claimed", claimedApply, applyJob.ID)
+	}
+	var signed protocol.SignedConfigPlan
+	if err := json.Unmarshal([]byte(claimedApply.PayloadJSON), &signed); err != nil {
+		t.Fatalf("decode signed apply plan: %v", err)
+	}
+	if signed.Plan.Mode != protocol.ConfigPlanModeDryRun || !signed.Plan.Body.DryRun {
+		t.Fatalf("signed plan mode=%q dryRun=%t, want dry-run", signed.Plan.Mode, signed.Plan.Body.DryRun)
+	}
+	if signed.Plan.Body.Profile != "/tmp/sideplane-test/hermes/config.yaml" {
+		t.Fatalf("signed plan profile = %q, want fake config path", signed.Plan.Body.Profile)
+	}
+
+	applyResult, err := json.Marshal(protocol.ConfigApplyResult{
+		PlanID: signed.Plan.ID,
+		DryRun: true,
+		Steps: []protocol.ConfigApplyStep{
+			{Name: "validated", Status: "completed"},
+			{Name: "replaced", Status: "skipped", Detail: "dry-run"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal apply result: %v", err)
+	}
+	submitJobResult(t, client, server.URL, applyJob.ID, enrollResp.NodeCredential, protocol.JobResultRequest{
+		Status:     protocol.JobStatusCompleted,
+		ResultJSON: string(applyResult),
+	})
+
+	auditResp := doJSONRequest[protocol.ListAuditEventsResponse](t, client, http.MethodGet, server.URL+"/api/audit", "", nil)
+	wantActions := map[string]bool{
+		audit.ActionEnrollmentTokenCreate: false,
+		audit.ActionNodeEnroll:            false,
+		audit.ActionJobCreate:             false,
+		audit.ActionJobComplete:           false,
+		audit.ActionConfigApply:           false,
+		audit.ActionDesiredConfigUpdate:   false,
+	}
+	for _, event := range auditResp.Events {
+		if _, ok := wantActions[event.Action]; ok {
+			wantActions[event.Action] = true
+		}
+	}
+	for action, seen := range wantActions {
+		if !seen {
+			t.Fatalf("audit action %q not recorded in %#v", action, auditResp.Events)
+		}
+	}
+}
+
 func TestAuditAPIFiltersByNodeActionAndLimit(t *testing.T) {
 	nodeStore := store.NewMemoryNodeStore()
 	now := time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)
@@ -2525,6 +2666,49 @@ func TestAuditEventRedactionRedactsNestedJSONDetails(t *testing.T) {
 	}
 	if detail["status"] != "failed" {
 		t.Fatalf("redacted audit event detail = %#v, want harmless status preserved", detail)
+	}
+}
+
+func doJSONRequest[T any](t *testing.T, client *http.Client, method string, url string, bearerToken string, body any) T {
+	t.Helper()
+	var payload bytes.Buffer
+	if body != nil {
+		if err := json.NewEncoder(&payload).Encode(body); err != nil {
+			t.Fatalf("encode request body: %v", err)
+		}
+	}
+	req, err := http.NewRequest(method, url, &payload)
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	if bearerToken != "" {
+		req.Header.Set("Authorization", "Bearer "+bearerToken)
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+
+	res, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("%s %s: %v", method, url, err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		t.Fatalf("%s %s status = %d, want 2xx", method, url, res.StatusCode)
+	}
+
+	var out T
+	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+		t.Fatalf("decode %s %s response: %v", method, url, err)
+	}
+	return out
+}
+
+func submitJobResult(t *testing.T, client *http.Client, serverURL string, jobID string, credential string, result protocol.JobResultRequest) {
+	t.Helper()
+	resp := doJSONRequest[map[string]string](t, client, http.MethodPost, serverURL+"/api/sidecar/jobs/"+jobID+"/result", credential, result)
+	if resp["status"] != "accepted" {
+		t.Fatalf("job result response = %#v, want accepted", resp)
 	}
 }
 
