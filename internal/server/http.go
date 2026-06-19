@@ -19,6 +19,7 @@ import (
 
 	"github.com/wucm667/sideplane/internal/audit"
 	"github.com/wucm667/sideplane/internal/auth"
+	rolloutengine "github.com/wucm667/sideplane/internal/rollout"
 	"github.com/wucm667/sideplane/internal/store"
 	spconfig "github.com/wucm667/sideplane/pkg/config"
 	spcrypto "github.com/wucm667/sideplane/pkg/crypto"
@@ -121,6 +122,8 @@ func NewHandlerWithConfig(cfg HandlerConfig) (http.Handler, error) {
 	mux.HandleFunc("/api/enrollment-tokens", handler.createEnrollmentToken)
 	mux.HandleFunc("/api/enroll", handler.enrollNode)
 	mux.HandleFunc("/api/heartbeat", handler.heartbeat)
+	mux.HandleFunc("/api/rollouts", handler.rollouts)
+	mux.HandleFunc("/api/rollouts/", handler.rolloutRouter)
 	mux.HandleFunc("/api/nodes", handler.nodes)
 	mux.HandleFunc("/api/nodes/", handler.nodeJobsRouter)
 	mux.HandleFunc("/api/sidecar/jobs/next", handler.claimNextJob)
@@ -420,6 +423,320 @@ func (h *handler) nodes(w http.ResponseWriter, r *http.Request) {
 		Limit:  nodeList.Limit,
 		Offset: nodeList.Offset,
 	})
+}
+
+func (h *handler) rollouts(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodPost:
+		h.createRollout(w, r)
+	case http.MethodGet:
+		h.listRollouts(w, r)
+	default:
+		w.Header().Set("Allow", http.MethodPost+", "+http.MethodGet)
+		writeAPIError(w, http.StatusMethodNotAllowed, http.StatusText(http.StatusMethodNotAllowed))
+	}
+}
+
+func (h *handler) rolloutRouter(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/api/rollouts/")
+	parts := strings.Split(path, "/")
+	rolloutID := strings.TrimSpace(parts[0])
+	if rolloutID == "" {
+		writeAPIError(w, http.StatusNotFound, http.StatusText(http.StatusNotFound))
+		return
+	}
+	if len(parts) == 1 {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			writeAPIError(w, http.StatusMethodNotAllowed, http.StatusText(http.StatusMethodNotAllowed))
+			return
+		}
+		h.getRollout(w, r, rolloutID)
+		return
+	}
+	if len(parts) == 2 && parts[1] == "actions" {
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", http.MethodPost)
+			writeAPIError(w, http.StatusMethodNotAllowed, http.StatusText(http.StatusMethodNotAllowed))
+			return
+		}
+		h.rolloutAction(w, r, rolloutID)
+		return
+	}
+	writeAPIError(w, http.StatusNotFound, http.StatusText(http.StatusNotFound))
+}
+
+func (h *handler) createRollout(w http.ResponseWriter, r *http.Request) {
+	if !h.authorizeOperator(w, r) {
+		return
+	}
+	var req protocol.CreateRolloutRequest
+	if err := decodeJSONRequest(w, r, defaultJSONBodyLimit, &req); err != nil {
+		writeJSONDecodeError(w, err, "invalid rollout JSON")
+		return
+	}
+	spec, err := normalizeRolloutSpec(req.Spec)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := validateRolloutSpec(spec); err != nil {
+		writeAPIError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	nodeIDs, err := h.resolveRolloutNodes(r.Context(), spec)
+	if err != nil {
+		if errors.Is(err, store.ErrNodeNotFound) {
+			writeAPIError(w, http.StatusNotFound, "node not found")
+			return
+		}
+		writeAPIError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if len(nodeIDs) == 0 {
+		writeAPIError(w, http.StatusBadRequest, "rollout target set is empty")
+		return
+	}
+	spec.NodeIDs = nodeIDs
+	spec.Selector = cloneStringMap(spec.Selector)
+	now := time.Now().UTC()
+	created, err := h.store.CreateRollout(r.Context(), protocol.Rollout{
+		Spec:      spec,
+		State:     protocol.RolloutStatePending,
+		Batches:   rolloutengine.PlanBatches(nodeIDs, spec.BatchSize),
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "create rollout")
+		return
+	}
+	h.audit(r.Context(), protocol.AuditEvent{
+		Actor:     audit.ActorOperator,
+		Action:    audit.ActionRolloutCreate,
+		Detail:    fmt.Sprintf("rollout=%s nodes=%d runtime=%s live=%t", created.ID, len(nodeIDs), spec.RuntimeType, spec.Live),
+		CreatedAt: now,
+	})
+	writeJSON(w, http.StatusCreated, protocol.CreateRolloutResponse{Rollout: created})
+}
+
+func (h *handler) listRollouts(w http.ResponseWriter, r *http.Request) {
+	if !h.authorizeOperator(w, r) {
+		return
+	}
+	filter, err := parseRolloutFilter(r)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	list, err := h.store.ListRollouts(r.Context(), filter)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "list rollouts")
+		return
+	}
+	writeJSON(w, http.StatusOK, protocol.ListRolloutsResponse{
+		Rollouts: list.Rollouts,
+		Total:    list.Total,
+		Limit:    list.Limit,
+		Offset:   list.Offset,
+	})
+}
+
+func (h *handler) getRollout(w http.ResponseWriter, r *http.Request, rolloutID string) {
+	if !h.authorizeOperator(w, r) {
+		return
+	}
+	rollout, err := h.store.GetRollout(r.Context(), rolloutID)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "get rollout")
+		return
+	}
+	if rollout == nil {
+		writeAPIError(w, http.StatusNotFound, "rollout not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, protocol.GetRolloutResponse{Rollout: *rollout})
+}
+
+func (h *handler) rolloutAction(w http.ResponseWriter, r *http.Request, rolloutID string) {
+	if !h.authorizeOperator(w, r) {
+		return
+	}
+	var req protocol.RolloutActionRequest
+	if err := decodeJSONRequest(w, r, defaultJSONBodyLimit, &req); err != nil {
+		writeJSONDecodeError(w, err, "invalid rollout action JSON")
+		return
+	}
+	rollout, err := h.store.GetRollout(r.Context(), rolloutID)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "get rollout")
+		return
+	}
+	if rollout == nil {
+		writeAPIError(w, http.StatusNotFound, "rollout not found")
+		return
+	}
+	now := time.Now().UTC()
+	action := ""
+	switch req.Action {
+	case protocol.RolloutActionPause:
+		*rollout = pauseRolloutForOperator(*rollout, now)
+		action = audit.ActionRolloutPause
+	case protocol.RolloutActionResume:
+		*rollout = rolloutengine.Resume(*rollout, now)
+		action = audit.ActionRolloutResume
+	case protocol.RolloutActionAbort:
+		*rollout = rolloutengine.Abort(*rollout, now)
+		action = audit.ActionRolloutAbort
+	default:
+		writeAPIError(w, http.StatusBadRequest, "unsupported rollout action")
+		return
+	}
+	if err := h.store.UpdateRollout(r.Context(), *rollout); err != nil {
+		if errors.Is(err, store.ErrRolloutNotFound) {
+			writeAPIError(w, http.StatusNotFound, "rollout not found")
+			return
+		}
+		writeAPIError(w, http.StatusInternalServerError, "update rollout")
+		return
+	}
+	h.audit(r.Context(), protocol.AuditEvent{
+		Actor:     audit.ActorOperator,
+		Action:    action,
+		Detail:    "rollout=" + rollout.ID,
+		CreatedAt: now,
+	})
+	writeJSON(w, http.StatusOK, protocol.RolloutActionResponse{Rollout: *rollout})
+}
+
+func normalizeRolloutSpec(spec protocol.RolloutSpec) (protocol.RolloutSpec, error) {
+	spec.RuntimeType = strings.TrimSpace(spec.RuntimeType)
+	spec.Profile = strings.TrimSpace(spec.Profile)
+	if spec.BatchSize <= 0 {
+		spec.BatchSize = 1
+	}
+	if spec.HealthTimeout <= 0 {
+		spec.HealthTimeout = rolloutengine.DefaultHealthTimeout
+	}
+	spec.NodeIDs = uniqueTrimmedStrings(spec.NodeIDs)
+	selector, err := store.ValidateNodeLabels(spec.Selector)
+	if err != nil {
+		return protocol.RolloutSpec{}, fmt.Errorf("invalid selector: %w", err)
+	}
+	spec.Selector = selector
+	spec.Target.Provider = strings.TrimSpace(spec.Target.Provider)
+	spec.Target.Model = strings.TrimSpace(spec.Target.Model)
+	return spec, nil
+}
+
+func validateRolloutSpec(spec protocol.RolloutSpec) error {
+	if len(spec.NodeIDs) > 0 && len(spec.Selector) > 0 {
+		return fmt.Errorf("selector and nodeIds are mutually exclusive")
+	}
+	if err := rolloutengine.ValidateRolloutSpec(spec); err != nil {
+		return err
+	}
+	if spec.RuntimeType != "hermes" && spec.RuntimeType != "openclaw" {
+		return fmt.Errorf("unsupported runtime type")
+	}
+	if err := spconfig.ValidateProviderModelSelection(spec.Target); err != nil {
+		return fmt.Errorf("invalid target provider/model: %w", err)
+	}
+	return nil
+}
+
+func (h *handler) resolveRolloutNodes(ctx context.Context, spec protocol.RolloutSpec) ([]string, error) {
+	if len(spec.NodeIDs) > 0 {
+		for _, nodeID := range spec.NodeIDs {
+			exists, err := h.store.NodeExists(ctx, nodeID)
+			if err != nil {
+				return nil, err
+			}
+			if !exists {
+				return nil, store.ErrNodeNotFound
+			}
+		}
+		return append([]string(nil), spec.NodeIDs...), nil
+	}
+	list, err := h.store.ListNodesFiltered(ctx, store.NodeFilter{
+		Labels: spec.Selector,
+		Limit:  store.MaxNodeListLimit,
+	})
+	if err != nil {
+		return nil, err
+	}
+	nodeIDs := make([]string, 0, len(list.Nodes))
+	for _, node := range list.Nodes {
+		nodeIDs = append(nodeIDs, node.NodeID)
+	}
+	return nodeIDs, nil
+}
+
+func parseRolloutFilter(r *http.Request) (store.RolloutFilter, error) {
+	filter := store.RolloutFilter{Limit: store.DefaultRolloutListLimit}
+	query := r.URL.Query()
+	if limitValue := strings.TrimSpace(query.Get("limit")); limitValue != "" {
+		limit, err := strconv.Atoi(limitValue)
+		if err != nil || limit <= 0 {
+			return store.RolloutFilter{}, fmt.Errorf("limit must be a positive integer")
+		}
+		if limit > store.MaxRolloutListLimit {
+			limit = store.MaxRolloutListLimit
+		}
+		filter.Limit = limit
+	}
+	if offsetValue := strings.TrimSpace(query.Get("offset")); offsetValue != "" {
+		offset, err := strconv.Atoi(offsetValue)
+		if err != nil || offset < 0 {
+			return store.RolloutFilter{}, fmt.Errorf("offset must be a non-negative integer")
+		}
+		filter.Offset = offset
+	}
+	return filter, nil
+}
+
+func pauseRolloutForOperator(rollout protocol.Rollout, now time.Time) protocol.Rollout {
+	if rollout.State == protocol.RolloutStateCompleted || rollout.State == protocol.RolloutStateAborted || rollout.State == protocol.RolloutStateFailed {
+		return rollout
+	}
+	rollout.State = protocol.RolloutStatePaused
+	rollout.PauseReason = "operator paused"
+	rollout.UpdatedAt = now.UTC()
+	for i := range rollout.Batches {
+		if rollout.Batches[i].State == protocol.RolloutBatchStateRunning || rollout.Batches[i].State == protocol.RolloutBatchStatePending {
+			rollout.Batches[i].State = protocol.RolloutBatchStatePaused
+			break
+		}
+	}
+	return rollout
+}
+
+func uniqueTrimmedStrings(values []string) []string {
+	seen := map[string]struct{}{}
+	result := []string{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result
+}
+
+func cloneStringMap(values map[string]string) map[string]string {
+	if len(values) == 0 {
+		return nil
+	}
+	clone := make(map[string]string, len(values))
+	for key, value := range values {
+		clone[key] = value
+	}
+	return clone
 }
 
 func parseNodeFilter(r *http.Request) (store.NodeFilter, error) {

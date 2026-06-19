@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/wucm667/sideplane/internal/audit"
+	rolloutengine "github.com/wucm667/sideplane/internal/rollout"
 	"github.com/wucm667/sideplane/internal/store"
 	spconfig "github.com/wucm667/sideplane/pkg/config"
 	spcrypto "github.com/wucm667/sideplane/pkg/crypto"
@@ -2557,6 +2558,194 @@ func TestNodeLabelsAPIRequiresAuthAndValidatesSelector(t *testing.T) {
 	req = httptest.NewRequest(http.MethodGet, "/api/nodes?selector=role", nil)
 	handler.ServeHTTP(rec, req)
 	assertAPIError(t, rec, http.StatusBadRequest, "bad_request", "selector entries must use key=value")
+}
+
+func TestRolloutAPICreateListGetActionsAndAudit(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	for _, nodeID := range []string{"node-a", "node-b", "node-c"} {
+		enrollTestNode(t, nodeStore, nodeID)
+	}
+	if err := nodeStore.SetNodeLabels(context.Background(), "node-a", map[string]string{"role": "canary"}); err != nil {
+		t.Fatalf("set node-a labels: %v", err)
+	}
+	if err := nodeStore.SetNodeLabels(context.Background(), "node-b", map[string]string{"role": "stable"}); err != nil {
+		t.Fatalf("set node-b labels: %v", err)
+	}
+	handler, err := NewHandlerWithConfig(HandlerConfig{
+		Store:         nodeStore,
+		Freshness:     DefaultFreshnessPolicy(),
+		OperatorToken: "dev-token",
+	})
+	if err != nil {
+		t.Fatalf("build handler: %v", err)
+	}
+
+	createBody, _ := json.Marshal(protocol.CreateRolloutRequest{Spec: protocol.RolloutSpec{
+		Selector:    map[string]string{"role": "canary"},
+		RuntimeType: "hermes",
+		Profile:     "default",
+		Target:      protocol.ProviderModelConfig{Provider: "openai", Model: "gpt-5"},
+	}})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/rollouts", bytes.NewReader(createBody))
+	req.Header.Set("Authorization", "Bearer dev-token")
+	handler.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusCreated)
+	var created protocol.CreateRolloutResponse
+	if err := json.NewDecoder(rec.Body).Decode(&created); err != nil {
+		t.Fatalf("decode created rollout: %v", err)
+	}
+	if created.Rollout.ID == "" || created.Rollout.State != protocol.RolloutStatePending {
+		t.Fatalf("created rollout = %#v, want pending with ID", created.Rollout)
+	}
+	if len(created.Rollout.Spec.NodeIDs) != 1 || created.Rollout.Spec.NodeIDs[0] != "node-a" {
+		t.Fatalf("resolved node IDs = %#v, want node-a", created.Rollout.Spec.NodeIDs)
+	}
+	if created.Rollout.Spec.BatchSize != 1 || created.Rollout.Spec.HealthTimeout != rolloutengine.DefaultHealthTimeout {
+		t.Fatalf("defaulted spec = %#v, want batch 1 health timeout", created.Rollout.Spec)
+	}
+
+	explicitBody, _ := json.Marshal(protocol.CreateRolloutRequest{Spec: protocol.RolloutSpec{
+		NodeIDs:     []string{"node-b", "node-c"},
+		RuntimeType: "openclaw",
+		Target:      protocol.ProviderModelConfig{Provider: "anthropic", Model: "claude-sonnet-4"},
+		BatchSize:   2,
+		Live:        true,
+	}})
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/rollouts", bytes.NewReader(explicitBody))
+	req.Header.Set("Authorization", "Bearer dev-token")
+	handler.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusCreated)
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/rollouts?limit=1", nil)
+	req.Header.Set("Authorization", "Bearer dev-token")
+	handler.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusOK)
+	var list protocol.ListRolloutsResponse
+	if err := json.NewDecoder(rec.Body).Decode(&list); err != nil {
+		t.Fatalf("decode rollout list: %v", err)
+	}
+	if list.Total != 2 || list.Limit != 1 || len(list.Rollouts) != 1 {
+		t.Fatalf("rollout list = %#v, want total 2 limit 1", list)
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/rollouts/"+created.Rollout.ID, nil)
+	req.Header.Set("Authorization", "Bearer dev-token")
+	handler.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusOK)
+	var got protocol.GetRolloutResponse
+	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
+		t.Fatalf("decode rollout get: %v", err)
+	}
+	if got.Rollout.ID != created.Rollout.ID {
+		t.Fatalf("got rollout ID = %q, want %q", got.Rollout.ID, created.Rollout.ID)
+	}
+
+	for _, action := range []protocol.RolloutAction{protocol.RolloutActionPause, protocol.RolloutActionResume, protocol.RolloutActionAbort} {
+		body, _ := json.Marshal(protocol.RolloutActionRequest{Action: action})
+		rec = httptest.NewRecorder()
+		req = httptest.NewRequest(http.MethodPost, "/api/rollouts/"+created.Rollout.ID+"/actions", bytes.NewReader(body))
+		req.Header.Set("Authorization", "Bearer dev-token")
+		handler.ServeHTTP(rec, req)
+		assertStatus(t, rec, http.StatusOK)
+	}
+	final, err := nodeStore.GetRollout(context.Background(), created.Rollout.ID)
+	if err != nil {
+		t.Fatalf("get final rollout: %v", err)
+	}
+	if final == nil || final.State != protocol.RolloutStateAborted {
+		t.Fatalf("final rollout = %#v, want aborted", final)
+	}
+	events, err := nodeStore.ListAuditEventsFiltered(context.Background(), store.AuditFilter{Action: audit.ActionRolloutCreate, Limit: 10})
+	if err != nil {
+		t.Fatalf("list rollout create audit: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("rollout create audit events = %#v, want two", events)
+	}
+}
+
+func TestRolloutAPIValidationAndAuth(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	enrollTestNode(t, nodeStore, "node-a")
+	handler, err := NewHandlerWithConfig(HandlerConfig{
+		Store:         nodeStore,
+		Freshness:     DefaultFreshnessPolicy(),
+		OperatorToken: "dev-token",
+	})
+	if err != nil {
+		t.Fatalf("build handler: %v", err)
+	}
+
+	valid := protocol.CreateRolloutRequest{Spec: protocol.RolloutSpec{
+		NodeIDs:     []string{"node-a"},
+		RuntimeType: "hermes",
+		Target:      protocol.ProviderModelConfig{Provider: "openai", Model: "gpt-5"},
+	}}
+	body, _ := json.Marshal(valid)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/rollouts", bytes.NewReader(body))
+	handler.ServeHTTP(rec, req)
+	assertAPIError(t, rec, http.StatusUnauthorized, "unauthorized", http.StatusText(http.StatusUnauthorized))
+
+	tests := []struct {
+		name string
+		req  protocol.CreateRolloutRequest
+	}{
+		{
+			name: "empty target set",
+			req: protocol.CreateRolloutRequest{Spec: protocol.RolloutSpec{
+				Selector:    map[string]string{"role": "missing"},
+				RuntimeType: "hermes",
+				Target:      protocol.ProviderModelConfig{Provider: "openai", Model: "gpt-5"},
+			}},
+		},
+		{
+			name: "selector and node IDs",
+			req: protocol.CreateRolloutRequest{Spec: protocol.RolloutSpec{
+				Selector:    map[string]string{"role": "canary"},
+				NodeIDs:     []string{"node-a"},
+				RuntimeType: "hermes",
+				Target:      protocol.ProviderModelConfig{Provider: "openai", Model: "gpt-5"},
+			}},
+		},
+		{
+			name: "invalid provider model",
+			req: protocol.CreateRolloutRequest{Spec: protocol.RolloutSpec{
+				NodeIDs:     []string{"node-a"},
+				RuntimeType: "hermes",
+				Target:      protocol.ProviderModelConfig{Provider: "bad\nprovider", Model: "gpt-5"},
+			}},
+		},
+		{
+			name: "unknown node",
+			req: protocol.CreateRolloutRequest{Spec: protocol.RolloutSpec{
+				NodeIDs:     []string{"missing"},
+				RuntimeType: "hermes",
+				Target:      protocol.ProviderModelConfig{Provider: "openai", Model: "gpt-5"},
+			}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body, _ := json.Marshal(tt.req)
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/api/rollouts", bytes.NewReader(body))
+			req.Header.Set("Authorization", "Bearer dev-token")
+			handler.ServeHTTP(rec, req)
+			if rec.Code < 400 {
+				t.Fatalf("status = %d, want failure; body=%s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/rollouts", nil)
+	handler.ServeHTTP(rec, req)
+	assertAPIError(t, rec, http.StatusUnauthorized, "unauthorized", http.StatusText(http.StatusUnauthorized))
 }
 
 func TestHeartbeatRequiresAuthorization(t *testing.T) {

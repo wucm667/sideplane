@@ -29,6 +29,14 @@ const (
 	ActionRestart = "restart"
 	// ActionRollback records operator creation of an explicit rollback job.
 	ActionRollback = "rollback"
+	// ActionRolloutCreate records operator creation of a staged rollout.
+	ActionRolloutCreate = "rollout.create"
+	// ActionRolloutPause records operator pausing a staged rollout.
+	ActionRolloutPause = "rollout.pause"
+	// ActionRolloutResume records operator resuming a staged rollout.
+	ActionRolloutResume = "rollout.resume"
+	// ActionRolloutAbort records operator aborting a staged rollout.
+	ActionRolloutAbort = "rollout.abort"
 	// ActionDesiredConfigUpdate records operator updates to desired config.
 	ActionDesiredConfigUpdate = "config.desired.update"
 )
