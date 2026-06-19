@@ -190,6 +190,8 @@ func (p *JobPoller) executeJob(ctx context.Context, job *protocol.Job) protocol.
 		return p.executeDeepProbe(ctx, job)
 	case protocol.JobTypeConfigApply:
 		return p.executeConfigApply(ctx, job)
+	case protocol.JobTypeRestart:
+		return p.executeRestart(ctx, job)
 	default:
 		return protocol.JobResultRequest{
 			Status: protocol.JobStatusFailed,
@@ -233,6 +235,100 @@ func (p *JobPoller) executeDeepProbe(ctx context.Context, job *protocol.Job) pro
 		Status:     protocol.JobStatusCompleted,
 		ResultJSON: string(resultJSON),
 	}
+}
+
+func (p *JobPoller) executeRestart(ctx context.Context, job *protocol.Job) protocol.JobResultRequest {
+	var payload protocol.RestartJobPayload
+	if err := json.Unmarshal([]byte(job.PayloadJSON), &payload); err != nil {
+		return protocol.JobResultRequest{
+			Status: protocol.JobStatusFailed,
+			Error:  fmt.Sprintf("invalid restart payload: %v", err),
+		}
+	}
+
+	result := protocol.RestartJobResult{
+		Controller:   restartControllerLabel(p.controller),
+		HealthStatus: "not_checked",
+	}
+	addStep := func(name, status, detail string) {
+		result.Steps = append(result.Steps, protocol.ConfigApplyStep{Name: name, Status: status, Detail: detail})
+	}
+	addStep("payload_received", "completed", restartTargetDetail(payload))
+
+	if payload.DryRun {
+		addStep("restarted", "skipped", "dry-run")
+		addStep("health_checked", "skipped", "dry-run")
+		result.HealthStatus = "skipped"
+		return marshalRestartResult(protocol.JobStatusCompleted, result, "")
+	}
+
+	if !p.allowLiveApply {
+		err := "live restart is disabled by sidecar policy (--allow-live-apply off)"
+		addStep("restarted", "failed", err)
+		return marshalRestartResult(protocol.JobStatusFailed, result, err)
+	}
+	if p.controller == nil {
+		err := "live restart requires a configured service controller"
+		addStep("restarted", "failed", err)
+		return marshalRestartResult(protocol.JobStatusFailed, result, err)
+	}
+
+	if err := p.controller.Restart(ctx); err != nil {
+		addStep("restarted", "failed", err.Error())
+		return marshalRestartResult(protocol.JobStatusFailed, result, err.Error())
+	}
+	addStep("restarted", "completed", "")
+
+	if err := p.controller.HealthCheck(ctx); err != nil {
+		result.HealthStatus = "unhealthy"
+		addStep("health_checked", "failed", err.Error())
+		return marshalRestartResult(protocol.JobStatusFailed, result, err.Error())
+	}
+	result.HealthStatus = "healthy"
+	addStep("health_checked", "completed", "")
+	return marshalRestartResult(protocol.JobStatusCompleted, result, "")
+}
+
+func marshalRestartResult(status protocol.JobStatus, result protocol.RestartJobResult, errText string) protocol.JobResultRequest {
+	resultJSON, err := json.Marshal(result)
+	if err != nil {
+		return protocol.JobResultRequest{
+			Status: protocol.JobStatusFailed,
+			Error:  fmt.Sprintf("marshal restart result: %v", err),
+		}
+	}
+	return protocol.JobResultRequest{
+		Status:     status,
+		ResultJSON: string(resultJSON),
+		Error:      errText,
+	}
+}
+
+func restartControllerLabel(controller adapters.ServiceController) string {
+	if controller == nil {
+		return "none"
+	}
+	return fmt.Sprintf("%T", controller)
+}
+
+func restartTargetDetail(payload protocol.RestartJobPayload) string {
+	parts := []string{}
+	if payload.RuntimeType != "" {
+		parts = append(parts, "type="+payload.RuntimeType)
+	}
+	if payload.RuntimeName != "" {
+		parts = append(parts, "name="+payload.RuntimeName)
+	}
+	if payload.Profile != "" {
+		parts = append(parts, "profile="+payload.Profile)
+	}
+	if payload.Reason != "" {
+		parts = append(parts, "reason="+payload.Reason)
+	}
+	if len(parts) == 0 {
+		return "default target"
+	}
+	return strings.Join(parts, " ")
 }
 
 // submitJobResult submits a job result to the server.

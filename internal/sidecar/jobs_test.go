@@ -3,6 +3,7 @@ package sidecar
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -254,6 +255,177 @@ func TestJobPollerDeepProbeIncludesConfigSnapshots(t *testing.T) {
 	}
 }
 
+func TestJobPollerRestartDryRunCompletesWithoutController(t *testing.T) {
+	ctx := context.Background()
+	nodeStore := store.NewMemoryNodeStore()
+	credential := enrollTestNode(t, nodeStore, "node-restart")
+	job := createRestartJobForTest(t, nodeStore, "node-restart", protocol.RestartJobPayload{
+		RuntimeType: "hermes",
+		Profile:     "default",
+		Reason:      "operator dry-run",
+		DryRun:      true,
+	})
+
+	api := httptest.NewServer(server.NewHandlerWithStore(nodeStore))
+	defer api.Close()
+
+	poller, err := NewJobPoller(JobPollerConfig{
+		ServerURL:      api.URL,
+		NodeID:         "node-restart",
+		NodeCredential: credential,
+		HTTPClient:     api.Client(),
+	})
+	if err != nil {
+		t.Fatalf("new job poller: %v", err)
+	}
+
+	if err := poller.PollAndExecute(ctx); err != nil {
+		t.Fatalf("poll and execute: %v", err)
+	}
+
+	got := getJobForTest(t, nodeStore, job.ID)
+	if got.Status != protocol.JobStatusCompleted {
+		t.Fatalf("restart status = %q, want completed; error=%q", got.Status, got.Error)
+	}
+	result := decodeRestartResultForTest(t, got.ResultJSON)
+	if result.HealthStatus != "skipped" {
+		t.Fatalf("health status = %q, want skipped", result.HealthStatus)
+	}
+	if len(result.Steps) != 3 || result.Steps[1].Status != "skipped" {
+		t.Fatalf("restart steps = %#v, want skipped dry-run restart", result.Steps)
+	}
+}
+
+func TestJobPollerRestartLiveRejectedWithoutAllowLive(t *testing.T) {
+	ctx := context.Background()
+	nodeStore := store.NewMemoryNodeStore()
+	credential := enrollTestNode(t, nodeStore, "node-restart")
+	job := createRestartJobForTest(t, nodeStore, "node-restart", protocol.RestartJobPayload{
+		RuntimeType: "hermes",
+		DryRun:      false,
+	})
+
+	api := httptest.NewServer(server.NewHandlerWithStore(nodeStore))
+	defer api.Close()
+
+	controller := &fakeServiceController{}
+	poller, err := NewJobPoller(JobPollerConfig{
+		ServerURL:      api.URL,
+		NodeID:         "node-restart",
+		NodeCredential: credential,
+		Controller:     controller,
+		HTTPClient:     api.Client(),
+	})
+	if err != nil {
+		t.Fatalf("new job poller: %v", err)
+	}
+
+	if err := poller.PollAndExecute(ctx); err != nil {
+		t.Fatalf("poll and execute: %v", err)
+	}
+
+	got := getJobForTest(t, nodeStore, job.ID)
+	if got.Status != protocol.JobStatusFailed {
+		t.Fatalf("restart status = %q, want failed", got.Status)
+	}
+	if controller.restartCalls != 0 {
+		t.Fatalf("restart calls = %d, want 0 when live is disabled", controller.restartCalls)
+	}
+	if !strings.Contains(got.Error, "disabled") {
+		t.Fatalf("restart error = %q, want disabled policy", got.Error)
+	}
+}
+
+func TestJobPollerRestartLiveCallsControllerOnce(t *testing.T) {
+	ctx := context.Background()
+	nodeStore := store.NewMemoryNodeStore()
+	credential := enrollTestNode(t, nodeStore, "node-restart")
+	job := createRestartJobForTest(t, nodeStore, "node-restart", protocol.RestartJobPayload{
+		RuntimeType: "hermes",
+		DryRun:      false,
+	})
+
+	api := httptest.NewServer(server.NewHandlerWithStore(nodeStore))
+	defer api.Close()
+
+	controller := &fakeServiceController{}
+	poller, err := NewJobPoller(JobPollerConfig{
+		ServerURL:      api.URL,
+		NodeID:         "node-restart",
+		NodeCredential: credential,
+		AllowLiveApply: true,
+		Controller:     controller,
+		HTTPClient:     api.Client(),
+	})
+	if err != nil {
+		t.Fatalf("new job poller: %v", err)
+	}
+
+	if err := poller.PollAndExecute(ctx); err != nil {
+		t.Fatalf("poll and execute: %v", err)
+	}
+
+	got := getJobForTest(t, nodeStore, job.ID)
+	if got.Status != protocol.JobStatusCompleted {
+		t.Fatalf("restart status = %q, want completed; error=%q", got.Status, got.Error)
+	}
+	if controller.restartCalls != 1 {
+		t.Fatalf("restart calls = %d, want 1", controller.restartCalls)
+	}
+	if controller.healthCalls != 1 {
+		t.Fatalf("health calls = %d, want 1", controller.healthCalls)
+	}
+	result := decodeRestartResultForTest(t, got.ResultJSON)
+	if result.HealthStatus != "healthy" {
+		t.Fatalf("health status = %q, want healthy", result.HealthStatus)
+	}
+}
+
+func TestJobPollerRestartHealthFailureReturnsFailedResult(t *testing.T) {
+	ctx := context.Background()
+	nodeStore := store.NewMemoryNodeStore()
+	credential := enrollTestNode(t, nodeStore, "node-restart")
+	job := createRestartJobForTest(t, nodeStore, "node-restart", protocol.RestartJobPayload{
+		RuntimeType: "hermes",
+		DryRun:      false,
+	})
+
+	api := httptest.NewServer(server.NewHandlerWithStore(nodeStore))
+	defer api.Close()
+
+	controller := &fakeServiceController{healthErr: errors.New("runtime is not healthy")}
+	poller, err := NewJobPoller(JobPollerConfig{
+		ServerURL:      api.URL,
+		NodeID:         "node-restart",
+		NodeCredential: credential,
+		AllowLiveApply: true,
+		Controller:     controller,
+		HTTPClient:     api.Client(),
+	})
+	if err != nil {
+		t.Fatalf("new job poller: %v", err)
+	}
+
+	if err := poller.PollAndExecute(ctx); err != nil {
+		t.Fatalf("poll and execute: %v", err)
+	}
+
+	got := getJobForTest(t, nodeStore, job.ID)
+	if got.Status != protocol.JobStatusFailed {
+		t.Fatalf("restart status = %q, want failed", got.Status)
+	}
+	if controller.restartCalls != 1 {
+		t.Fatalf("restart calls = %d, want 1", controller.restartCalls)
+	}
+	result := decodeRestartResultForTest(t, got.ResultJSON)
+	if result.HealthStatus != "unhealthy" {
+		t.Fatalf("health status = %q, want unhealthy", result.HealthStatus)
+	}
+	if !strings.Contains(got.Error, "not healthy") {
+		t.Fatalf("restart error = %q, want health failure", got.Error)
+	}
+}
+
 func TestJobPollerFailsUnknownJobType(t *testing.T) {
 	ctx := context.Background()
 	nodeStore := store.NewMemoryNodeStore()
@@ -353,4 +525,58 @@ func (c fakeRuntimeCollector) CollectStatuses(context.Context) []protocol.Runtim
 
 func (c fakeRuntimeCollector) CollectConfigSnapshots(context.Context) []protocol.RuntimeConfigSnapshot {
 	return append([]protocol.RuntimeConfigSnapshot(nil), c.configSnapshots...)
+}
+
+func createRestartJobForTest(t *testing.T, nodeStore store.Store, nodeID string, payload protocol.RestartJobPayload) protocol.Job {
+	t.Helper()
+	payloadJSON, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal restart payload: %v", err)
+	}
+	job, err := nodeStore.CreateJob(context.Background(), protocol.CreateJobRequest{
+		Type:        protocol.JobTypeRestart,
+		PayloadJSON: string(payloadJSON),
+	}, nodeID, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("create restart job: %v", err)
+	}
+	return job
+}
+
+func getJobForTest(t *testing.T, nodeStore store.Store, jobID string) protocol.Job {
+	t.Helper()
+	job, err := nodeStore.GetJob(context.Background(), jobID)
+	if err != nil {
+		t.Fatalf("get job: %v", err)
+	}
+	if job == nil {
+		t.Fatalf("job %q not found", jobID)
+	}
+	return *job
+}
+
+func decodeRestartResultForTest(t *testing.T, resultJSON string) protocol.RestartJobResult {
+	t.Helper()
+	var result protocol.RestartJobResult
+	if err := json.Unmarshal([]byte(resultJSON), &result); err != nil {
+		t.Fatalf("decode restart result: %v", err)
+	}
+	return result
+}
+
+type fakeServiceController struct {
+	restartCalls int
+	healthCalls  int
+	restartErr   error
+	healthErr    error
+}
+
+func (c *fakeServiceController) Restart(context.Context) error {
+	c.restartCalls++
+	return c.restartErr
+}
+
+func (c *fakeServiceController) HealthCheck(context.Context) error {
+	c.healthCalls++
+	return c.healthErr
 }
