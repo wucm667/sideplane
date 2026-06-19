@@ -60,6 +60,7 @@ func TestServerEnvFallbacksApplyWhenFlagsUnset(t *testing.T) {
 	t.Setenv("SIDEPLANE_HEARTBEAT_RETENTION", "250")
 	t.Setenv("SIDEPLANE_JOB_RETENTION", "720h")
 	t.Setenv("SIDEPLANE_AUDIT_RETENTION", "4320h")
+	t.Setenv("SIDEPLANE_ROLLOUT_INTERVAL", "15s")
 
 	addr := ":8080"
 	dbPath := "sideplane.db"
@@ -69,6 +70,7 @@ func TestServerEnvFallbacksApplyWhenFlagsUnset(t *testing.T) {
 	heartbeatRetention := 100
 	jobRetention := 30 * 24 * time.Hour
 	auditRetention := 180 * 24 * time.Hour
+	rolloutInterval := defaultRolloutInterval
 
 	if err := applyServerEnvFallbacks(map[string]bool{}, serverFlagValues{
 		addr:               &addr,
@@ -79,6 +81,7 @@ func TestServerEnvFallbacksApplyWhenFlagsUnset(t *testing.T) {
 		heartbeatRetention: &heartbeatRetention,
 		jobRetention:       &jobRetention,
 		auditRetention:     &auditRetention,
+		rolloutInterval:    &rolloutInterval,
 	}); err != nil {
 		t.Fatalf("apply env fallbacks: %v", err)
 	}
@@ -106,6 +109,9 @@ func TestServerEnvFallbacksApplyWhenFlagsUnset(t *testing.T) {
 	}
 	if auditRetention != 4320*time.Hour {
 		t.Fatalf("audit retention = %s, want 4320h", auditRetention)
+	}
+	if rolloutInterval != 15*time.Second {
+		t.Fatalf("rollout interval = %s, want 15s", rolloutInterval)
 	}
 }
 
@@ -161,6 +167,23 @@ func TestRunRejectsNegativeRetention(t *testing.T) {
 				t.Fatalf("stdout = %q, want empty", stdout.String())
 			}
 		})
+	}
+}
+
+func TestRunRejectsNegativeRolloutInterval(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	code := run([]string{"--rollout-interval=-1s"}, &stdout, &stderr)
+
+	if code == 0 {
+		t.Fatalf("exit code = 0, want non-zero")
+	}
+	if !strings.Contains(stderr.String(), "rollout-interval must be zero or positive") {
+		t.Fatalf("stderr = %q, want rollout interval validation error", stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout = %q, want empty", stdout.String())
 	}
 }
 

@@ -20,12 +20,14 @@ import (
 	"github.com/wucm667/sideplane/internal/buildinfo"
 	"github.com/wucm667/sideplane/internal/server"
 	"github.com/wucm667/sideplane/internal/store"
+	spcrypto "github.com/wucm667/sideplane/pkg/crypto"
 	webassets "github.com/wucm667/sideplane/web"
 )
 
 const shutdownTimeout = 10 * time.Second
 const heartbeatPruneInterval = 10 * time.Minute
 const retentionPruneInterval = time.Hour
+const defaultRolloutInterval = 5 * time.Second
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
@@ -43,6 +45,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	heartbeatRetention := flags.Int("heartbeat-retention", store.DefaultHeartbeatRetention, "number of recent heartbeats to keep per node")
 	jobRetention := flags.Duration("job-retention", store.DefaultJobRetention, "age to retain completed and failed jobs; set 0 to disable pruning")
 	auditRetention := flags.Duration("audit-retention", store.DefaultAuditRetention, "age to retain audit events; set 0 to disable pruning")
+	rolloutInterval := flags.Duration("rollout-interval", defaultRolloutInterval, "interval between rollout reconciliation ticks; set 0 to disable")
 	operatorTokenFlag := flags.String("operator-token", "", "bearer token required for mutating operator API requests; can also be set with SIDEPLANE_OPERATOR_TOKEN")
 	allowUnauthenticatedOperatorAPIFlag := flags.Bool("allow-unauthenticated-operator-api", false, "DEVELOPMENT ONLY: allow mutating operator API requests without an operator token; can also be set with SIDEPLANE_ALLOW_UNAUTHENTICATED_OPERATOR_API=true")
 	signingKeyPath := flags.String("signing-key", "", "path to server config-plan signing key; can also be set with SIDEPLANE_SIGNING_KEY")
@@ -66,6 +69,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		heartbeatRetention: heartbeatRetention,
 		jobRetention:       jobRetention,
 		auditRetention:     auditRetention,
+		rolloutInterval:    rolloutInterval,
 	}); err != nil {
 		fmt.Fprintf(stderr, "invalid environment configuration: %v\n", err)
 		return 1
@@ -91,6 +95,10 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "invalid audit retention: audit-retention must be zero or positive")
 		return 1
 	}
+	if *rolloutInterval < 0 {
+		fmt.Fprintln(stderr, "invalid rollout interval: rollout-interval must be zero or positive")
+		return 1
+	}
 
 	logger := slog.New(slog.NewTextHandler(stderr, nil))
 	operatorToken := strings.TrimSpace(*operatorTokenFlag)
@@ -112,6 +120,13 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	if keyPath == "" {
 		logger.Warn("signing key not configured; config apply plans will use an ephemeral in-memory key; set SIDEPLANE_SIGNING_KEY or --signing-key for apply-capable deployments")
 	}
+	signingKey, err := spcrypto.LoadOrCreateKeyPair(keyPath)
+	if err != nil {
+		logger.Error("configure signing key", "error", err)
+		return 1
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
 	nodeStore, err := store.OpenSQLiteNodeStore(context.Background(), *dbPath)
 	if err != nil {
@@ -134,7 +149,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		Freshness:                       freshness,
 		OperatorToken:                   operatorToken,
 		AllowUnauthenticatedOperatorAPI: allowUnauthenticatedOperatorAPI,
-		SigningKeyPath:                  keyPath,
+		SigningKeyPair:                  signingKey,
 		Logger:                          logger,
 	})
 	if err != nil {
@@ -165,10 +180,15 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		Handler: handler,
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	startHeartbeatPruner(ctx, nodeStore, *heartbeatRetention, heartbeatPruneInterval, logger)
 	startRetentionPruner(ctx, nodeStore, *jobRetention, *auditRetention, retentionPruneInterval, logger)
+	server.StartRolloutOrchestrator(ctx, server.RolloutOrchestratorConfig{
+		Store:      nodeStore,
+		Freshness:  freshness,
+		SigningKey: signingKey,
+		Interval:   *rolloutInterval,
+		Logger:     logger,
+	})
 
 	logger.Info(
 		"starting sideplane-server",
@@ -180,6 +200,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		"heartbeat_retention", *heartbeatRetention,
 		"job_retention", jobRetention.String(),
 		"audit_retention", auditRetention.String(),
+		"rollout_interval", rolloutInterval.String(),
 		"schema_version", schemaVersion,
 	)
 
@@ -220,6 +241,7 @@ type serverFlagValues struct {
 	heartbeatRetention *int
 	jobRetention       *time.Duration
 	auditRetention     *time.Duration
+	rolloutInterval    *time.Duration
 }
 
 func startHeartbeatPruner(ctx context.Context, nodeStore store.NodeStore, keep int, interval time.Duration, logger *slog.Logger) {
@@ -309,6 +331,9 @@ func applyServerEnvFallbacks(setFlags map[string]bool, values serverFlagValues) 
 		return err
 	}
 	if err := applyDurationEnvFallback(setFlags, "audit-retention", "SIDEPLANE_AUDIT_RETENTION", values.auditRetention); err != nil {
+		return err
+	}
+	if err := applyDurationEnvFallback(setFlags, "rollout-interval", "SIDEPLANE_ROLLOUT_INTERVAL", values.rolloutInterval); err != nil {
 		return err
 	}
 	return nil
