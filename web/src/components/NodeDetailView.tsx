@@ -86,6 +86,7 @@ export function NodeDetailView({
         <div>
           <div className="flex flex-wrap items-center gap-3">
             <h1 className="text-2xl font-bold tracking-tight">{node.nodeId}</h1>
+            <CopyButton value={node.nodeId} label="Copy node ID" />
             <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-semibold ${stateBadgeClasses(node.state)}`}>
               <span className="h-1.5 w-1.5 rounded-full bg-current" />
               {node.state}
@@ -194,21 +195,33 @@ export function NodeDetailView({
           {!jobsLoading && jobs.length === 0 && <div className="px-4 py-4 text-xs text-[var(--sp-muted)]">No jobs yet.</div>}
           {jobs.map((job) => (
             <div key={job.id}>
-              <button
-                type="button"
-                className="grid w-full gap-2 px-4 py-3 text-left text-xs hover:bg-[var(--sp-surface-2)] sm:grid-cols-[1fr_auto_auto] sm:items-center"
+              <div
+                role="button"
+                tabIndex={0}
+                className="grid w-full gap-2 px-4 py-3 text-left text-xs hover:bg-[var(--sp-surface-2)] sm:grid-cols-[1fr_auto_auto_auto] sm:items-center"
                 aria-expanded={selectedJobId === job.id}
                 onClick={() => setSelectedJobId((current) => (current === job.id ? null : job.id))}
+                onKeyDown={(event) => {
+                  if (event.key !== 'Enter' && event.key !== ' ') return
+                  event.preventDefault()
+                  setSelectedJobId((current) => (current === job.id ? null : job.id))
+                }}
               >
                 <span className="flex min-w-0 items-center gap-2 font-mono text-[var(--sp-text)]">
                   <span className="inline-flex h-5 w-5 flex-none items-center justify-center rounded border border-[var(--sp-border)] text-[11px] text-[var(--sp-muted)]">
                     {selectedJobId === job.id ? '-' : '+'}
                   </span>
-                  <span className="truncate">{job.type}</span>
+                  <span className="min-w-0">
+                    <span className="block truncate">{job.type}</span>
+                    <span className="block truncate text-[10px] text-[var(--sp-faint)]">{job.id}</span>
+                  </span>
+                </span>
+                <span onClick={(event) => event.stopPropagation()}>
+                  <CopyButton value={job.id} label="Copy job ID" />
                 </span>
                 <span className={`inline-flex w-fit rounded border px-2 py-0.5 font-semibold ${jobBadgeClasses(job.status)}`}>{job.status}</span>
                 <span className="text-[var(--sp-faint)]" title={formatDate(job.createdAt)}>{formatRelativeTime(job.createdAt)}</span>
-              </button>
+              </div>
               {selectedJobId === job.id && <JobDetail job={job} />}
             </div>
           ))}
@@ -279,6 +292,12 @@ function ConfigApplyJobDetail({ job }: { job: Job }) {
 
   return (
     <JobDetailShell>
+      {result?.planId && (
+        <div className="mb-2 flex items-center gap-2 font-mono text-[11px] text-[var(--sp-faint)]">
+          <span>{result.planId}</span>
+          <CopyButton value={result.planId} label="Copy plan ID" />
+        </div>
+      )}
       <div className="mb-2 font-mono text-[11px] text-[var(--sp-faint)]">{result?.dryRun ? 'dry-run' : 'live'} apply</div>
       <div className="grid gap-2">
         {steps.map((step, index) => (
@@ -290,6 +309,31 @@ function ConfigApplyJobDetail({ job }: { job: Job }) {
         ))}
       </div>
     </JobDetailShell>
+  )
+}
+
+function CopyButton({ value, label }: { value: string; label: string }) {
+  const [copied, setCopied] = useState(false)
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(value)
+      setCopied(true)
+      window.setTimeout(() => setCopied(false), 1400)
+    } catch {
+      setCopied(false)
+    }
+  }
+
+  return (
+    <button
+      type="button"
+      className="h-6 rounded border border-[var(--sp-border)] px-2 text-[10px] font-semibold text-[var(--sp-muted)] hover:bg-[var(--sp-surface-2)]"
+      title={label}
+      onClick={copy}
+    >
+      {copied ? 'Copied' : 'Copy'}
+    </button>
   )
 }
 
