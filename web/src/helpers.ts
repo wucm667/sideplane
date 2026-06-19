@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { AuditEvent, AuditFilters, DeepProbeResult, EffectiveConfigResponse, Job, JobStatus, ListAuditEventsResponse, NodeState, NodeStatus, RuntimeConfigSnapshot, RuntimeStatus } from './types.ts'
+import type { AuditEvent, AuditFilters, DeepProbeResult, EffectiveConfigResponse, Job, JobStatus, ListAuditEventsResponse, NodeState, NodeStatus, RestartRequest, RuntimeConfigSnapshot, RuntimeStatus } from './types.ts'
 
 const NODE_REFRESH_MS = 10_000
 const ACTIVE_JOB_REFRESH_MS = 2_000
@@ -130,6 +130,10 @@ export function hasActiveConfigApply(jobs: Job[]): boolean {
   return jobs.some((job) => job.type === 'config_apply' && ACTIVE_JOB_STATUSES.includes(job.status))
 }
 
+export function hasActiveRestart(jobs: Job[]): boolean {
+  return jobs.some((job) => job.type === 'restart' && ACTIVE_JOB_STATUSES.includes(job.status))
+}
+
 export function runtimeKey(runtime: RuntimeStatus, index: number): string {
   return `${runtime.name || runtime.type || 'runtime'}-${index}`
 }
@@ -192,6 +196,7 @@ export function useFleetPageController() {
   const [jobStatusByNode, setJobStatusByNode] = useState<Record<string, JobStatus | ''>>({})
   const [jobLimitByNode, setJobLimitByNode] = useState<Record<string, number>>({})
   const [creatingByNode, setCreatingByNode] = useState<Record<string, boolean>>({})
+  const [restartingByNode, setRestartingByNode] = useState<Record<string, boolean>>({})
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -377,6 +382,52 @@ export function useFleetPageController() {
     }
   }, [loadNodeJobs, operatorToken])
 
+  const createRestart = useCallback(async (nodeId: string, request: RestartRequest) => {
+    if (!mountedRef.current) return
+    setRestartingByNode((current) => ({ ...current, [nodeId]: true }))
+    try {
+      const headers: HeadersInit = { 'Content-Type': 'application/json' }
+      const token = operatorToken.trim()
+      if (token) {
+        headers.Authorization = `Bearer ${token}`
+      }
+
+      const res = await fetch(`/api/nodes/${encodeURIComponent(nodeId)}/restart`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(request),
+      })
+      if (!res.ok) {
+        if (res.status === 401) {
+          throw new Error('Operator token required or invalid')
+        }
+        throw new Error(await apiErrorMessage(res))
+      }
+      const job: Job = await res.json()
+      if (!mountedRef.current) return
+      setJobsByNode((current) => ({
+        ...current,
+        [nodeId]: [job, ...(current[nodeId] ?? []).filter((item) => item.id !== job.id)],
+      }))
+      setJobsErrorByNode((current) => {
+        const next = { ...current }
+        delete next[nodeId]
+        return next
+      })
+      await loadNodeJobs(nodeId, false)
+    } catch (e) {
+      if (!mountedRef.current) return
+      setJobsErrorByNode((current) => ({
+        ...current,
+        [nodeId]: e instanceof Error ? e.message : 'Unknown error',
+      }))
+    } finally {
+      if (mountedRef.current) {
+        setRestartingByNode((current) => ({ ...current, [nodeId]: false }))
+      }
+    }
+  }, [loadNodeJobs, operatorToken])
+
   const loadAuditEvents = useCallback(async () => {
     try {
       const params = new URLSearchParams({ limit: String(auditLimit) })
@@ -516,6 +567,7 @@ export function useFleetPageController() {
     bannerText,
     changeView,
     createDeepProbe,
+    createRestart,
     creatingByNode,
     effectiveByNode,
     effectiveErrorByNode,
@@ -535,6 +587,7 @@ export function useFleetPageController() {
     refreshFleet,
     refreshSelectedNodeAfterApply,
     refreshing,
+    restartingByNode,
     selectedNode,
     setOperatorToken,
     setAuditFilters,

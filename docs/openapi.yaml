@@ -257,6 +257,43 @@ paths:
           $ref: "#/components/responses/APIError"
         "409":
           $ref: "#/components/responses/APIError"
+  /api/nodes/{nodeId}/restart:
+    post:
+      tags: [Operator]
+      summary: Create a standalone restart job.
+      operationId: createRestartJob
+      description: >
+        Enqueues a restart job only; the server does not restart local services.
+        Requests default to dry-run unless live is true.
+      security:
+        - operatorBearer: []
+      parameters:
+        - $ref: "#/components/parameters/NodeId"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RestartRequest"
+            example:
+              runtimeType: hermes
+              profile: default
+              live: false
+      responses:
+        "201":
+          description: Restart job created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Job"
+        "400":
+          $ref: "#/components/responses/APIError"
+        "401":
+          $ref: "#/components/responses/APIError"
+        "404":
+          $ref: "#/components/responses/APIError"
+        "409":
+          $ref: "#/components/responses/APIError"
   /api/sidecar/jobs/next:
     get:
       tags: [Sidecar]
@@ -615,7 +652,7 @@ components:
           $ref: "#/components/schemas/NodeStatus"
     JobType:
       type: string
-      enum: [deep_probe, config_apply]
+      enum: [deep_probe, config_apply, restart]
     JobStatus:
       type: string
       enum: [pending, claimed, completed, failed]
@@ -709,6 +746,47 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/ConfigApplyStep"
+    RestartRequest:
+      type: object
+      properties:
+        runtimeType:
+          type: string
+          enum: [hermes, openclaw]
+        runtimeName:
+          type: string
+        profile:
+          type: string
+        reason:
+          type: string
+        live:
+          type: boolean
+          default: false
+    RestartJobPayload:
+      type: object
+      required: [dryRun]
+      properties:
+        runtimeType:
+          type: string
+        runtimeName:
+          type: string
+        profile:
+          type: string
+        reason:
+          type: string
+        dryRun:
+          type: boolean
+    RestartJobResult:
+      type: object
+      required: [steps]
+      properties:
+        controller:
+          type: string
+        steps:
+          type: array
+          items:
+            $ref: "#/components/schemas/ConfigApplyStep"
+        healthStatus:
+          type: string
     RuntimeConfigSnapshot:
       type: object
       required: [runtimeName, runtimeType]

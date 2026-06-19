@@ -169,6 +169,7 @@ func TestHelpListsCommands(t *testing.T) {
 		"Usage: sideplane <command>",
 		"fleet status",
 		"probe <nodeId>",
+		"restart <nodeId>",
 		"jobs list <nodeId>",
 		"audit list",
 		"config apply <id>",
@@ -189,6 +190,7 @@ func TestHelpListsCommands(t *testing.T) {
 func TestPerCommandHelpPrintsFlags(t *testing.T) {
 	tests := [][]string{
 		{"config", "apply", "--help"},
+		{"restart", "--help"},
 		{"jobs", "list", "--help"},
 		{"enrollment", "create", "--help"},
 	}
@@ -784,6 +786,164 @@ func TestConfigApplyJSONOutput(t *testing.T) {
 	}
 }
 
+func TestRestartDryRunDefaultAndOperatorToken(t *testing.T) {
+	job := protocol.Job{
+		ID:          "job-restart",
+		NodeID:      "node-a",
+		Type:        protocol.JobTypeRestart,
+		Status:      protocol.JobStatusPending,
+		PayloadJSON: restartPayload(t, "hermes", "default", true),
+		CreatedAt:   time.Now().UTC(),
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/nodes/node-a/restart" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer test-token" {
+			t.Fatalf("Authorization = %q, want bearer token", got)
+		}
+		var req protocol.RestartRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if req.Live {
+			t.Fatalf("live = true, want dry-run request")
+		}
+		if req.RuntimeType != "hermes" || req.Profile != "default" {
+			t.Fatalf("request = %#v, want hermes/default", req)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		if err := json.NewEncoder(w).Encode(job); err != nil {
+			t.Fatalf("encode job: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"restart", "node-a", "--server", server.URL, "--operator-token", "test-token", "--runtime-type", "hermes", "--profile", "default"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("run returned %d, stderr=%q", code, stderr.String())
+	}
+	for _, want := range []string{"Job: job-restart", "Mode: dry-run", "Runtime: hermes", "Profile: default", "Status: pending"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("output missing %q:\n%s", want, stdout.String())
+		}
+	}
+}
+
+func TestRestartLiveRequiresYes(t *testing.T) {
+	var called bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+	}))
+	defer server.Close()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"restart", "node-a", "--server", server.URL, "--live"}, &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("run returned %d, want 1", code)
+	}
+	if called {
+		t.Fatal("server was called despite missing --yes")
+	}
+	if !strings.Contains(stderr.String(), "--live requires --yes") {
+		t.Fatalf("stderr = %q, want live confirmation error", stderr.String())
+	}
+}
+
+func TestRestartWaitPrintsResultSteps(t *testing.T) {
+	created := protocol.Job{
+		ID:          "job-restart",
+		NodeID:      "node-a",
+		Type:        protocol.JobTypeRestart,
+		Status:      protocol.JobStatusPending,
+		PayloadJSON: restartPayload(t, "hermes", "default", false),
+		CreatedAt:   time.Now().UTC(),
+	}
+	resultJSON, err := json.Marshal(protocol.RestartJobResult{
+		Controller:   "fake-controller",
+		HealthStatus: "healthy",
+		Steps: []protocol.ConfigApplyStep{
+			{Name: "restarted", Status: "completed", Detail: "fake restart"},
+			{Name: "health_checked", Status: "completed"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal result: %v", err)
+	}
+	completed := created
+	completed.Status = protocol.JobStatusCompleted
+	completed.ResultJSON = string(resultJSON)
+	completed.FinishedAt = time.Now().UTC()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/nodes/node-a/restart":
+			var req protocol.RestartRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatalf("decode restart request: %v", err)
+			}
+			if !req.Live {
+				t.Fatalf("live = false, want live restart request")
+			}
+			w.WriteHeader(http.StatusCreated)
+			if err := json.NewEncoder(w).Encode(created); err != nil {
+				t.Fatalf("encode created job: %v", err)
+			}
+		case r.Method == http.MethodGet && r.URL.Path == "/api/nodes/node-a/jobs":
+			if err := json.NewEncoder(w).Encode([]protocol.Job{completed}); err != nil {
+				t.Fatalf("encode jobs: %v", err)
+			}
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"restart", "node-a", "--server", server.URL, "--live", "--yes", "--wait"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("run returned %d, stderr=%q", code, stderr.String())
+	}
+	for _, want := range []string{"Job: job-restart", "Mode: live", "Status: completed", "Controller: fake-controller", "Health: healthy", "Steps:", "restarted", "fake restart"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("output missing %q:\n%s", want, stdout.String())
+		}
+	}
+}
+
+func TestRestartJSONOutput(t *testing.T) {
+	job := protocol.Job{
+		ID:          "job-restart-json",
+		NodeID:      "node-a",
+		Type:        protocol.JobTypeRestart,
+		Status:      protocol.JobStatusPending,
+		PayloadJSON: restartPayload(t, "hermes", "default", true),
+		CreatedAt:   time.Now().UTC(),
+	}
+	server := httptest.NewServer(jsonHandlerWithStatus(t, http.MethodPost, "/api/nodes/node-a/restart", http.StatusCreated, job))
+	defer server.Close()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"restart", "node-a", "--server", server.URL, "--json"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("run returned %d, stderr=%q", code, stderr.String())
+	}
+	var got protocol.Job
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode JSON output: %v", err)
+	}
+	if got.ID != "job-restart-json" {
+		t.Fatalf("job ID = %q, want job-restart-json", got.ID)
+	}
+}
+
 func TestConfigGetPrintsDesiredConfigSummary(t *testing.T) {
 	desired := protocol.DesiredConfig{
 		Global: protocol.ProviderModelConfig{Provider: "openai", Model: "gpt-4o"},
@@ -984,6 +1144,19 @@ func signedPlanPayload(t *testing.T, planID string, mode string) string {
 	})
 	if err != nil {
 		t.Fatalf("marshal signed plan: %v", err)
+	}
+	return string(payload)
+}
+
+func restartPayload(t *testing.T, runtimeType string, profile string, dryRun bool) string {
+	t.Helper()
+	payload, err := json.Marshal(protocol.RestartJobPayload{
+		RuntimeType: runtimeType,
+		Profile:     profile,
+		DryRun:      dryRun,
+	})
+	if err != nil {
+		t.Fatalf("marshal restart payload: %v", err)
 	}
 	return string(payload)
 }

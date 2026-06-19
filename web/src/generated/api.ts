@@ -78,7 +78,7 @@ export interface HeartbeatResponse {
   node: NodeStatus;
 }
 
-export type JobType = "deep_probe" | "config_apply";
+export type JobType = "deep_probe" | "config_apply" | "restart";
 
 export type JobStatus = "pending" | "claimed" | "completed" | "failed";
 
@@ -124,6 +124,28 @@ export interface ConfigApplyResult {
   backupPath?: string;
   tempPath?: string;
   steps: ConfigApplyStep[];
+}
+
+export interface RestartRequest {
+  runtimeType?: "hermes" | "openclaw";
+  runtimeName?: string;
+  profile?: string;
+  reason?: string;
+  live?: boolean;
+}
+
+export interface RestartJobPayload {
+  runtimeType?: string;
+  runtimeName?: string;
+  profile?: string;
+  reason?: string;
+  dryRun: boolean;
+}
+
+export interface RestartJobResult {
+  controller?: string;
+  steps: ConfigApplyStep[];
+  healthStatus?: string;
 }
 
 export interface RuntimeConfigSnapshot {

@@ -53,6 +53,8 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		}
 	case "probe":
 		return runProbe(args[1:], stdout, stderr)
+	case "restart":
+		return runRestart(args[1:], stdout, stderr)
 	case "jobs":
 		if len(args) >= 2 && args[1] == "list" {
 			return runJobsList(args[2:], stdout, stderr)
@@ -102,6 +104,7 @@ func printHelp(w io.Writer) {
 Commands:
   fleet status        Show fleet node status
   probe <nodeId>      Run a deep probe on a node
+  restart <nodeId>    Create a standalone restart job
   jobs list <nodeId>  List node jobs
   audit list          List audit events
   config apply <id>   Create a config apply job
@@ -128,6 +131,78 @@ func printCommandHelp(w io.Writer, usage string, flags *flag.FlagSet) {
 	fmt.Fprintf(w, "usage: %s\n\n", usage)
 	flags.SetOutput(w)
 	flags.PrintDefaults()
+}
+
+func runRestart(args []string, stdout io.Writer, stderr io.Writer) int {
+	flags := flag.NewFlagSet("sideplane restart", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+
+	serverURL := flags.String("server", "", "Sideplane server URL; can also be set with SIDEPLANE_SERVER_URL")
+	operatorTokenFlag := flags.String("operator-token", "", "operator bearer token; can also be set with SIDEPLANE_OPERATOR_TOKEN")
+	runtimeType := flags.String("runtime-type", "hermes", "runtime type")
+	profile := flags.String("profile", "default", "runtime profile")
+	live := flags.Bool("live", false, "request live restart instead of dry-run")
+	yes := flags.Bool("yes", false, "confirm live restart")
+	wait := flags.Bool("wait", false, "poll until the restart job completes or fails")
+	jsonOutput := flags.Bool("json", false, "print JSON output")
+	usage := "sideplane restart <nodeId> [--server URL] [--operator-token TOKEN] [--runtime-type TYPE] [--profile PROFILE] [--live --yes] [--wait] [--json]"
+	if commandHelpRequested(args) {
+		printCommandHelp(stdout, usage, flags)
+		return 0
+	}
+	if err := parseCommandFlags(flags, args, "live", "yes", "wait", "json"); err != nil {
+		return 2
+	}
+	if flags.NArg() != 1 {
+		fmt.Fprintln(stderr, "usage: "+usage)
+		return 1
+	}
+	if *live && !*yes {
+		fmt.Fprintln(stderr, "restart: --live requires --yes")
+		return 1
+	}
+	nodeID := strings.TrimSpace(flags.Arg(0))
+	if nodeID == "" {
+		fmt.Fprintln(stderr, "restart: nodeId is required")
+		return 1
+	}
+
+	server := serverURLValue(*serverURL)
+	operatorToken := operatorTokenValue(*operatorTokenFlag)
+	path := "/api/nodes/" + url.PathEscape(nodeID) + "/restart"
+	job, body, err := postJSON[protocol.Job](context.Background(), server, path, protocol.RestartRequest{
+		RuntimeType: strings.TrimSpace(*runtimeType),
+		Profile:     strings.TrimSpace(*profile),
+		Live:        *live,
+	}, operatorToken)
+	if err != nil {
+		fmt.Fprintf(stderr, "restart: %v\n", err)
+		return 1
+	}
+
+	if !*wait {
+		if *jsonOutput {
+			writeRawJSON(stdout, body)
+			return 0
+		}
+		printRestartJobSummary(stdout, job)
+		return 0
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	finalJob, err := waitForNodeJob(ctx, server, nodeID, job.ID, operatorToken)
+	if err != nil {
+		fmt.Fprintf(stderr, "restart wait: %v\n", err)
+		return 1
+	}
+	if *jsonOutput {
+		writeJSONValue(stdout, finalJob)
+		return 0
+	}
+	printRestartJobSummary(stdout, finalJob)
+	printRestartResultSummary(stdout, finalJob)
+	return 0
 }
 
 func runConfigApply(args []string, stdout io.Writer, stderr io.Writer) int {
@@ -916,6 +991,56 @@ func printConfigApplyResultSummary(w io.Writer, job protocol.Job) {
 		fmt.Fprintf(w, "Result plan: %s\n", result.PlanID)
 	}
 	fmt.Fprintf(w, "Result mode: %s\n", map[bool]string{true: "dry_run", false: "live"}[result.DryRun])
+	if len(result.Steps) == 0 {
+		return
+	}
+	fmt.Fprintln(w, "Steps:")
+	table := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(table, "  NAME\tSTATUS\tDETAIL")
+	for _, step := range result.Steps {
+		fmt.Fprintf(table, "  %s\t%s\t%s\n", valueOrDash(step.Name), valueOrDash(step.Status), valueOrDash(step.Detail))
+	}
+	table.Flush()
+}
+
+func printRestartJobSummary(w io.Writer, job protocol.Job) {
+	mode, runtimeType, profile := restartJobLabels(job)
+	fmt.Fprintf(w, "Job: %s\n", job.ID)
+	fmt.Fprintf(w, "Mode: %s\n", valueOrDash(mode))
+	fmt.Fprintf(w, "Runtime: %s\n", valueOrDash(runtimeType))
+	fmt.Fprintf(w, "Profile: %s\n", valueOrDash(profile))
+	fmt.Fprintf(w, "Status: %s\n", job.Status)
+}
+
+func restartJobLabels(job protocol.Job) (mode string, runtimeType string, profile string) {
+	if strings.TrimSpace(job.PayloadJSON) == "" {
+		return "", "", ""
+	}
+	var payload protocol.RestartJobPayload
+	if err := json.Unmarshal([]byte(job.PayloadJSON), &payload); err != nil {
+		return "", "", ""
+	}
+	mode = "live"
+	if payload.DryRun {
+		mode = "dry-run"
+	}
+	return mode, payload.RuntimeType, payload.Profile
+}
+
+func printRestartResultSummary(w io.Writer, job protocol.Job) {
+	if strings.TrimSpace(job.Error) != "" {
+		fmt.Fprintf(w, "Error: %s\n", job.Error)
+	}
+	if strings.TrimSpace(job.ResultJSON) == "" {
+		return
+	}
+	var result protocol.RestartJobResult
+	if err := json.Unmarshal([]byte(job.ResultJSON), &result); err != nil {
+		fmt.Fprintf(w, "Result: %s\n", strings.TrimSpace(job.ResultJSON))
+		return
+	}
+	fmt.Fprintf(w, "Controller: %s\n", valueOrDash(result.Controller))
+	fmt.Fprintf(w, "Health: %s\n", valueOrDash(result.HealthStatus))
 	if len(result.Steps) == 0 {
 		return
 	}

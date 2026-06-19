@@ -1,10 +1,11 @@
 import { useState, type ReactNode } from 'react'
 import ConfigWizard from '../ConfigWizard.tsx'
-import { apiErrorMessage, compactHash, formatDate, formatRelativeTime, hasActiveConfigApply, hasActiveDeepProbe, jobBadgeClasses, latestConfigSnapshots, runtimeKey, snapshotForRuntime, stateBadgeClasses } from '../helpers.ts'
-import type { ConfigApplyResult, ConfigDiffEntry, DeepProbeResult, EffectiveConfigResponse, Job, JobStatus, NodeStatus, RuntimeConfigSnapshot, RuntimeStatus } from '../types.ts'
+import { apiErrorMessage, compactHash, formatDate, formatRelativeTime, hasActiveConfigApply, hasActiveDeepProbe, hasActiveRestart, jobBadgeClasses, latestConfigSnapshots, runtimeKey, snapshotForRuntime, stateBadgeClasses } from '../helpers.ts'
+import type { ConfigApplyResult, ConfigDiffEntry, DeepProbeResult, EffectiveConfigResponse, Job, JobStatus, NodeStatus, RestartJobResult, RestartRequest, RuntimeConfigSnapshot, RuntimeStatus } from '../types.ts'
 
 export function NodeDetailView({
   creating,
+  restarting,
   jobs,
   jobsError,
   jobLimit,
@@ -16,11 +17,13 @@ export function NodeDetailView({
   operatorToken,
   onBack,
   onDeepProbe,
+  onRestart,
   onJobStatusFilterChange,
   onLoadMoreJobs,
   onApplied,
 }: {
   creating: boolean
+  restarting: boolean
   jobs: Job[]
   jobsError?: string
   jobLimit: number
@@ -32,12 +35,14 @@ export function NodeDetailView({
   operatorToken: string
   onBack: () => void
   onDeepProbe: () => void
+  onRestart: (request: RestartRequest) => void
   onJobStatusFilterChange: (status: JobStatus | '') => void
   onLoadMoreJobs: () => void
   onApplied: () => void
 }) {
   const activeProbe = hasActiveDeepProbe(jobs)
   const activeConfigApply = hasActiveConfigApply(jobs)
+  const activeRestart = hasActiveRestart(jobs)
   const snapshots = latestConfigSnapshots(jobs)
   const primarySnapshot = snapshots[0]
   const [wizardOpen, setWizardOpen] = useState(false)
@@ -46,8 +51,11 @@ export function NodeDetailView({
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null)
   const tokenReady = operatorToken.trim().length > 0
   const canDeepProbe = tokenReady && !creating && !activeProbe
+  const canRestart = tokenReady && !restarting && !activeRestart
   const canEditConfig = tokenReady && Boolean(primarySnapshot?.configPath)
   const canRemoveNode = tokenReady
+  const restartRuntimeType = knownRestartRuntime(effective?.runtimeType || primarySnapshot?.runtimeType || 'hermes')
+  const restartProfile = effective?.profile || primarySnapshot?.profile || 'default'
 
   const removeNode = async () => {
     if (!canRemoveNode || removing) return
@@ -77,6 +85,22 @@ export function NodeDetailView({
         setRemoving(false)
       }
     }
+  }
+
+  const createRestart = (live: boolean) => {
+    if (!canRestart) return
+    if (live) {
+      const confirmed = window.confirm(`Create a live restart job for ${node.nodeId}? The sidecar must be running with live apply enabled.`)
+      if (!confirmed) return
+    }
+    const request: RestartRequest = {
+      profile: restartProfile,
+      live,
+    }
+    if (restartRuntimeType) {
+      request.runtimeType = restartRuntimeType
+    }
+    onRestart(request)
   }
 
   return (
@@ -111,7 +135,24 @@ export function NodeDetailView({
           >
             {creating ? 'Creating…' : activeProbe ? 'Probe active' : 'Deep probe'}
           </button>
-          <DisabledAction label="Restart" title="Restart runs as part of a live config apply (enable --allow-live-apply on the sidecar)" />
+          <button
+            type="button"
+            className="h-9 rounded-lg border border-[var(--sp-border-strong)] bg-[var(--sp-surface)] px-3 text-sm font-medium hover:bg-[var(--sp-surface-2)] disabled:cursor-not-allowed disabled:opacity-60"
+            disabled={!canRestart}
+            title={!tokenReady ? 'Set an operator token before creating restart jobs' : activeRestart ? 'A restart job is already pending or running' : 'Create a dry-run restart job'}
+            onClick={() => createRestart(false)}
+          >
+            {restarting ? 'Creating...' : activeRestart ? 'Restart active' : 'Restart'}
+          </button>
+          <button
+            type="button"
+            className="h-9 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 text-sm font-medium text-amber-700 hover:bg-amber-500/15 disabled:cursor-not-allowed disabled:opacity-55"
+            disabled={!canRestart}
+            title={!tokenReady ? 'Set an operator token before live restart' : activeRestart ? 'A restart job is already pending or running' : 'Confirm and create a live restart job'}
+            onClick={() => createRestart(true)}
+          >
+            Live restart
+          </button>
           <DisabledAction label="Rollback" title="Rollback runs automatically when a live apply fails its health check" />
           <button
             type="button"
@@ -251,14 +292,17 @@ function JobDetail({ job }: { job: Job }) {
   if (job.status === 'pending' || job.status === 'claimed') {
     return <JobDetailShell>Waiting for sidecar...</JobDetailShell>
   }
-  if (job.status === 'failed') {
-    return <JobDetailShell tone="danger">{job.error || 'Job failed without an error message.'}</JobDetailShell>
-  }
   if (job.type === 'deep_probe') {
     return <DeepProbeJobDetail job={job} />
   }
   if (job.type === 'config_apply') {
     return <ConfigApplyJobDetail job={job} />
+  }
+  if (job.type === 'restart') {
+    return <RestartJobDetail job={job} />
+  }
+  if (job.status === 'failed') {
+    return <JobDetailShell tone="danger">{job.error || 'Job failed without an error message.'}</JobDetailShell>
   }
   return <JobDetailShell>No structured result available.</JobDetailShell>
 }
@@ -313,6 +357,36 @@ function ConfigApplyJobDetail({ job }: { job: Job }) {
       </div>
     </JobDetailShell>
   )
+}
+
+function RestartJobDetail({ job }: { job: Job }) {
+  const result = parseJobResult<RestartJobResult>(job)
+  const steps = result?.steps ?? []
+  if (steps.length === 0) {
+    return <JobDetailShell tone={job.status === 'failed' ? 'danger' : 'normal'}>{job.error || 'No restart steps reported.'}</JobDetailShell>
+  }
+
+  return (
+    <JobDetailShell tone={job.status === 'failed' ? 'danger' : 'normal'}>
+      <div className="mb-2 grid gap-2 font-mono text-[11px] text-[var(--sp-faint)] sm:grid-cols-2">
+        <span>controller: {result?.controller || '-'}</span>
+        <span>health: {result?.healthStatus || '-'}</span>
+      </div>
+      <div className="grid gap-2">
+        {steps.map((step, index) => (
+          <div key={`${step.name}-${index}`} className="grid gap-2 rounded-lg border border-[var(--sp-border)] bg-[var(--sp-surface)] px-3 py-2 sm:grid-cols-[1fr_auto_2fr] sm:items-center">
+            <span className="font-mono text-xs font-semibold text-[var(--sp-text)]">{step.name}</span>
+            <span className={`inline-flex w-fit rounded border px-2 py-0.5 text-[11px] font-semibold ${step.status === 'failed' ? 'border-rose-500/30 bg-rose-500/10 text-rose-600' : 'border-[var(--sp-border)] bg-[var(--sp-surface-2)] text-[var(--sp-muted)]'}`}>{step.status}</span>
+            <span className="min-w-0 truncate text-xs text-[var(--sp-muted)]" title={step.detail || ''}>{step.detail || '-'}</span>
+          </div>
+        ))}
+      </div>
+    </JobDetailShell>
+  )
+}
+
+function knownRestartRuntime(value: string | undefined): RestartRequest['runtimeType'] | undefined {
+  return value === 'hermes' || value === 'openclaw' ? value : undefined
 }
 
 function CopyButton({ value, label }: { value: string; label: string }) {

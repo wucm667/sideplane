@@ -17,6 +17,8 @@ export type {
   ListAuditEventsResponse,
   NodeState,
   ProviderModelConfig,
+  RestartJobResult,
+  RestartRequest,
   RuntimeConfigSnapshot,
   RuntimeStatus,
 } from './generated/api.ts'
@@ -31,6 +33,7 @@ export type AuditAction =
   | 'job.complete'
   | 'job.fail'
   | 'config.apply'
+  | 'restart'
   | 'config.desired.update'
 
 export interface AuditFilters {
