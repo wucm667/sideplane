@@ -168,6 +168,27 @@ ON heartbeats(node_id, observed_at DESC)`,
 	ON node_labels(key, value)`,
 		},
 	},
+	{
+		version: 9,
+		name:    "create rollouts table",
+		statements: []string{
+			`
+	CREATE TABLE IF NOT EXISTS rollouts (
+		id TEXT PRIMARY KEY,
+		state TEXT NOT NULL,
+		rollout_json TEXT NOT NULL,
+		created_at TEXT NOT NULL,
+		updated_at TEXT NOT NULL,
+		finished_at TEXT
+	)`,
+			`
+	CREATE INDEX IF NOT EXISTS idx_rollouts_created_at
+	ON rollouts(created_at DESC, id DESC)`,
+			`
+	CREATE INDEX IF NOT EXISTS idx_rollouts_terminal_finished_at
+	ON rollouts(state, finished_at)`,
+		},
+	},
 }
 
 // LatestSQLiteSchemaVersion returns the newest migration version compiled into

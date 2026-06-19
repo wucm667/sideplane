@@ -3153,6 +3153,26 @@ func (s staticNodeStore) PruneTerminalJobs(context.Context, time.Time) (int64, e
 	return 0, nil
 }
 
+func (s staticNodeStore) CreateRollout(context.Context, protocol.Rollout) (protocol.Rollout, error) {
+	return protocol.Rollout{}, nil
+}
+
+func (s staticNodeStore) GetRollout(context.Context, string) (*protocol.Rollout, error) {
+	return nil, nil
+}
+
+func (s staticNodeStore) ListRollouts(context.Context, store.RolloutFilter) (store.RolloutList, error) {
+	return store.RolloutList{}, nil
+}
+
+func (s staticNodeStore) UpdateRollout(context.Context, protocol.Rollout) error {
+	return nil
+}
+
+func (s staticNodeStore) PruneTerminalRollouts(context.Context, time.Time) (int64, error) {
+	return 0, nil
+}
+
 func (s staticNodeStore) AppendAuditEvent(context.Context, protocol.AuditEvent) (protocol.AuditEvent, error) {
 	return protocol.AuditEvent{}, nil
 }

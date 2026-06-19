@@ -37,6 +37,7 @@ func TestSQLiteNodeStoreMigratesAndPersistsHeartbeat(t *testing.T) {
 	assertSQLiteTableExists(t, ctx, first.db, "node_credentials")
 	assertSQLiteTableExists(t, ctx, first.db, "audit_events")
 	assertSQLiteTableExists(t, ctx, first.db, "node_labels")
+	assertSQLiteTableExists(t, ctx, first.db, "rollouts")
 	assertSQLiteMigrationApplied(t, ctx, first.db, 1)
 	assertSQLiteMigrationApplied(t, ctx, first.db, 2)
 	assertSQLiteMigrationApplied(t, ctx, first.db, 3)
@@ -45,6 +46,7 @@ func TestSQLiteNodeStoreMigratesAndPersistsHeartbeat(t *testing.T) {
 	assertSQLiteMigrationApplied(t, ctx, first.db, 6)
 	assertSQLiteMigrationApplied(t, ctx, first.db, 7)
 	assertSQLiteMigrationApplied(t, ctx, first.db, 8)
+	assertSQLiteMigrationApplied(t, ctx, first.db, 9)
 
 	observedAt := time.Date(2026, 6, 16, 1, 2, 3, 0, time.UTC)
 	sentAt := observedAt.Add(-time.Second)
@@ -387,6 +389,9 @@ func TestSQLitePruningEmptyTablesNoops(t *testing.T) {
 	}
 	if deleted, err := store.PruneAuditEvents(ctx, cutoff); err != nil || deleted != 0 {
 		t.Fatalf("prune empty audit events deleted=%d err=%v, want 0 nil", deleted, err)
+	}
+	if deleted, err := store.PruneTerminalRollouts(ctx, cutoff); err != nil || deleted != 0 {
+		t.Fatalf("prune empty rollouts deleted=%d err=%v, want 0 nil", deleted, err)
 	}
 }
 
@@ -881,6 +886,117 @@ func TestSQLiteListNodeJobsFiltered(t *testing.T) {
 	}
 	if len(pendingJobs) != 1 || pendingJobs[0].ID != pending.ID {
 		t.Fatalf("pending jobs = %#v, want pending job %s", pendingJobs, pending.ID)
+	}
+}
+
+func TestSQLiteRolloutLifecycleListUpdateAndPrune(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenSQLiteNodeStore(ctx, filepath.Join(t.TempDir(), "sideplane.db"))
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer store.Close()
+
+	now := time.Date(2026, 6, 19, 12, 0, 0, 0, time.UTC)
+	first, err := store.CreateRollout(ctx, rolloutForStoreTest("rollout-a", protocol.RolloutStatePending, now))
+	if err != nil {
+		t.Fatalf("create first rollout: %v", err)
+	}
+	second, err := store.CreateRollout(ctx, rolloutForStoreTest("rollout-b", protocol.RolloutStateRunning, now.Add(time.Minute)))
+	if err != nil {
+		t.Fatalf("create second rollout: %v", err)
+	}
+
+	got, err := store.GetRollout(ctx, first.ID)
+	if err != nil {
+		t.Fatalf("get rollout: %v", err)
+	}
+	if got == nil || got.ID != first.ID || got.Spec.Target.Model != "gpt-5" {
+		t.Fatalf("got rollout = %#v, want first rollout", got)
+	}
+
+	list, err := store.ListRollouts(ctx, RolloutFilter{Limit: 1})
+	if err != nil {
+		t.Fatalf("list rollouts: %v", err)
+	}
+	if list.Total != 2 || list.Limit != 1 || len(list.Rollouts) != 1 || list.Rollouts[0].ID != second.ID {
+		t.Fatalf("rollout page = %#v, want newest second rollout", list)
+	}
+
+	second.State = protocol.RolloutStateCompleted
+	second.UpdatedAt = now.Add(2 * time.Minute)
+	second.FinishedAt = now.Add(2 * time.Minute)
+	second.Batches[0].State = protocol.RolloutBatchStateCompleted
+	if err := store.UpdateRollout(ctx, second); err != nil {
+		t.Fatalf("update rollout: %v", err)
+	}
+	updated, err := store.GetRollout(ctx, second.ID)
+	if err != nil {
+		t.Fatalf("get updated rollout: %v", err)
+	}
+	if updated.State != protocol.RolloutStateCompleted || updated.FinishedAt.IsZero() {
+		t.Fatalf("updated rollout = %#v, want completed with finishedAt", updated)
+	}
+
+	deleted, err := store.PruneTerminalRollouts(ctx, now.Add(3*time.Minute))
+	if err != nil {
+		t.Fatalf("prune terminal rollouts: %v", err)
+	}
+	if deleted != 1 {
+		t.Fatalf("deleted rollouts = %d, want 1", deleted)
+	}
+	missing, err := store.GetRollout(ctx, second.ID)
+	if err != nil {
+		t.Fatalf("get pruned rollout: %v", err)
+	}
+	if missing != nil {
+		t.Fatalf("pruned rollout still exists: %#v", missing)
+	}
+}
+
+func TestSQLiteRolloutConcurrentUpdates(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenSQLiteNodeStore(ctx, filepath.Join(t.TempDir(), "sideplane.db"))
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer store.Close()
+
+	now := time.Date(2026, 6, 19, 12, 0, 0, 0, time.UTC)
+	rollout, err := store.CreateRollout(ctx, rolloutForStoreTest("rollout-race", protocol.RolloutStateRunning, now))
+	if err != nil {
+		t.Fatalf("create rollout: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 16; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			next, err := cloneRollout(rollout)
+			if err != nil {
+				t.Errorf("clone rollout %d: %v", i, err)
+				return
+			}
+			next.UpdatedAt = now.Add(time.Duration(i) * time.Second)
+			next.Batches[0].Nodes["node-a"] = protocol.RolloutNodeProgress{
+				NodeID: "node-a",
+				JobID:  "job",
+				State:  protocol.RolloutNodeStateDispatched,
+			}
+			if err := store.UpdateRollout(ctx, next); err != nil {
+				t.Errorf("update rollout %d: %v", i, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	got, err := store.GetRollout(ctx, rollout.ID)
+	if err != nil {
+		t.Fatalf("get rollout: %v", err)
+	}
+	if got == nil || got.Batches[0].Nodes["node-a"].State != protocol.RolloutNodeStateDispatched {
+		t.Fatalf("concurrent rollout = %#v, want dispatched node", got)
 	}
 }
 

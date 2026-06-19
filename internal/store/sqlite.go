@@ -1175,6 +1175,187 @@ AND julianday(finished_at) < julianday(?)
 	return deleted, nil
 }
 
+// CreateRollout stores a new rollout snapshot and assigns an ID when needed.
+func (s *SQLiteNodeStore) CreateRollout(ctx context.Context, rollout protocol.Rollout) (protocol.Rollout, error) {
+	if s == nil || s.db == nil {
+		return protocol.Rollout{}, errors.New("sqlite node store is closed")
+	}
+	if rollout.ID == "" {
+		id, err := newRandomID("rollout_")
+		if err != nil {
+			return protocol.Rollout{}, err
+		}
+		rollout.ID = id
+	}
+	if rollout.State == "" {
+		rollout.State = protocol.RolloutStatePending
+	}
+	if rollout.CreatedAt.IsZero() {
+		rollout.CreatedAt = time.Now().UTC()
+	} else {
+		rollout.CreatedAt = rollout.CreatedAt.UTC()
+	}
+	if rollout.UpdatedAt.IsZero() {
+		rollout.UpdatedAt = rollout.CreatedAt
+	} else {
+		rollout.UpdatedAt = rollout.UpdatedAt.UTC()
+	}
+	if !rollout.FinishedAt.IsZero() {
+		rollout.FinishedAt = rollout.FinishedAt.UTC()
+	}
+	clone, err := cloneRollout(rollout)
+	if err != nil {
+		return protocol.Rollout{}, err
+	}
+	payload, err := json.Marshal(clone)
+	if err != nil {
+		return protocol.Rollout{}, fmt.Errorf("marshal rollout: %w", err)
+	}
+	_, err = s.db.ExecContext(ctx, `
+INSERT INTO rollouts (
+	id,
+	state,
+	rollout_json,
+	created_at,
+	updated_at,
+	finished_at
+) VALUES (?, ?, ?, ?, ?, ?)
+`, clone.ID, string(clone.State), string(payload), formatDBTime(clone.CreatedAt), formatDBTime(clone.UpdatedAt), nullableDBTime(clone.FinishedAt))
+	if err != nil {
+		return protocol.Rollout{}, fmt.Errorf("insert rollout: %w", err)
+	}
+	return cloneRollout(clone)
+}
+
+// GetRollout returns one rollout snapshot by ID.
+func (s *SQLiteNodeStore) GetRollout(ctx context.Context, rolloutID string) (*protocol.Rollout, error) {
+	if s == nil || s.db == nil {
+		return nil, errors.New("sqlite node store is closed")
+	}
+	rolloutID = strings.TrimSpace(rolloutID)
+	if rolloutID == "" {
+		return nil, errors.New("rollout ID is required")
+	}
+	var payload string
+	err := s.db.QueryRowContext(ctx, `SELECT rollout_json FROM rollouts WHERE id = ?`, rolloutID).Scan(&payload)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("query rollout: %w", err)
+	}
+	rollout, err := parseSQLiteRollout(payload)
+	if err != nil {
+		return nil, err
+	}
+	return &rollout, nil
+}
+
+// ListRollouts returns a paginated newest-first rollout list.
+func (s *SQLiteNodeStore) ListRollouts(ctx context.Context, filter RolloutFilter) (RolloutList, error) {
+	if s == nil || s.db == nil {
+		return RolloutList{}, errors.New("sqlite node store is closed")
+	}
+	filter = NormalizeRolloutFilter(filter)
+
+	var total int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM rollouts`).Scan(&total); err != nil {
+		return RolloutList{}, fmt.Errorf("count rollouts: %w", err)
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT rollout_json
+FROM rollouts
+ORDER BY created_at DESC, id DESC
+LIMIT ? OFFSET ?
+`, filter.Limit, filter.Offset)
+	if err != nil {
+		return RolloutList{}, fmt.Errorf("query rollouts: %w", err)
+	}
+	defer rows.Close()
+
+	rollouts := []protocol.Rollout{}
+	for rows.Next() {
+		var payload string
+		if err := rows.Scan(&payload); err != nil {
+			return RolloutList{}, fmt.Errorf("scan rollout: %w", err)
+		}
+		rollout, err := parseSQLiteRollout(payload)
+		if err != nil {
+			return RolloutList{}, err
+		}
+		rollouts = append(rollouts, rollout)
+	}
+	if err := rows.Err(); err != nil {
+		return RolloutList{}, fmt.Errorf("iterate rollouts: %w", err)
+	}
+	return RolloutList{
+		Rollouts: rollouts,
+		Total:    total,
+		Limit:    filter.Limit,
+		Offset:   filter.Offset,
+	}, nil
+}
+
+// UpdateRollout replaces a rollout snapshot.
+func (s *SQLiteNodeStore) UpdateRollout(ctx context.Context, rollout protocol.Rollout) error {
+	if s == nil || s.db == nil {
+		return errors.New("sqlite node store is closed")
+	}
+	rollout.ID = strings.TrimSpace(rollout.ID)
+	if rollout.ID == "" {
+		return errors.New("rollout ID is required")
+	}
+	clone, err := cloneRollout(rollout)
+	if err != nil {
+		return err
+	}
+	payload, err := json.Marshal(clone)
+	if err != nil {
+		return fmt.Errorf("marshal rollout: %w", err)
+	}
+	result, err := s.db.ExecContext(ctx, `
+UPDATE rollouts
+SET state = ?, rollout_json = ?, updated_at = ?, finished_at = ?
+WHERE id = ?
+`, string(clone.State), string(payload), formatDBTime(clone.UpdatedAt), nullableDBTime(clone.FinishedAt), clone.ID)
+	if err != nil {
+		return fmt.Errorf("update rollout: %w", err)
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("count rollout update: %w", err)
+	}
+	if rowsAffected == 0 {
+		return ErrRolloutNotFound
+	}
+	return nil
+}
+
+// PruneTerminalRollouts removes terminal rollouts finished before before.
+func (s *SQLiteNodeStore) PruneTerminalRollouts(ctx context.Context, before time.Time) (int64, error) {
+	if s == nil || s.db == nil {
+		return 0, errors.New("sqlite node store is closed")
+	}
+	if before.IsZero() {
+		return 0, errors.New("rollout retention cutoff is required")
+	}
+	result, err := s.db.ExecContext(ctx, `
+DELETE FROM rollouts
+WHERE state IN (?, ?, ?)
+AND finished_at IS NOT NULL
+AND finished_at != ''
+AND julianday(finished_at) < julianday(?)
+`, string(protocol.RolloutStateCompleted), string(protocol.RolloutStateAborted), string(protocol.RolloutStateFailed), formatDBTime(before.UTC()))
+	if err != nil {
+		return 0, fmt.Errorf("prune terminal rollouts: %w", err)
+	}
+	deleted, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("count pruned terminal rollouts: %w", err)
+	}
+	return deleted, nil
+}
+
 // AppendAuditEvent stores an audit event and assigns an ID when needed.
 func (s *SQLiteNodeStore) AppendAuditEvent(ctx context.Context, event protocol.AuditEvent) (protocol.AuditEvent, error) {
 	if s == nil || s.db == nil {
@@ -1352,6 +1533,14 @@ ON CONFLICT(id) DO UPDATE SET
 		return fmt.Errorf("upsert desired config: %w", err)
 	}
 	return nil
+}
+
+func parseSQLiteRollout(payload string) (protocol.Rollout, error) {
+	var rollout protocol.Rollout
+	if err := json.Unmarshal([]byte(payload), &rollout); err != nil {
+		return protocol.Rollout{}, fmt.Errorf("parse rollout: %w", err)
+	}
+	return rollout, nil
 }
 
 func (s *SQLiteNodeStore) loadJob(ctx context.Context, jobID string) (protocol.Job, error) {

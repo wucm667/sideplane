@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"slices"
 	"sort"
@@ -20,6 +21,7 @@ type MemoryNodeStore struct {
 	enrollmentTokens map[string]memoryEnrollmentToken
 	nodeCredentials  map[string]string
 	jobs             map[string]protocol.Job
+	rollouts         map[string]protocol.Rollout
 	auditEvents      []protocol.AuditEvent
 	desiredConfig    protocol.DesiredConfig
 }
@@ -37,6 +39,7 @@ func NewMemoryNodeStore() *MemoryNodeStore {
 		enrollmentTokens: make(map[string]memoryEnrollmentToken),
 		nodeCredentials:  make(map[string]string),
 		jobs:             make(map[string]protocol.Job),
+		rollouts:         make(map[string]protocol.Rollout),
 		auditEvents:      []protocol.AuditEvent{},
 	}
 }
@@ -556,6 +559,150 @@ func (s *MemoryNodeStore) PruneTerminalJobs(_ context.Context, before time.Time)
 	return deleted, nil
 }
 
+// CreateRollout stores a new rollout snapshot and assigns an ID when needed.
+func (s *MemoryNodeStore) CreateRollout(_ context.Context, rollout protocol.Rollout) (protocol.Rollout, error) {
+	if rollout.ID == "" {
+		id, err := newRandomID("rollout_")
+		if err != nil {
+			return protocol.Rollout{}, err
+		}
+		rollout.ID = id
+	}
+	if rollout.State == "" {
+		rollout.State = protocol.RolloutStatePending
+	}
+	if rollout.CreatedAt.IsZero() {
+		rollout.CreatedAt = time.Now().UTC()
+	} else {
+		rollout.CreatedAt = rollout.CreatedAt.UTC()
+	}
+	if rollout.UpdatedAt.IsZero() {
+		rollout.UpdatedAt = rollout.CreatedAt
+	} else {
+		rollout.UpdatedAt = rollout.UpdatedAt.UTC()
+	}
+	if !rollout.FinishedAt.IsZero() {
+		rollout.FinishedAt = rollout.FinishedAt.UTC()
+	}
+	clone, err := cloneRollout(rollout)
+	if err != nil {
+		return protocol.Rollout{}, err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.rollouts == nil {
+		s.rollouts = make(map[string]protocol.Rollout)
+	}
+	if _, exists := s.rollouts[rollout.ID]; exists {
+		return protocol.Rollout{}, errors.New("rollout already exists")
+	}
+	s.rollouts[rollout.ID] = clone
+	return cloneRollout(clone)
+}
+
+// GetRollout returns one rollout snapshot by ID.
+func (s *MemoryNodeStore) GetRollout(_ context.Context, rolloutID string) (*protocol.Rollout, error) {
+	rolloutID = strings.TrimSpace(rolloutID)
+	if rolloutID == "" {
+		return nil, errors.New("rollout ID is required")
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	rollout, ok := s.rollouts[rolloutID]
+	if !ok {
+		return nil, nil
+	}
+	clone, err := cloneRollout(rollout)
+	if err != nil {
+		return nil, err
+	}
+	return &clone, nil
+}
+
+// ListRollouts returns a paginated newest-first rollout list.
+func (s *MemoryNodeStore) ListRollouts(_ context.Context, filter RolloutFilter) (RolloutList, error) {
+	filter = NormalizeRolloutFilter(filter)
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	rollouts := make([]protocol.Rollout, 0, len(s.rollouts))
+	for _, rollout := range s.rollouts {
+		clone, err := cloneRollout(rollout)
+		if err != nil {
+			return RolloutList{}, err
+		}
+		rollouts = append(rollouts, clone)
+	}
+	slices.SortStableFunc(rollouts, func(a, b protocol.Rollout) int {
+		if a.CreatedAt.Equal(b.CreatedAt) {
+			return strings.Compare(b.ID, a.ID)
+		}
+		if a.CreatedAt.After(b.CreatedAt) {
+			return -1
+		}
+		return 1
+	})
+	total := len(rollouts)
+	start := filter.Offset
+	if start > total {
+		start = total
+	}
+	end := start + filter.Limit
+	if end > total {
+		end = total
+	}
+	return RolloutList{
+		Rollouts: rollouts[start:end],
+		Total:    total,
+		Limit:    filter.Limit,
+		Offset:   filter.Offset,
+	}, nil
+}
+
+// UpdateRollout replaces a rollout snapshot.
+func (s *MemoryNodeStore) UpdateRollout(_ context.Context, rollout protocol.Rollout) error {
+	rollout.ID = strings.TrimSpace(rollout.ID)
+	if rollout.ID == "" {
+		return errors.New("rollout ID is required")
+	}
+	clone, err := cloneRollout(rollout)
+	if err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.rollouts[rollout.ID]; !ok {
+		return ErrRolloutNotFound
+	}
+	s.rollouts[rollout.ID] = clone
+	return nil
+}
+
+// PruneTerminalRollouts removes terminal rollouts finished before before.
+func (s *MemoryNodeStore) PruneTerminalRollouts(_ context.Context, before time.Time) (int64, error) {
+	if before.IsZero() {
+		return 0, errors.New("rollout retention cutoff is required")
+	}
+	cutoff := before.UTC()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var deleted int64
+	for id, rollout := range s.rollouts {
+		if !rolloutStateTerminal(rollout.State) {
+			continue
+		}
+		if rollout.FinishedAt.IsZero() || !rollout.FinishedAt.Before(cutoff) {
+			continue
+		}
+		delete(s.rollouts, id)
+		deleted++
+	}
+	return deleted, nil
+}
+
 // AppendAuditEvent stores an audit event and assigns an ID when needed.
 func (s *MemoryNodeStore) AppendAuditEvent(_ context.Context, event protocol.AuditEvent) (protocol.AuditEvent, error) {
 	event.Actor = strings.TrimSpace(event.Actor)
@@ -708,6 +855,22 @@ func cloneLabels(labels map[string]string) map[string]string {
 		clone[key] = value
 	}
 	return clone
+}
+
+func cloneRollout(rollout protocol.Rollout) (protocol.Rollout, error) {
+	payload, err := json.Marshal(rollout)
+	if err != nil {
+		return protocol.Rollout{}, err
+	}
+	var clone protocol.Rollout
+	if err := json.Unmarshal(payload, &clone); err != nil {
+		return protocol.Rollout{}, err
+	}
+	return clone, nil
+}
+
+func rolloutStateTerminal(state protocol.RolloutState) bool {
+	return state == protocol.RolloutStateCompleted || state == protocol.RolloutStateAborted || state == protocol.RolloutStateFailed
 }
 
 func cloneRuntimeStatuses(runtimes []protocol.RuntimeStatus) []protocol.RuntimeStatus {

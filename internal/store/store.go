@@ -17,6 +17,10 @@ const (
 	DefaultJobListLimit = 50
 	// MaxJobListLimit is the largest node job page size accepted by the store.
 	MaxJobListLimit = 500
+	// DefaultRolloutListLimit is the bounded default for rollout listing.
+	DefaultRolloutListLimit = 50
+	// MaxRolloutListLimit is the largest rollout page size accepted by the store.
+	MaxRolloutListLimit = 500
 	// DefaultNodeListLimit is the bounded default for fleet inventory listing.
 	DefaultNodeListLimit = 100
 	// MaxNodeListLimit is the largest fleet inventory page size accepted by the store.
@@ -45,6 +49,8 @@ var (
 	// ErrLateJobResultRecorded means a sidecar submitted a result after the
 	// server had already timed out the job; the result was attached for audit.
 	ErrLateJobResultRecorded = errors.New("late job result recorded after timeout")
+	// ErrRolloutNotFound means the requested rollout does not exist.
+	ErrRolloutNotFound = errors.New("rollout not found")
 )
 
 func jobClaimLease(jobType protocol.JobType) time.Duration {
@@ -216,6 +222,42 @@ func normalizeJobFilter(filter JobFilter) JobFilter {
 	return filter
 }
 
+// RolloutStore persists staged fleet rollouts and their nested progress.
+type RolloutStore interface {
+	CreateRollout(ctx context.Context, rollout protocol.Rollout) (protocol.Rollout, error)
+	GetRollout(ctx context.Context, rolloutID string) (*protocol.Rollout, error)
+	ListRollouts(ctx context.Context, filter RolloutFilter) (RolloutList, error)
+	UpdateRollout(ctx context.Context, rollout protocol.Rollout) error
+	PruneTerminalRollouts(ctx context.Context, before time.Time) (int64, error)
+}
+
+// RolloutFilter constrains rollout listing.
+type RolloutFilter struct {
+	Limit  int
+	Offset int
+}
+
+// RolloutList is a paginated rollout snapshot.
+type RolloutList struct {
+	Rollouts []protocol.Rollout
+	Total    int
+	Limit    int
+	Offset   int
+}
+
+func NormalizeRolloutFilter(filter RolloutFilter) RolloutFilter {
+	if filter.Limit <= 0 {
+		filter.Limit = DefaultRolloutListLimit
+	}
+	if filter.Limit > MaxRolloutListLimit {
+		filter.Limit = MaxRolloutListLimit
+	}
+	if filter.Offset < 0 {
+		filter.Offset = 0
+	}
+	return filter
+}
+
 // AuditStore persists bounded audit events for operator-visible history.
 type AuditStore interface {
 	AppendAuditEvent(ctx context.Context, event protocol.AuditEvent) (protocol.AuditEvent, error)
@@ -247,6 +289,7 @@ type Store interface {
 	NodeStore
 	EnrollmentStore
 	JobStore
+	RolloutStore
 	AuditStore
 	DesiredConfigStore
 	HealthStore

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -487,6 +488,116 @@ func TestMemoryNodeStoreListNodeJobsFiltered(t *testing.T) {
 	}
 }
 
+func TestMemoryRolloutLifecycleListUpdateAndPrune(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryNodeStore()
+	now := time.Date(2026, 6, 19, 12, 0, 0, 0, time.UTC)
+
+	first, err := store.CreateRollout(ctx, rolloutForStoreTest("rollout-a", protocol.RolloutStatePending, now))
+	if err != nil {
+		t.Fatalf("create first rollout: %v", err)
+	}
+	second, err := store.CreateRollout(ctx, rolloutForStoreTest("rollout-b", protocol.RolloutStateRunning, now.Add(time.Minute)))
+	if err != nil {
+		t.Fatalf("create second rollout: %v", err)
+	}
+
+	got, err := store.GetRollout(ctx, first.ID)
+	if err != nil {
+		t.Fatalf("get rollout: %v", err)
+	}
+	if got == nil || got.ID != first.ID || got.Batches[0].Nodes["node-a"].State != protocol.RolloutNodeStatePending {
+		t.Fatalf("got rollout = %#v, want first rollout", got)
+	}
+	got.Batches[0].Nodes["node-a"] = protocol.RolloutNodeProgress{NodeID: "node-a", State: protocol.RolloutNodeStateFailed}
+	again, err := store.GetRollout(ctx, first.ID)
+	if err != nil {
+		t.Fatalf("get rollout again: %v", err)
+	}
+	if again.Batches[0].Nodes["node-a"].State != protocol.RolloutNodeStatePending {
+		t.Fatalf("stored rollout mutated through returned pointer: %#v", again)
+	}
+
+	list, err := store.ListRollouts(ctx, RolloutFilter{Limit: 1})
+	if err != nil {
+		t.Fatalf("list rollouts: %v", err)
+	}
+	if list.Total != 2 || list.Limit != 1 || len(list.Rollouts) != 1 || list.Rollouts[0].ID != second.ID {
+		t.Fatalf("rollout page = %#v, want newest second rollout", list)
+	}
+
+	second.State = protocol.RolloutStateCompleted
+	second.UpdatedAt = now.Add(2 * time.Minute)
+	second.FinishedAt = now.Add(2 * time.Minute)
+	second.Batches[0].State = protocol.RolloutBatchStateCompleted
+	if err := store.UpdateRollout(ctx, second); err != nil {
+		t.Fatalf("update rollout: %v", err)
+	}
+	updated, err := store.GetRollout(ctx, second.ID)
+	if err != nil {
+		t.Fatalf("get updated rollout: %v", err)
+	}
+	if updated.State != protocol.RolloutStateCompleted || updated.FinishedAt.IsZero() {
+		t.Fatalf("updated rollout = %#v, want completed with finishedAt", updated)
+	}
+
+	deleted, err := store.PruneTerminalRollouts(ctx, now.Add(3*time.Minute))
+	if err != nil {
+		t.Fatalf("prune terminal rollouts: %v", err)
+	}
+	if deleted != 1 {
+		t.Fatalf("deleted rollouts = %d, want 1", deleted)
+	}
+	missing, err := store.GetRollout(ctx, second.ID)
+	if err != nil {
+		t.Fatalf("get pruned rollout: %v", err)
+	}
+	if missing != nil {
+		t.Fatalf("pruned rollout still exists: %#v", missing)
+	}
+}
+
+func TestMemoryRolloutConcurrentUpdates(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryNodeStore()
+	now := time.Date(2026, 6, 19, 12, 0, 0, 0, time.UTC)
+	rollout, err := store.CreateRollout(ctx, rolloutForStoreTest("rollout-race", protocol.RolloutStateRunning, now))
+	if err != nil {
+		t.Fatalf("create rollout: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 16; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			next, err := cloneRollout(rollout)
+			if err != nil {
+				t.Errorf("clone rollout %d: %v", i, err)
+				return
+			}
+			next.UpdatedAt = now.Add(time.Duration(i) * time.Second)
+			next.Batches[0].Nodes["node-a"] = protocol.RolloutNodeProgress{
+				NodeID: "node-a",
+				JobID:  "job",
+				State:  protocol.RolloutNodeStateDispatched,
+			}
+			if err := store.UpdateRollout(ctx, next); err != nil {
+				t.Errorf("update rollout %d: %v", i, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	got, err := store.GetRollout(ctx, rollout.ID)
+	if err != nil {
+		t.Fatalf("get rollout: %v", err)
+	}
+	if got == nil || got.Batches[0].Nodes["node-a"].State != protocol.RolloutNodeStateDispatched {
+		t.Fatalf("concurrent rollout = %#v, want dispatched node", got)
+	}
+}
+
 func TestMemoryNodeStorePrunesTerminalJobsAndAuditEvents(t *testing.T) {
 	assertRetentionPruning(t, NewMemoryNodeStore())
 }
@@ -675,6 +786,31 @@ func TestMemoryDesiredConfigPersistsCopy(t *testing.T) {
 	}
 	if got.NodeRuntimeProfileOverrides["node-a/hermes/default"].Model != "claude-sonnet-4" {
 		t.Fatalf("stored node runtime profile desired config mutated: %#v", got)
+	}
+}
+
+func rolloutForStoreTest(id string, state protocol.RolloutState, createdAt time.Time) protocol.Rollout {
+	return protocol.Rollout{
+		ID:    id,
+		State: state,
+		Spec: protocol.RolloutSpec{
+			NodeIDs:       []string{"node-a", "node-b"},
+			RuntimeType:   "hermes",
+			Profile:       "default",
+			Target:        protocol.ProviderModelConfig{Provider: "openai", Model: "gpt-5"},
+			BatchSize:     1,
+			HealthTimeout: 5 * time.Minute,
+		},
+		Batches: []protocol.RolloutBatch{{
+			Index:   0,
+			NodeIDs: []string{"node-a"},
+			State:   protocol.RolloutBatchStatePending,
+			Nodes: map[string]protocol.RolloutNodeProgress{
+				"node-a": {NodeID: "node-a", State: protocol.RolloutNodeStatePending},
+			},
+		}},
+		CreatedAt: createdAt,
+		UpdatedAt: createdAt,
 	}
 }
 
