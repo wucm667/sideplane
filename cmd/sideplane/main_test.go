@@ -81,6 +81,33 @@ func TestFleetStatusPrintsCompactTable(t *testing.T) {
 	}
 }
 
+func TestFleetStatusJSONOutput(t *testing.T) {
+	nodes := []cliNodeStatus{{
+		NodeStatus: protocol.NodeStatus{
+			NodeID:          "node-json",
+			State:           protocol.NodeStateFresh,
+			LastHeartbeatAt: time.Now().UTC(),
+		},
+		Drift: true,
+	}}
+	server := httptest.NewServer(jsonHandler(t, http.MethodGet, "/api/nodes", nodes))
+	defer server.Close()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"fleet", "status", "--server", server.URL, "--json"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("run returned %d, stderr=%q", code, stderr.String())
+	}
+	var got []cliNodeStatus
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode JSON output: %v\n%s", err, stdout.String())
+	}
+	if len(got) != 1 || got[0].NodeID != "node-json" || !got[0].Drift {
+		t.Fatalf("nodes = %#v, want node-json with drift", got)
+	}
+}
+
 func TestNodeInspectPrintsNodeDetail(t *testing.T) {
 	now := time.Now().UTC()
 	nodes := []cliNodeStatus{{
@@ -288,6 +315,58 @@ func TestUnknownCommandPrintsHelp(t *testing.T) {
 	}
 }
 
+func TestUnknownNestedCommandsPrintHelp(t *testing.T) {
+	tests := [][]string{
+		{"config", "unknown"},
+		{"jobs", "unknown"},
+		{"node", "unknown"},
+	}
+	for _, args := range tests {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+			code := run(args, &stdout, &stderr)
+			if code != 1 {
+				t.Fatalf("run returned %d, want 1", code)
+			}
+			output := stderr.String()
+			if !strings.Contains(output, "unknown command: "+strings.Join(args, " ")) || !strings.Contains(output, "Usage: sideplane <command>") {
+				t.Fatalf("stderr missing unknown command help:\n%s", output)
+			}
+		})
+	}
+}
+
+func TestCommandsRejectMissingRequiredArguments(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "probe node", args: []string{"probe"}, want: "usage: sideplane probe"},
+		{name: "restart node", args: []string{"restart"}, want: "usage: sideplane restart"},
+		{name: "jobs node", args: []string{"jobs", "list"}, want: "usage: sideplane jobs list"},
+		{name: "config apply node", args: []string{"config", "apply"}, want: "usage: sideplane config apply"},
+		{name: "config preview node", args: []string{"config", "preview"}, want: "usage: sideplane config preview"},
+		{name: "node inspect id", args: []string{"node", "inspect"}, want: "usage: sideplane node inspect"},
+		{name: "node remove id", args: []string{"node", "remove"}, want: "usage: sideplane node remove"},
+		{name: "rollback backup", args: []string{"rollback", "node-a"}, want: "--backup-ref is required"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+			code := run(tt.args, &stdout, &stderr)
+			if code == 0 {
+				t.Fatalf("run returned 0, want failure")
+			}
+			if !strings.Contains(stderr.String(), tt.want) {
+				t.Fatalf("stderr = %q, want %q", stderr.String(), tt.want)
+			}
+		})
+	}
+}
+
 func TestAPIErrorMessageRedactsJSONAndPlainTextSecrets(t *testing.T) {
 	jsonMessage := apiErrorMessage([]byte(`{"code":"bad_request","message":"token=secret-token status=bad"}`))
 	if strings.Contains(jsonMessage, "secret-token") || !strings.Contains(jsonMessage, "token=[REDACTED]") {
@@ -354,6 +433,26 @@ func TestProbeCreatesDeepProbeJob(t *testing.T) {
 	}
 	if got := stdout.String(); !strings.Contains(got, "job job-1 pending") {
 		t.Fatalf("stdout = %q, want job summary", got)
+	}
+}
+
+func TestProbeJSONOutput(t *testing.T) {
+	job := protocol.Job{ID: "job-probe-json", NodeID: "node-json", Type: protocol.JobTypeDeepProbe, Status: protocol.JobStatusPending}
+	server := httptest.NewServer(jsonHandlerWithStatus(t, http.MethodPost, "/api/nodes/node-json/jobs", http.StatusCreated, job))
+	defer server.Close()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"probe", "node-json", "--server", server.URL, "--json"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("run returned %d, stderr=%q", code, stderr.String())
+	}
+	var got protocol.Job
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode JSON output: %v\n%s", err, stdout.String())
+	}
+	if got.ID != "job-probe-json" || got.Type != protocol.JobTypeDeepProbe {
+		t.Fatalf("job = %#v, want probe JSON job", got)
 	}
 }
 
@@ -1151,6 +1250,28 @@ func TestConfigGetPrintsDesiredConfigSummary(t *testing.T) {
 		if !strings.Contains(output, want) {
 			t.Fatalf("output missing %q:\n%s", want, output)
 		}
+	}
+}
+
+func TestConfigGetJSONOutput(t *testing.T) {
+	desired := protocol.DesiredConfig{
+		Global: protocol.ProviderModelConfig{Provider: "openai", Model: "gpt-4o"},
+	}
+	server := httptest.NewServer(jsonHandler(t, http.MethodGet, "/api/config/desired", desired))
+	defer server.Close()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"config", "get", "--server", server.URL, "--json"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("run returned %d, stderr=%q", code, stderr.String())
+	}
+	var got protocol.DesiredConfig
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode JSON output: %v\n%s", err, stdout.String())
+	}
+	if got.Global.Provider != "openai" || got.Global.Model != "gpt-4o" {
+		t.Fatalf("desired = %#v, want openai/gpt-4o", got)
 	}
 }
 
