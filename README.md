@@ -244,6 +244,7 @@ workflow.
 
 ## Docs
 
+- [Contributor guide](CONTRIBUTING.md)
 - [Signed config apply pipeline](docs/config-apply-pipeline.md)
 - [Live-write preflight](docs/live-write-preflight.md)
 - [Read-only sidecar deployment](docs/read-only-sidecar-deployment.md)
