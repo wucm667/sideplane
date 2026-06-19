@@ -303,6 +303,15 @@ func (h *handler) enrollNode(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) heartbeat(w http.ResponseWriter, r *http.Request) {
+	heartbeatAccepted := false
+	defer func() {
+		if heartbeatAccepted {
+			h.metrics.IncHeartbeat("accepted")
+		} else {
+			h.metrics.IncHeartbeat("rejected")
+		}
+	}()
+
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
 		writeAPIError(w, http.StatusMethodNotAllowed, http.StatusText(http.StatusMethodNotAllowed))
@@ -347,6 +356,7 @@ func (h *handler) heartbeat(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusInternalServerError, "record heartbeat")
 		return
 	}
+	heartbeatAccepted = true
 
 	writeJSON(w, http.StatusOK, protocol.HeartbeatResponse{
 		Accepted:   true,
@@ -1049,6 +1059,7 @@ func (h *handler) claimNextJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.metrics.IncSidecarJobClaim(string(job.Type))
 	writeJSON(w, http.StatusOK, job)
 }
 
@@ -1135,6 +1146,7 @@ func (h *handler) submitJobResult(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if lateResult {
+		h.metrics.IncLateJobResult(string(job.Type), string(req.Status))
 		h.audit(r.Context(), protocol.AuditEvent{
 			Actor:      audit.ActorSidecar,
 			Action:     audit.ActionJobFail,

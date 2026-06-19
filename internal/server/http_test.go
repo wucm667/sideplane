@@ -1772,10 +1772,79 @@ func TestMetricsExposesCounters(t *testing.T) {
 	}
 	body := rec.Body.String()
 	for _, want := range []string{
+		"sideplane_heartbeats_total",
 		"sideplane_jobs_created_total",
+		"sideplane_sidecar_job_claims_total",
 		"sideplane_jobs_completed_total",
 		"sideplane_jobs_failed_total",
+		"sideplane_job_late_results_total",
 		"sideplane_config_apply_rolled_back_total",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("metrics body missing %q\n%s", want, body)
+		}
+	}
+}
+
+func TestMetricsCountsHeartbeatsClaimsAndLateResults(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	credential := enrollTestNode(t, nodeStore, "node-metrics")
+	handler := NewHandlerWithStore(nodeStore)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/heartbeat", strings.NewReader(`{"nodeId":"node-metrics","hostname":"worker-a"}`))
+	req.Header.Set("Authorization", "Bearer "+credential)
+	handler.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusOK)
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/heartbeat", strings.NewReader(`{"nodeId":"node-metrics"}`))
+	req.Header.Set("Authorization", "Bearer wrong-credential")
+	handler.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusUnauthorized)
+
+	now := time.Now().UTC().Add(-2 * time.Hour)
+	if _, err := nodeStore.CreateJob(context.Background(), protocol.CreateJobRequest{Type: protocol.JobTypeDeepProbe}, "node-metrics", now); err != nil {
+		t.Fatalf("create deep probe: %v", err)
+	}
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/sidecar/jobs/next?nodeId=node-metrics", nil)
+	req.Header.Set("Authorization", "Bearer "+credential)
+	handler.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusOK)
+
+	job, err := nodeStore.CreateJob(context.Background(), protocol.CreateJobRequest{
+		Type:        protocol.JobTypeConfigApply,
+		PayloadJSON: configApplyPayloadForHTTPTest(t, "hermes", "/etc/hermes/config.yaml"),
+	}, "node-metrics", now.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("create config_apply: %v", err)
+	}
+	claimed, err := nodeStore.ClaimNextJob(context.Background(), "node-metrics", job.CreatedAt.Add(time.Second))
+	if err != nil {
+		t.Fatalf("claim config_apply: %v", err)
+	}
+	if claimed == nil || claimed.ID != job.ID {
+		t.Fatalf("claimed job = %#v, want config_apply %s", claimed, job.ID)
+	}
+	if _, err := nodeStore.ClaimNextJob(context.Background(), "node-metrics", claimed.ClaimExpiresAt.Add(time.Second)); err != nil {
+		t.Fatalf("advance config_apply timeout: %v", err)
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/sidecar/jobs/"+job.ID+"/result", strings.NewReader(`{"status":"completed","resultJson":"{}"}`))
+	req.Header.Set("Authorization", "Bearer "+credential)
+	handler.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusOK)
+
+	metricsRec := httptest.NewRecorder()
+	handler.ServeHTTP(metricsRec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	body := metricsRec.Body.String()
+	for _, want := range []string{
+		`sideplane_heartbeats_total{status="accepted"} 1`,
+		`sideplane_heartbeats_total{status="rejected"} 1`,
+		`sideplane_sidecar_job_claims_total{type="deep_probe"} 1`,
+		`sideplane_job_late_results_total{type="config_apply",status="completed"} 1`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("metrics body missing %q\n%s", want, body)
