@@ -4,6 +4,8 @@ import type { AuditEvent, AuditFilters, DeepProbeResult, EffectiveConfigResponse
 const NODE_REFRESH_MS = 10_000
 const ACTIVE_JOB_REFRESH_MS = 2_000
 const AUDIT_REFRESH_MS = 10_000
+const DEFAULT_JOB_LIMIT = 50
+const JOB_LIMIT_STEP = 50
 const ACTIVE_JOB_STATUSES: JobStatus[] = ['pending', 'claimed']
 const OPERATOR_TOKEN_STORAGE_KEY = 'sideplane.operatorToken'
 const THEME_STORAGE_KEY = 'sideplane.theme'
@@ -109,6 +111,16 @@ function hasActiveJobs(jobs: Job[]): boolean {
   return jobs.some((job) => ACTIVE_JOB_STATUSES.includes(job.status))
 }
 
+function isActiveJob(job: Job): boolean {
+  return ACTIVE_JOB_STATUSES.includes(job.status)
+}
+
+function mergeActiveJobs(previous: Job[], next: Job[]): Job[] {
+  const seen = new Set(next.map((job) => job.id))
+  const active = previous.filter((job) => isActiveJob(job) && !seen.has(job.id))
+  return [...active, ...next]
+}
+
 export function hasActiveDeepProbe(jobs: Job[]): boolean {
   return jobs.some((job) => job.type === 'deep_probe' && ACTIVE_JOB_STATUSES.includes(job.status))
 }
@@ -176,6 +188,8 @@ export function useFleetPageController() {
   const [jobsByNode, setJobsByNode] = useState<Record<string, Job[]>>({})
   const [jobsLoadingByNode, setJobsLoadingByNode] = useState<Record<string, boolean>>({})
   const [jobsErrorByNode, setJobsErrorByNode] = useState<Record<string, string>>({})
+  const [jobStatusByNode, setJobStatusByNode] = useState<Record<string, JobStatus | ''>>({})
+  const [jobLimitByNode, setJobLimitByNode] = useState<Record<string, number>>({})
   const [creatingByNode, setCreatingByNode] = useState<Record<string, boolean>>({})
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
@@ -220,7 +234,7 @@ export function useFleetPageController() {
     }
   }, [theme])
 
-  const loadNodeJobs = useCallback(async (nodeId: string, showLoading = true) => {
+  const loadNodeJobs = useCallback(async (nodeId: string, showLoading = true, options?: { status?: JobStatus | ''; limit?: number }) => {
     if (!mountedRef.current) return
     if (showLoading) {
       setJobsLoadingByNode((current) => ({ ...current, [nodeId]: true }))
@@ -231,13 +245,22 @@ export function useFleetPageController() {
       if (token) {
         headers.Authorization = `Bearer ${token}`
       }
-      const res = await fetch(`/api/nodes/${encodeURIComponent(nodeId)}/jobs`, { headers })
+      const status = options?.status ?? jobStatusByNode[nodeId] ?? ''
+      const limit = options?.limit ?? jobLimitByNode[nodeId] ?? DEFAULT_JOB_LIMIT
+      const params = new URLSearchParams({ limit: String(limit) })
+      if (status) {
+        params.set('status', status)
+      }
+      const res = await fetch(`/api/nodes/${encodeURIComponent(nodeId)}/jobs?${params.toString()}`, { headers })
       if (!res.ok) {
         throw new Error(await apiErrorMessage(res))
       }
       const data: Job[] = await res.json()
       if (!mountedRef.current) return
-      setJobsByNode((current) => ({ ...current, [nodeId]: data }))
+      setJobsByNode((current) => ({
+        ...current,
+        [nodeId]: status ? mergeActiveJobs(current[nodeId] ?? [], data) : data,
+      }))
       setJobsErrorByNode((current) => {
         const next = { ...current }
         delete next[nodeId]
@@ -254,7 +277,21 @@ export function useFleetPageController() {
         setJobsLoadingByNode((current) => ({ ...current, [nodeId]: false }))
       }
     }
-  }, [operatorToken])
+  }, [jobLimitByNode, jobStatusByNode, operatorToken])
+
+  const setNodeJobStatusFilter = useCallback((nodeId: string, status: JobStatus | '') => {
+    const limit = DEFAULT_JOB_LIMIT
+    setJobStatusByNode((current) => ({ ...current, [nodeId]: status }))
+    setJobLimitByNode((current) => ({ ...current, [nodeId]: limit }))
+    void loadNodeJobs(nodeId, true, { status, limit })
+  }, [loadNodeJobs])
+
+  const loadMoreNodeJobs = useCallback((nodeId: string) => {
+    const status = jobStatusByNode[nodeId] ?? ''
+    const limit = (jobLimitByNode[nodeId] ?? DEFAULT_JOB_LIMIT) + JOB_LIMIT_STEP
+    setJobLimitByNode((current) => ({ ...current, [nodeId]: limit }))
+    void loadNodeJobs(nodeId, true, { status, limit })
+  }, [jobLimitByNode, jobStatusByNode, loadNodeJobs])
 
   const loadNodes = useCallback(async () => {
     const res = await fetch('/api/nodes')
@@ -484,8 +521,11 @@ export function useFleetPageController() {
     groups,
     jobsByNode,
     jobsErrorByNode,
+    jobLimitByNode,
     jobsLoadingByNode,
+    jobStatusByNode,
     loading,
+    loadMoreNodeJobs,
     nodes: safeNodes,
     operatorToken,
     openNode,
@@ -495,6 +535,7 @@ export function useFleetPageController() {
     selectedNode,
     setOperatorToken,
     setAuditFilters,
+    setNodeJobStatusFilter,
     stats,
     theme,
     toggleTheme,

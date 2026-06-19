@@ -23,8 +23,11 @@ export default function FleetPage() {
     groups,
     jobsByNode,
     jobsErrorByNode,
+    jobLimitByNode,
     jobsLoadingByNode,
+    jobStatusByNode,
     loading,
+    loadMoreNodeJobs,
     nodes,
     operatorToken,
     openNode,
@@ -33,6 +36,7 @@ export default function FleetPage() {
     refreshing,
     selectedNode,
     setAuditFilters,
+    setNodeJobStatusFilter,
     setOperatorToken,
     stats,
     theme,
@@ -114,13 +118,17 @@ export default function FleetPage() {
               creating={Boolean(creatingByNode[selectedNode.nodeId])}
               jobs={jobsByNode[selectedNode.nodeId] ?? []}
               jobsError={jobsErrorByNode[selectedNode.nodeId]}
+              jobLimit={jobLimitByNode[selectedNode.nodeId] ?? 50}
               jobsLoading={Boolean(jobsLoadingByNode[selectedNode.nodeId])}
+              jobStatusFilter={jobStatusByNode[selectedNode.nodeId] ?? ''}
               node={selectedNode}
               effective={effectiveByNode[selectedNode.nodeId]}
               effectiveError={effectiveErrorByNode[selectedNode.nodeId]}
               operatorToken={operatorToken}
               onBack={() => changeView('fleet')}
               onDeepProbe={() => createDeepProbe(selectedNode.nodeId)}
+              onJobStatusFilterChange={(status) => setNodeJobStatusFilter(selectedNode.nodeId, status)}
+              onLoadMoreJobs={() => loadMoreNodeJobs(selectedNode.nodeId)}
               onApplied={refreshSelectedNodeAfterApply}
             />
           )}

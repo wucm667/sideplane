@@ -1,31 +1,39 @@
 import { useState, type ReactNode } from 'react'
 import ConfigWizard from '../ConfigWizard.tsx'
 import { apiErrorMessage, compactHash, formatDate, formatRelativeTime, hasActiveConfigApply, hasActiveDeepProbe, jobBadgeClasses, latestConfigSnapshots, runtimeKey, snapshotForRuntime, stateBadgeClasses } from '../helpers.ts'
-import type { ConfigApplyResult, ConfigDiffEntry, DeepProbeResult, EffectiveConfigResponse, Job, NodeStatus, RuntimeConfigSnapshot, RuntimeStatus } from '../types.ts'
+import type { ConfigApplyResult, ConfigDiffEntry, DeepProbeResult, EffectiveConfigResponse, Job, JobStatus, NodeStatus, RuntimeConfigSnapshot, RuntimeStatus } from '../types.ts'
 
 export function NodeDetailView({
   creating,
   jobs,
   jobsError,
+  jobLimit,
   jobsLoading,
+  jobStatusFilter,
   node,
   effective,
   effectiveError,
   operatorToken,
   onBack,
   onDeepProbe,
+  onJobStatusFilterChange,
+  onLoadMoreJobs,
   onApplied,
 }: {
   creating: boolean
   jobs: Job[]
   jobsError?: string
+  jobLimit: number
   jobsLoading: boolean
+  jobStatusFilter: JobStatus | ''
   node: NodeStatus
   effective?: EffectiveConfigResponse
   effectiveError?: string
   operatorToken: string
   onBack: () => void
   onDeepProbe: () => void
+  onJobStatusFilterChange: (status: JobStatus | '') => void
+  onLoadMoreJobs: () => void
   onApplied: () => void
 }) {
   const activeProbe = hasActiveDeepProbe(jobs)
@@ -155,14 +163,36 @@ export function NodeDetailView({
       </section>
 
       <section className="rounded-xl border border-[var(--sp-border)] bg-[var(--sp-surface)]">
-        <div className="flex items-center justify-between border-b border-[var(--sp-border)] px-4 py-3">
+        <div className="flex flex-col gap-3 border-b border-[var(--sp-border)] px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="text-sm font-semibold">Recent jobs</div>
-          {jobsLoading && <div className="text-xs text-[var(--sp-muted)]">Loading jobs…</div>}
+          <div className="flex flex-wrap items-center gap-2">
+            <select
+              className="h-8 rounded-lg border border-[var(--sp-border)] bg-[var(--sp-surface-2)] px-2 text-xs outline-none"
+              value={jobStatusFilter}
+              onChange={(event) => onJobStatusFilterChange(event.target.value as JobStatus | '')}
+            >
+              <option value="">All statuses</option>
+              <option value="pending">Pending</option>
+              <option value="claimed">Claimed</option>
+              <option value="completed">Completed</option>
+              <option value="failed">Failed</option>
+            </select>
+            <button
+              type="button"
+              className="h-8 rounded-lg border border-[var(--sp-border-strong)] bg-[var(--sp-surface)] px-2.5 text-xs font-medium hover:bg-[var(--sp-surface-2)] disabled:cursor-not-allowed disabled:opacity-55"
+              disabled={jobsLoading}
+              onClick={onLoadMoreJobs}
+            >
+              Load more
+            </button>
+            <span className="font-mono text-[11px] text-[var(--sp-faint)]">{jobLimit}</span>
+            {jobsLoading && <div className="text-xs text-[var(--sp-muted)]">Loading jobs...</div>}
+          </div>
         </div>
         {jobsError && <div className="mt-4 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-600">Failed to load jobs: {jobsError}</div>}
         <div className="divide-y divide-[var(--sp-border)]">
           {!jobsLoading && jobs.length === 0 && <div className="px-4 py-4 text-xs text-[var(--sp-muted)]">No jobs yet.</div>}
-          {jobs.slice(0, 6).map((job) => (
+          {jobs.map((job) => (
             <div key={job.id}>
               <button
                 type="button"
