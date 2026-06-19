@@ -121,6 +121,18 @@ func TestUnknownCommandPrintsHelp(t *testing.T) {
 	}
 }
 
+func TestAPIErrorMessageRedactsJSONAndPlainTextSecrets(t *testing.T) {
+	jsonMessage := apiErrorMessage([]byte(`{"code":"bad_request","message":"token=secret-token status=bad"}`))
+	if strings.Contains(jsonMessage, "secret-token") || !strings.Contains(jsonMessage, "token=[REDACTED]") {
+		t.Fatalf("JSON API error message = %q, want redacted token", jsonMessage)
+	}
+
+	textMessage := apiErrorMessage([]byte(`authorization:Bearer-secret status=bad`))
+	if strings.Contains(textMessage, "Bearer-secret") || !strings.Contains(textMessage, "authorization:[REDACTED]") {
+		t.Fatalf("plain API error message = %q, want redacted authorization", textMessage)
+	}
+}
+
 func TestVersionCommand(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer

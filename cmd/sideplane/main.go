@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/wucm667/sideplane/internal/auth"
+	spconfig "github.com/wucm667/sideplane/pkg/config"
 	"github.com/wucm667/sideplane/pkg/protocol"
 )
 
@@ -676,9 +677,9 @@ func apiErrorMessage(body []byte) string {
 	}
 	var apiErr protocol.APIError
 	if err := json.Unmarshal(body, &apiErr); err == nil && strings.TrimSpace(apiErr.Message) != "" {
-		return strings.TrimSpace(apiErr.Message)
+		return spconfig.RedactString(apiErr.Message)
 	}
-	return trimmed
+	return spconfig.RedactString(trimmed)
 }
 
 func apiEndpoint(serverURL string, path string) (string, error) {

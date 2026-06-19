@@ -518,6 +518,7 @@ func (h *handler) listNodeJobs(w http.ResponseWriter, r *http.Request, nodeID st
 		return
 	}
 	h.observeTimedOutJobs(r.Context(), jobs)
+	jobs = redactJobs(jobs)
 	if h.shouldHideJobResults(r) {
 		jobs = summarizeJobs(jobs)
 	}
@@ -568,6 +569,17 @@ func summarizeJobs(jobs []protocol.Job) []protocol.Job {
 		summaries[i].ResultJSON = ""
 	}
 	return summaries
+}
+
+func redactJobs(jobs []protocol.Job) []protocol.Job {
+	redacted := make([]protocol.Job, len(jobs))
+	copy(redacted, jobs)
+	for i := range redacted {
+		redacted[i].PayloadJSON = spconfig.RedactString(redacted[i].PayloadJSON)
+		redacted[i].ResultJSON = spconfig.RedactString(redacted[i].ResultJSON)
+		redacted[i].Error = spconfig.RedactString(redacted[i].Error)
+	}
+	return redacted
 }
 
 func (h *handler) createNodeJob(w http.ResponseWriter, r *http.Request, nodeID string) {
@@ -873,6 +885,8 @@ func (h *handler) submitJobResult(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusBadRequest, "invalid result JSON")
 		return
 	}
+	req.ResultJSON = spconfig.RedactString(req.ResultJSON)
+	req.Error = spconfig.RedactString(req.Error)
 
 	now := time.Now().UTC()
 	if store.IsJobClaimTimeout(*job) {
@@ -1006,6 +1020,7 @@ func (h *handler) auditEvents(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusInternalServerError, "list audit events")
 		return
 	}
+	events = redactAuditEvents(events)
 	writeJSON(w, http.StatusOK, protocol.ListAuditEventsResponse{Events: events})
 }
 
@@ -1197,7 +1212,17 @@ func hashDesiredConfig(desired protocol.DesiredConfig) string {
 }
 
 func (h *handler) audit(ctx context.Context, event protocol.AuditEvent) {
+	event.Detail = spconfig.RedactString(event.Detail)
 	_, _ = h.store.AppendAuditEvent(ctx, event)
+}
+
+func redactAuditEvents(events []protocol.AuditEvent) []protocol.AuditEvent {
+	redacted := make([]protocol.AuditEvent, len(events))
+	copy(redacted, events)
+	for i := range redacted {
+		redacted[i].Detail = spconfig.RedactString(redacted[i].Detail)
+	}
+	return redacted
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {
@@ -1212,6 +1237,7 @@ func writeAPIError(w http.ResponseWriter, status int, message string) {
 	if message == "" {
 		message = http.StatusText(status)
 	}
+	message = spconfig.RedactString(message)
 	code := strings.ToLower(strings.ReplaceAll(http.StatusText(status), " ", "_"))
 	writeJSON(w, status, protocol.APIError{
 		Code:    code,

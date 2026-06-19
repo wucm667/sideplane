@@ -15,6 +15,7 @@ import (
 
 	"github.com/wucm667/sideplane/internal/audit"
 	"github.com/wucm667/sideplane/internal/store"
+	spconfig "github.com/wucm667/sideplane/pkg/config"
 	spcrypto "github.com/wucm667/sideplane/pkg/crypto"
 	"github.com/wucm667/sideplane/pkg/protocol"
 )
@@ -744,8 +745,11 @@ func TestListNodeJobsProtectsResultJSONWithConfiguredOperatorToken(t *testing.T)
 				t.Fatalf("len(jobs) = %d, want 1", len(jobs))
 			}
 			if tt.wantResult {
-				if !strings.Contains(jobs[0].ResultJSON, "sk-test-secret") {
-					t.Fatalf("resultJson = %q, want detailed result", jobs[0].ResultJSON)
+				if strings.Contains(jobs[0].ResultJSON, "sk-test-secret") {
+					t.Fatalf("resultJson leaked secret: %q", jobs[0].ResultJSON)
+				}
+				if !strings.Contains(jobs[0].ResultJSON, spconfig.RedactedValue) {
+					t.Fatalf("resultJson = %q, want redacted detailed result", jobs[0].ResultJSON)
 				}
 				return
 			}
@@ -2013,6 +2017,43 @@ func TestAPIEndpointsReturnStructuredJSONErrors(t *testing.T) {
 
 			assertAPIError(t, rec, tt.wantStatus, tt.wantCode, tt.wantMessage)
 		})
+	}
+}
+
+func TestAPIErrorRedactsSecretFragments(t *testing.T) {
+	rec := httptest.NewRecorder()
+
+	writeAPIError(rec, http.StatusBadRequest, "token=secret-token status=bad")
+
+	assertAPIError(t, rec, http.StatusBadRequest, "bad_request", "token=[REDACTED] status=bad")
+	if strings.Contains(rec.Body.String(), "secret-token") {
+		t.Fatalf("API error leaked secret: %s", rec.Body.String())
+	}
+}
+
+func TestAuditEventRedactionRedactsNestedJSONDetails(t *testing.T) {
+	events := redactAuditEvents([]protocol.AuditEvent{{
+		ID:     "audit_1",
+		Actor:  audit.ActorSidecar,
+		Action: audit.ActionJobFail,
+		Detail: `{"token":"secret-token","nested":{"apiKey":"sk-test"},"status":"failed"}`,
+	}})
+
+	payload, err := json.Marshal(events)
+	if err != nil {
+		t.Fatalf("marshal audit events: %v", err)
+	}
+	for _, forbidden := range []string{"secret-token", "sk-test"} {
+		if strings.Contains(string(payload), forbidden) {
+			t.Fatalf("redacted audit event leaked %q: %s", forbidden, payload)
+		}
+	}
+	var detail map[string]any
+	if err := json.Unmarshal([]byte(events[0].Detail), &detail); err != nil {
+		t.Fatalf("decode redacted detail: %v", err)
+	}
+	if detail["status"] != "failed" {
+		t.Fatalf("redacted audit event detail = %#v, want harmless status preserved", detail)
 	}
 }
 
