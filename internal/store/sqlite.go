@@ -1130,6 +1130,13 @@ WHERE id = ? AND status = ?
 }
 
 func configureSQLite(ctx context.Context, db *sql.DB) error {
+	var journalMode string
+	if err := db.QueryRowContext(ctx, `PRAGMA journal_mode = WAL`).Scan(&journalMode); err != nil {
+		return fmt.Errorf("configure sqlite wal mode: %w", err)
+	}
+	if !strings.EqualFold(journalMode, "wal") {
+		return fmt.Errorf("configure sqlite wal mode: got %q", journalMode)
+	}
 	if _, err := db.ExecContext(ctx, `PRAGMA busy_timeout = 5000`); err != nil {
 		return fmt.Errorf("configure sqlite busy timeout: %w", err)
 	}
