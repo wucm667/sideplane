@@ -74,8 +74,22 @@ type ConfigApplyResult struct {
 	PlanID     string            `json:"planId"`
 	DryRun     bool              `json:"dryRun"`
 	BackupPath string            `json:"backupPath,omitempty"`
+	Backup     *RollbackBackup   `json:"backup,omitempty"`
 	TempPath   string            `json:"tempPath,omitempty"`
 	Steps      []ConfigApplyStep `json:"steps"`
+}
+
+// RollbackBackup is the server-known metadata for a sidecar-reported config
+// backup. Paths remain sidecar-local; operators reference backups by Ref.
+type RollbackBackup struct {
+	Ref         string    `json:"ref"`
+	SourceJobID string    `json:"sourceJobId"`
+	PlanID      string    `json:"planId,omitempty"`
+	RuntimeType string    `json:"runtimeType,omitempty"`
+	Profile     string    `json:"profile,omitempty"`
+	ConfigPath  string    `json:"configPath,omitempty"`
+	BackupPath  string    `json:"backupPath,omitempty"`
+	CreatedAt   time.Time `json:"createdAt,omitzero"`
 }
 
 // RestartJobPayload is the explicit operator request executed by a sidecar.
@@ -99,6 +113,33 @@ type RestartRequest struct {
 // RestartJobResult is the structured sidecar result for restart jobs.
 type RestartJobResult struct {
 	Controller   string            `json:"controller,omitempty"`
+	Steps        []ConfigApplyStep `json:"steps"`
+	HealthStatus string            `json:"healthStatus,omitempty"`
+}
+
+// RollbackRequest is the operator API request to enqueue a rollback job.
+type RollbackRequest struct {
+	RuntimeType string `json:"runtimeType,omitempty"`
+	RuntimeName string `json:"runtimeName,omitempty"`
+	Profile     string `json:"profile,omitempty"`
+	BackupRef   string `json:"backupRef"`
+	Live        bool   `json:"live,omitempty"`
+}
+
+// RollbackJobPayload is the server-derived rollback job sent to a sidecar.
+type RollbackJobPayload struct {
+	RuntimeType string `json:"runtimeType,omitempty"`
+	RuntimeName string `json:"runtimeName,omitempty"`
+	Profile     string `json:"profile,omitempty"`
+	BackupRef   string `json:"backupRef"`
+	ConfigPath  string `json:"configPath"`
+	BackupPath  string `json:"backupPath"`
+	DryRun      bool   `json:"dryRun"`
+}
+
+// RollbackJobResult is the structured sidecar result for rollback jobs.
+type RollbackJobResult struct {
+	BackupRef    string            `json:"backupRef"`
 	Steps        []ConfigApplyStep `json:"steps"`
 	HealthStatus string            `json:"healthStatus,omitempty"`
 }

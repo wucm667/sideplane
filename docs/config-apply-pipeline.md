@@ -33,6 +33,23 @@ plan -> diff -> sign -> sidecar -> backup -> validate -> replace -> restart -> h
 In dry-run mode the pipeline stops after validation; the replace, restart, and
 health-check steps are reported as `skipped` and nothing on the node changes.
 
+## Rollback backup metadata
+
+For the MVP hardening path, rollback metadata is derived from completed or
+failed `config_apply` job results instead of a dedicated backup table. The
+sidecar reports a sidecar-local backup path, while the server exposes and
+accepts a scoped backup reference such as:
+
+```text
+config_apply:<sourceJobId>:<planId>
+```
+
+This keeps rollback references tied to backups the server has already observed.
+The rollback API must reject unknown backup references and must not accept an
+operator-supplied absolute path. A durable backup table can be added later if
+retention, search, or cross-job lifecycle requirements outgrow job-result
+metadata.
+
 ## Operator flag: live apply is off by default
 
 The sidecar performs live config replacement and restart only when started with:

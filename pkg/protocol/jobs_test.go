@@ -108,3 +108,64 @@ func TestRestartJobPayloadAndResultJSONRoundTrip(t *testing.T) {
 		t.Fatalf("restart result steps changed: %#v", decodedResult.Steps)
 	}
 }
+
+func TestRollbackBackupAndJobPayloadJSONRoundTrip(t *testing.T) {
+	backup := RollbackBackup{
+		Ref:         RollbackBackupRef("job_apply", "plan_123"),
+		SourceJobID: "job_apply",
+		PlanID:      "plan_123",
+		RuntimeType: "hermes",
+		Profile:     "default",
+		ConfigPath:  "/tmp/sideplane-test/config.json",
+		BackupPath:  "/tmp/sideplane-test/current.backup",
+		CreatedAt:   time.Date(2026, 6, 19, 10, 0, 0, 0, time.UTC),
+	}
+	result := ConfigApplyResult{
+		PlanID:     "plan_123",
+		DryRun:     false,
+		BackupPath: backup.BackupPath,
+		Backup:     &backup,
+		Steps:      []ConfigApplyStep{{Name: "backup_created", Status: "completed"}},
+	}
+
+	encodedResult, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("marshal config apply result with backup: %v", err)
+	}
+	var decodedResult ConfigApplyResult
+	if err := json.Unmarshal(encodedResult, &decodedResult); err != nil {
+		t.Fatalf("unmarshal config apply result with backup: %v", err)
+	}
+	if decodedResult.Backup == nil {
+		t.Fatalf("decoded backup is nil")
+	}
+	if decodedResult.Backup.Ref != backup.Ref || decodedResult.Backup.ConfigPath != backup.ConfigPath {
+		t.Fatalf("decoded backup = %#v, want ref/config path", decodedResult.Backup)
+	}
+
+	payload := RollbackJobPayload{
+		RuntimeType: "hermes",
+		Profile:     "default",
+		BackupRef:   backup.Ref,
+		ConfigPath:  backup.ConfigPath,
+		BackupPath:  backup.BackupPath,
+		DryRun:      true,
+	}
+	encodedPayload, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal rollback payload: %v", err)
+	}
+	var decodedPayload RollbackJobPayload
+	if err := json.Unmarshal(encodedPayload, &decodedPayload); err != nil {
+		t.Fatalf("unmarshal rollback payload: %v", err)
+	}
+	if decodedPayload != payload {
+		t.Fatalf("rollback payload round trip mismatch: %#v", decodedPayload)
+	}
+}
+
+func TestRollbackBackupRefFallsBackWhenPlanMissing(t *testing.T) {
+	if got := RollbackBackupRef(" job_apply ", " "); got != "config_apply:job_apply" {
+		t.Fatalf("backup ref = %q, want config_apply:job_apply", got)
+	}
+}
