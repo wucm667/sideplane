@@ -192,6 +192,8 @@ func (p *JobPoller) executeJob(ctx context.Context, job *protocol.Job) protocol.
 		return p.executeConfigApply(ctx, job)
 	case protocol.JobTypeRestart:
 		return p.executeRestart(ctx, job)
+	case protocol.JobTypeRollback:
+		return p.executeRollback(ctx, job)
 	default:
 		return protocol.JobResultRequest{
 			Status: protocol.JobStatusFailed,
