@@ -59,3 +59,52 @@ func TestJobJSONIncludesSetTimestamps(t *testing.T) {
 		t.Fatalf("completed job JSON omits finishedAt: %s", payload)
 	}
 }
+
+func TestRestartJobPayloadAndResultJSONRoundTrip(t *testing.T) {
+	payload := RestartJobPayload{
+		RuntimeType: "hermes",
+		RuntimeName: "Hermes Agent",
+		Profile:     "default",
+		Reason:      "operator requested restart after config preview",
+		DryRun:      true,
+	}
+
+	encodedPayload, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal restart payload: %v", err)
+	}
+
+	var decodedPayload RestartJobPayload
+	if err := json.Unmarshal(encodedPayload, &decodedPayload); err != nil {
+		t.Fatalf("unmarshal restart payload: %v", err)
+	}
+	if decodedPayload != payload {
+		t.Fatalf("restart payload round trip mismatch: %#v", decodedPayload)
+	}
+
+	result := RestartJobResult{
+		Controller:   "fake-controller",
+		HealthStatus: "healthy",
+		Steps: []ConfigApplyStep{
+			{Name: "plan", Status: "completed", Detail: "dry-run restart planned"},
+			{Name: "restart", Status: "skipped", Detail: "dry-run"},
+			{Name: "health_check", Status: "skipped", Detail: "dry-run"},
+		},
+	}
+
+	encodedResult, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("marshal restart result: %v", err)
+	}
+
+	var decodedResult RestartJobResult
+	if err := json.Unmarshal(encodedResult, &decodedResult); err != nil {
+		t.Fatalf("unmarshal restart result: %v", err)
+	}
+	if decodedResult.Controller != result.Controller || decodedResult.HealthStatus != result.HealthStatus {
+		t.Fatalf("restart result scalar fields changed: %#v", decodedResult)
+	}
+	if len(decodedResult.Steps) != 3 || decodedResult.Steps[1].Status != "skipped" {
+		t.Fatalf("restart result steps changed: %#v", decodedResult.Steps)
+	}
+}

@@ -10,6 +10,8 @@ const (
 	JobTypeDeepProbe JobType = "deep_probe"
 	// JobTypeConfigApply requests a signed configuration apply.
 	JobTypeConfigApply JobType = "config_apply"
+	// JobTypeRestart requests an allowlisted runtime service restart.
+	JobTypeRestart JobType = "restart"
 )
 
 // JobStatus is the lifecycle state of a job.
@@ -74,4 +76,20 @@ type ConfigApplyResult struct {
 	BackupPath string            `json:"backupPath,omitempty"`
 	TempPath   string            `json:"tempPath,omitempty"`
 	Steps      []ConfigApplyStep `json:"steps"`
+}
+
+// RestartJobPayload is the explicit operator request executed by a sidecar.
+type RestartJobPayload struct {
+	RuntimeType string `json:"runtimeType,omitempty"`
+	RuntimeName string `json:"runtimeName,omitempty"`
+	Profile     string `json:"profile,omitempty"`
+	Reason      string `json:"reason,omitempty"`
+	DryRun      bool   `json:"dryRun"`
+}
+
+// RestartJobResult is the structured sidecar result for restart jobs.
+type RestartJobResult struct {
+	Controller   string            `json:"controller,omitempty"`
+	Steps        []ConfigApplyStep `json:"steps"`
+	HealthStatus string            `json:"healthStatus,omitempty"`
 }
