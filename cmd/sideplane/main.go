@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -52,6 +53,10 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		}
 	case "probe":
 		return runProbe(args[1:], stdout, stderr)
+	case "jobs":
+		if len(args) >= 2 && args[1] == "list" {
+			return runJobsList(args[2:], stdout, stderr)
+		}
 	case "config":
 		if len(args) >= 2 && args[1] == "get" {
 			return runConfigGet(args[2:], stdout, stderr)
@@ -87,6 +92,7 @@ func printHelp(w io.Writer) {
 Commands:
   fleet status        Show fleet node status
   probe <nodeId>      Run a deep probe on a node
+  jobs list <nodeId>  List node jobs
   config get          Show desired configuration
   config set          Update global desired configuration
   node inspect <id>   Show full node detail
@@ -94,6 +100,61 @@ Commands:
   enrollment create   Create a one-time enrollment token
   version             Print version
 `)
+}
+
+func runJobsList(args []string, stdout io.Writer, stderr io.Writer) int {
+	flags := flag.NewFlagSet("sideplane jobs list", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+
+	serverURL := flags.String("server", "", "Sideplane server URL; can also be set with SIDEPLANE_SERVER_URL")
+	limit := flags.Int("limit", 0, "maximum jobs to list")
+	status := flags.String("status", "", "optional job status filter: pending, claimed, completed, failed")
+	jsonOutput := flags.Bool("json", false, "print JSON output")
+	if err := parseCommandFlags(flags, args, "json"); err != nil {
+		return 2
+	}
+	if flags.NArg() != 1 {
+		fmt.Fprintln(stderr, "usage: sideplane jobs list <nodeId> [--server URL] [--limit N] [--status STATUS] [--json]")
+		return 1
+	}
+	if *limit < 0 {
+		fmt.Fprintln(stderr, "jobs list: --limit must be positive")
+		return 1
+	}
+	statusValue := strings.TrimSpace(*status)
+	if statusValue != "" && !validCLIJobStatus(protocol.JobStatus(statusValue)) {
+		fmt.Fprintf(stderr, "jobs list: unsupported status %q\n", statusValue)
+		return 1
+	}
+
+	nodeID := strings.TrimSpace(flags.Arg(0))
+	if nodeID == "" {
+		fmt.Fprintln(stderr, "jobs list: nodeId is required")
+		return 1
+	}
+
+	params := url.Values{}
+	if *limit > 0 {
+		params.Set("limit", strconv.Itoa(*limit))
+	}
+	if statusValue != "" {
+		params.Set("status", statusValue)
+	}
+	path := "/api/nodes/" + url.PathEscape(nodeID) + "/jobs"
+	if query := params.Encode(); query != "" {
+		path += "?" + query
+	}
+	jobs, body, err := getJSON[[]protocol.Job](context.Background(), serverURLValue(*serverURL), path, operatorTokenValue(""))
+	if err != nil {
+		fmt.Fprintf(stderr, "jobs list: %v\n", err)
+		return 1
+	}
+	if *jsonOutput {
+		writeRawJSON(stdout, body)
+		return 0
+	}
+	printJobsTable(stdout, jobs)
+	return 0
 }
 
 func runNodeInspect(args []string, stdout io.Writer, stderr io.Writer) int {
@@ -628,6 +689,49 @@ func printNodeInspect(w io.Writer, node cliNodeStatus) {
 	table.Flush()
 }
 
+func printJobsTable(w io.Writer, jobs []protocol.Job) {
+	table := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(table, "JOB ID\tTYPE\tSTATUS\tCREATED\tFINISHED/ERROR")
+	for _, job := range jobs {
+		fmt.Fprintf(
+			table,
+			"%s\t%s\t%s\t%s\t%s\n",
+			job.ID,
+			job.Type,
+			job.Status,
+			timeLabel(job.CreatedAt),
+			jobFinishedOrError(job),
+		)
+	}
+	table.Flush()
+}
+
+func validCLIJobStatus(status protocol.JobStatus) bool {
+	switch status {
+	case protocol.JobStatusPending, protocol.JobStatusClaimed, protocol.JobStatusCompleted, protocol.JobStatusFailed:
+		return true
+	default:
+		return false
+	}
+}
+
+func jobFinishedOrError(job protocol.Job) string {
+	if strings.TrimSpace(job.Error) != "" {
+		return job.Error
+	}
+	if !job.FinishedAt.IsZero() {
+		return timeLabel(job.FinishedAt)
+	}
+	return "-"
+}
+
+func timeLabel(ts time.Time) string {
+	if ts.IsZero() {
+		return "-"
+	}
+	return ts.Format(time.RFC3339)
+}
+
 func runtimeSummary(runtimes []protocol.RuntimeStatus) string {
 	if len(runtimes) == 0 {
 		return "-"
@@ -787,9 +891,13 @@ func apiEndpoint(serverURL string, path string) (string, error) {
 	if parsed.Scheme == "" || parsed.Host == "" {
 		return "", fmt.Errorf("server URL must be absolute: %q", serverURL)
 	}
-	endpoint, err := url.JoinPath(strings.TrimRight(serverURL, "/"), path)
+	pathPart, rawQuery, hasQuery := strings.Cut(path, "?")
+	endpoint, err := url.JoinPath(strings.TrimRight(serverURL, "/"), pathPart)
 	if err != nil {
 		return "", fmt.Errorf("build API endpoint: %w", err)
+	}
+	if hasQuery {
+		endpoint += "?" + rawQuery
 	}
 	return endpoint, nil
 }

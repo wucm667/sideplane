@@ -322,6 +322,85 @@ func TestProbeWaitPrintsCompletedResultSummary(t *testing.T) {
 	}
 }
 
+func TestJobsListPrintsTableAndUsesFilters(t *testing.T) {
+	now := time.Date(2026, 6, 19, 10, 0, 0, 0, time.UTC)
+	jobs := []protocol.Job{{
+		ID:         "job-1",
+		NodeID:     "node-a",
+		Type:       protocol.JobTypeDeepProbe,
+		Status:     protocol.JobStatusCompleted,
+		CreatedAt:  now,
+		FinishedAt: now.Add(time.Minute),
+	}}
+	var gotQuery string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Fatalf("method = %s, want GET", r.Method)
+		}
+		if r.URL.Path != "/api/nodes/node-a/jobs" {
+			t.Fatalf("path = %s, want /api/nodes/node-a/jobs", r.URL.Path)
+		}
+		gotQuery = r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(jobs); err != nil {
+			t.Fatalf("encode jobs: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"jobs", "list", "node-a", "--server", server.URL, "--limit", "25", "--status", "completed"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("run returned %d, stderr=%q", code, stderr.String())
+	}
+	if gotQuery != "limit=25&status=completed" && gotQuery != "status=completed&limit=25" {
+		t.Fatalf("query = %q, want limit/status", gotQuery)
+	}
+	output := stdout.String()
+	for _, want := range []string{"JOB ID", "TYPE", "STATUS", "CREATED", "FINISHED/ERROR", "job-1", "deep_probe", "completed"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output missing %q:\n%s", want, output)
+		}
+	}
+}
+
+func TestJobsListJSONAndInvalidStatus(t *testing.T) {
+	jobs := []protocol.Job{{
+		ID:        "job-2",
+		NodeID:    "node-a",
+		Type:      protocol.JobTypeConfigApply,
+		Status:    protocol.JobStatusPending,
+		CreatedAt: time.Now().UTC(),
+	}}
+	server := httptest.NewServer(jsonHandler(t, http.MethodGet, "/api/nodes/node-a/jobs", jobs))
+	defer server.Close()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"jobs", "list", "node-a", "--server", server.URL, "--json"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("run returned %d, stderr=%q", code, stderr.String())
+	}
+	var got []protocol.Job
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode JSON output: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != "job-2" {
+		t.Fatalf("jobs = %#v, want job-2", got)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"jobs", "list", "node-a", "--server", server.URL, "--status", "unknown"}, &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("run returned %d, want 1", code)
+	}
+	if !strings.Contains(stderr.String(), `unsupported status "unknown"`) {
+		t.Fatalf("stderr = %q, want invalid status", stderr.String())
+	}
+}
+
 func TestConfigGetPrintsDesiredConfigSummary(t *testing.T) {
 	desired := protocol.DesiredConfig{
 		Global: protocol.ProviderModelConfig{Provider: "openai", Model: "gpt-4o"},
