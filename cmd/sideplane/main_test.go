@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -313,6 +314,9 @@ func TestHelpListsCommands(t *testing.T) {
 		"restart <nodeId>",
 		"rollback <nodeId>",
 		"backups list <id>",
+		"rollout create",
+		"rollout list",
+		"rollout status <id>",
 		"jobs list <nodeId>",
 		"audit list",
 		"config apply <id>",
@@ -337,6 +341,10 @@ func TestPerCommandHelpPrintsFlags(t *testing.T) {
 		{"restart", "--help"},
 		{"rollback", "--help"},
 		{"backups", "list", "--help"},
+		{"rollout", "create", "--help"},
+		{"rollout", "list", "--help"},
+		{"rollout", "status", "--help"},
+		{"rollout", "pause", "--help"},
 		{"jobs", "list", "--help"},
 		{"node", "label", "--help"},
 		{"enrollment", "create", "--help"},
@@ -417,6 +425,334 @@ func TestEnvFallbackAndFlagPrecedence(t *testing.T) {
 	}
 }
 
+func TestRolloutCreateDryRunDefault(t *testing.T) {
+	created := testRollout("rollout-1", protocol.RolloutStatePending)
+	var sawCreate bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/rollouts" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer test-token" {
+			t.Fatalf("Authorization = %q, want bearer token", got)
+		}
+		var req protocol.CreateRolloutRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode rollout create: %v", err)
+		}
+		if req.Spec.Live {
+			t.Fatalf("live = true, want dry-run default")
+		}
+		if len(req.Spec.NodeIDs) != 1 || req.Spec.NodeIDs[0] != "node-a" {
+			t.Fatalf("node IDs = %#v, want node-a", req.Spec.NodeIDs)
+		}
+		if req.Spec.Target.Provider != "openai" || req.Spec.Target.Model != "gpt-4o" {
+			t.Fatalf("target = %+v, want openai/gpt-4o", req.Spec.Target)
+		}
+		if req.Spec.RuntimeType != "hermes" || req.Spec.Profile != "default" || req.Spec.BatchSize != 1 {
+			t.Fatalf("spec runtime/profile/batch = %+v, want hermes/default/1", req.Spec)
+		}
+		sawCreate = true
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		if err := json.NewEncoder(w).Encode(protocol.CreateRolloutResponse{Rollout: created}); err != nil {
+			t.Fatalf("encode rollout response: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{
+		"rollout", "create",
+		"--server", server.URL,
+		"--operator-token", "test-token",
+		"--node", "node-a",
+		"--provider", "openai",
+		"--model", "gpt-4o",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("run returned %d, stderr=%q", code, stderr.String())
+	}
+	if !sawCreate {
+		t.Fatal("server did not receive rollout create")
+	}
+	output := stdout.String()
+	for _, want := range []string{"Rollout: rollout-1", "State: pending", "Mode: dry-run", "Target: openai / gpt-4o"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output missing %q:\n%s", want, output)
+		}
+	}
+}
+
+func TestRolloutCreateLiveRequiresYes(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{
+		"rollout", "create",
+		"--node", "node-a",
+		"--provider", "openai",
+		"--model", "gpt-4o",
+		"--live",
+	}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("run returned 0, want failure")
+	}
+	if !strings.Contains(stderr.String(), "rollout create: --live requires --yes") {
+		t.Fatalf("stderr = %q, want live confirmation error", stderr.String())
+	}
+}
+
+func TestRolloutCreateJSONUsesSelectorAndLiveOptions(t *testing.T) {
+	created := testRollout("rollout-json", protocol.RolloutStateRunning)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/rollouts" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		var req protocol.CreateRolloutRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode rollout create: %v", err)
+		}
+		if req.Spec.Selector["role"] != "canary" || req.Spec.Selector["zone"] != "lab" {
+			t.Fatalf("selector = %#v, want role/zone selector", req.Spec.Selector)
+		}
+		if len(req.Spec.NodeIDs) != 0 {
+			t.Fatalf("node IDs = %#v, want selector-only request", req.Spec.NodeIDs)
+		}
+		if !req.Spec.Live || req.Spec.RuntimeType != "openclaw" || req.Spec.Profile != "worker" {
+			t.Fatalf("spec = %+v, want live openclaw/worker", req.Spec)
+		}
+		if req.Spec.BatchSize != 2 || req.Spec.HealthTimeout != 30*time.Second {
+			t.Fatalf("batch/timeout = %d/%s, want 2/30s", req.Spec.BatchSize, req.Spec.HealthTimeout)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		if err := json.NewEncoder(w).Encode(protocol.CreateRolloutResponse{Rollout: created}); err != nil {
+			t.Fatalf("encode rollout response: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{
+		"rollout", "create",
+		"--server", server.URL,
+		"--selector", "role=canary,zone=lab",
+		"--provider", "anthropic",
+		"--model", "claude-3-7-sonnet",
+		"--runtime-type", "openclaw",
+		"--profile", "worker",
+		"--batch-size", "2",
+		"--health-timeout", "30s",
+		"--live",
+		"--yes",
+		"--json",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("run returned %d, stderr=%q", code, stderr.String())
+	}
+	var got protocol.CreateRolloutResponse
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode JSON output: %v\n%s", err, stdout.String())
+	}
+	if got.Rollout.ID != "rollout-json" {
+		t.Fatalf("rollout ID = %q, want rollout-json", got.Rollout.ID)
+	}
+}
+
+func TestRolloutListTableAndJSON(t *testing.T) {
+	resp := protocol.ListRolloutsResponse{
+		Rollouts: []protocol.Rollout{
+			testRollout("rollout-a", protocol.RolloutStateRunning),
+			testRollout("rollout-b", protocol.RolloutStatePaused),
+		},
+		Total: 2,
+		Limit: 50,
+	}
+	var requestCount atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount.Add(1)
+		if r.Method != http.MethodGet || r.URL.Path != "/api/rollouts" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(resp); err != nil {
+			t.Fatalf("encode rollouts: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"rollout", "list", "--server", server.URL}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("table run returned %d, stderr=%q", code, stderr.String())
+	}
+	for _, want := range []string{"ROLLOUT", "rollout-a", "running", "dry-run", "openai / gpt-4o"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("table output missing %q:\n%s", want, stdout.String())
+		}
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"rollout", "list", "--server", server.URL, "--json"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("json run returned %d, stderr=%q", code, stderr.String())
+	}
+	var got protocol.ListRolloutsResponse
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode JSON output: %v\n%s", err, stdout.String())
+	}
+	if got.Total != 2 || requestCount.Load() != 2 {
+		t.Fatalf("json rollouts total=%d requestCount=%d, want total 2 and two requests", got.Total, requestCount.Load())
+	}
+}
+
+func TestRolloutStatusTableJSONAndWatch(t *testing.T) {
+	running := testRollout("rollout-watch", protocol.RolloutStateRunning)
+	completed := testRollout("rollout-watch", protocol.RolloutStateCompleted)
+	completed.Batches[0].State = protocol.RolloutBatchStateCompleted
+	completed.Batches[0].Nodes["node-a"] = protocol.RolloutNodeProgress{NodeID: "node-a", JobID: "job-a", State: protocol.RolloutNodeStateSucceeded}
+	var requestCount atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/rollouts/rollout-watch" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		count := requestCount.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		if count == 1 {
+			if err := json.NewEncoder(w).Encode(protocol.GetRolloutResponse{Rollout: running}); err != nil {
+				t.Fatalf("encode running rollout: %v", err)
+			}
+			return
+		}
+		if err := json.NewEncoder(w).Encode(protocol.GetRolloutResponse{Rollout: completed}); err != nil {
+			t.Fatalf("encode completed rollout: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"rollout", "status", "rollout-watch", "--server", server.URL}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("status run returned %d, stderr=%q", code, stderr.String())
+	}
+	for _, want := range []string{"Rollout: rollout-watch", "Batches:", "Nodes:", "node-a", "job-a"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("status output missing %q:\n%s", want, stdout.String())
+		}
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"rollout", "status", "rollout-watch", "--server", server.URL, "--json"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("json status returned %d, stderr=%q", code, stderr.String())
+	}
+	var got protocol.GetRolloutResponse
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode JSON output: %v\n%s", err, stdout.String())
+	}
+	if got.Rollout.State != protocol.RolloutStateCompleted {
+		t.Fatalf("json rollout state = %q, want completed", got.Rollout.State)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	requestCount.Store(0)
+	code = run([]string{"rollout", "status", "rollout-watch", "--server", server.URL, "--watch"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("watch status returned %d, stderr=%q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "State: completed") || requestCount.Load() < 2 {
+		t.Fatalf("watch output/count = %q/%d, want completed after polling", stdout.String(), requestCount.Load())
+	}
+}
+
+func TestRolloutActions(t *testing.T) {
+	actions := []protocol.RolloutAction{protocol.RolloutActionPause, protocol.RolloutActionResume, protocol.RolloutActionAbort}
+	for _, action := range actions {
+		t.Run(string(action), func(t *testing.T) {
+			var sawAction bool
+			updated := testRollout("rollout-action", protocol.RolloutStatePaused)
+			if action == protocol.RolloutActionAbort {
+				updated.State = protocol.RolloutStateAborted
+			}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost || r.URL.Path != "/api/rollouts/rollout-action/actions" {
+					t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+				}
+				if got := r.Header.Get("Authorization"); got != "Bearer test-token" {
+					t.Fatalf("Authorization = %q, want bearer token", got)
+				}
+				var req protocol.RolloutActionRequest
+				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+					t.Fatalf("decode action request: %v", err)
+				}
+				if req.Action != action {
+					t.Fatalf("action = %q, want %q", req.Action, action)
+				}
+				sawAction = true
+				w.Header().Set("Content-Type", "application/json")
+				if err := json.NewEncoder(w).Encode(protocol.RolloutActionResponse{Rollout: updated}); err != nil {
+					t.Fatalf("encode action response: %v", err)
+				}
+			}))
+			defer server.Close()
+
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+			code := run([]string{"rollout", string(action), "rollout-action", "--server", server.URL, "--operator-token", "test-token"}, &stdout, &stderr)
+			if code != 0 {
+				t.Fatalf("run returned %d, stderr=%q", code, stderr.String())
+			}
+			if !sawAction {
+				t.Fatal("server did not receive rollout action")
+			}
+			if !strings.Contains(stdout.String(), "Rollout: rollout-action") {
+				t.Fatalf("stdout = %q, want rollout summary", stdout.String())
+			}
+		})
+	}
+}
+
+func TestRolloutActionJSONOutput(t *testing.T) {
+	updated := testRollout("rollout-json-action", protocol.RolloutStatePaused)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/rollouts/rollout-json-action/actions" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		var req protocol.RolloutActionRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode action request: %v", err)
+		}
+		if req.Action != protocol.RolloutActionPause {
+			t.Fatalf("action = %q, want pause", req.Action)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(protocol.RolloutActionResponse{Rollout: updated}); err != nil {
+			t.Fatalf("encode action response: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"rollout", "pause", "rollout-json-action", "--server", server.URL, "--json"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("run returned %d, stderr=%q", code, stderr.String())
+	}
+	var got protocol.RolloutActionResponse
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode JSON output: %v\n%s", err, stdout.String())
+	}
+	if got.Rollout.ID != "rollout-json-action" {
+		t.Fatalf("rollout ID = %q, want rollout-json-action", got.Rollout.ID)
+	}
+}
+
 func TestUnknownCommandPrintsHelp(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -463,6 +799,8 @@ func TestCommandsRejectMissingRequiredArguments(t *testing.T) {
 		{name: "probe node", args: []string{"probe"}, want: "usage: sideplane probe"},
 		{name: "restart node", args: []string{"restart"}, want: "usage: sideplane restart"},
 		{name: "backups node", args: []string{"backups", "list"}, want: "usage: sideplane backups list"},
+		{name: "rollout status id", args: []string{"rollout", "status"}, want: "usage: sideplane rollout status"},
+		{name: "rollout action id", args: []string{"rollout", "pause"}, want: "usage: sideplane rollout pause"},
 		{name: "jobs node", args: []string{"jobs", "list"}, want: "usage: sideplane jobs list"},
 		{name: "config apply node", args: []string{"config", "apply"}, want: "usage: sideplane config apply"},
 		{name: "config preview node", args: []string{"config", "preview"}, want: "usage: sideplane config preview"},
@@ -1633,6 +1971,32 @@ func TestNodeRemovePromptsForConfirmation(t *testing.T) {
 		if !strings.Contains(output, want) {
 			t.Fatalf("output missing %q:\n%s", want, output)
 		}
+	}
+}
+
+func testRollout(id string, state protocol.RolloutState) protocol.Rollout {
+	now := time.Date(2026, 6, 18, 12, 0, 0, 0, time.UTC)
+	return protocol.Rollout{
+		ID: id,
+		Spec: protocol.RolloutSpec{
+			NodeIDs:       []string{"node-a"},
+			RuntimeType:   "hermes",
+			Profile:       "default",
+			Target:        protocol.ProviderModelConfig{Provider: "openai", Model: "gpt-4o"},
+			BatchSize:     1,
+			HealthTimeout: 5 * time.Minute,
+		},
+		State: state,
+		Batches: []protocol.RolloutBatch{{
+			Index:   0,
+			NodeIDs: []string{"node-a"},
+			State:   protocol.RolloutBatchStateRunning,
+			Nodes: map[string]protocol.RolloutNodeProgress{
+				"node-a": {NodeID: "node-a", JobID: "job-a", State: protocol.RolloutNodeStateDispatched},
+			},
+		}},
+		CreatedAt: now,
+		UpdatedAt: now.Add(time.Minute),
 	}
 }
 

@@ -19,6 +19,7 @@ Production operators should still treat it as pre-1.0 infrastructure. Run it on 
 - Hermes and OpenClaw adapters for read-only runtime discovery, config hash reporting, and provider/model snapshots.
 - Desired configuration layering with effective config preview and read-only actual-vs-desired diffs.
 - Signed config apply plans, dry-run by default, with live apply gated behind explicit sidecar opt-in and rollback handling.
+- Staged fleet rollouts for provider/model changes across node labels or explicit node lists, canary-first by default.
 - Deep-probe, config-apply, restart/rollback-aware job lifecycle with paginated recent job status in the UI.
 - Operator audit log with node/action filtering and deletion audit events.
 - Node removal API and UI flow for decommissioned fleet entries.
@@ -124,12 +125,13 @@ Server flags can be configured with environment variables. Explicit CLI flags ta
 | `SIDEPLANE_HEARTBEAT_RETENTION` | `100` | Number of recent heartbeat records retained per node. |
 | `SIDEPLANE_JOB_RETENTION` | `720h` | Age to retain completed and failed jobs. Pending and claimed jobs are never pruned. Set `0` to disable. |
 | `SIDEPLANE_AUDIT_RETENTION` | `4320h` | Age to retain audit events. Set `0` to disable. |
+| `SIDEPLANE_ROLLOUT_INTERVAL` | `5s` | Background rollout reconciliation interval. Set `0` to disable. |
 | `SIDEPLANE_ALLOW_UNAUTHENTICATED_OPERATOR_API` | false | Development-only escape hatch for mutating operator APIs. |
 
 Matching flags are available on `sideplane-server`: `--addr`, `--db`,
 `--web-dir`, `--operator-token`, `--signing-key`, `--stale-after`,
 `--offline-after`, `--heartbeat-retention`, `--job-retention`,
-`--audit-retention`, and
+`--audit-retention`, `--rollout-interval`, and
 `--allow-unauthenticated-operator-api`.
 
 Sidecar runtime flags also support env vars. Explicit CLI flags take precedence over env vars, then values loaded from the sidecar state file.
@@ -199,16 +201,22 @@ The `sideplane` CLI is a compact operator client for the REST API. It uses
 
 | Command | Purpose | Key flags |
 | --- | --- | --- |
-| `sideplane fleet status` | Show fleet node status. | `--server`, `--json` |
+| `sideplane fleet status` | Show fleet node status. | `--server`, `--selector`, `--json` |
 | `sideplane probe <nodeId>` | Create a deep-probe job. | `--server`, `--operator-token`, `--wait`, `--json` |
 | `sideplane jobs list <nodeId>` | List node jobs with optional filters. | `--server`, `--operator-token`, `--limit`, `--status`, `--json` |
 | `sideplane audit list` | List audit events newest first. | `--server`, `--node-id`, `--action`, `--limit`, `--json` |
+| `sideplane rollout create` | Create a staged provider/model rollout. | `--server`, `--operator-token`, `--selector`, `--node`, `--provider`, `--model`, `--runtime-type`, `--profile`, `--batch-size`, `--live`, `--yes`, `--health-timeout`, `--json` |
+| `sideplane rollout list` | List staged rollouts. | `--server`, `--operator-token`, `--json` |
+| `sideplane rollout status <id>` | Show rollout batches and per-node progress. | `--server`, `--operator-token`, `--watch`, `--json` |
+| `sideplane rollout pause/resume/abort <id>` | Control a rollout. | `--server`, `--operator-token`, `--json` |
 | `sideplane config preview <nodeId>` | Show effective desired config and diff. | `--server`, `--runtime-type`, `--profile`, `--actual-hash`, `--json` |
 | `sideplane config apply <nodeId>` | Create a dry-run or live config apply job. | `--server`, `--operator-token`, `--runtime-type`, `--profile`, `--config-path`, `--live`, `--yes`, `--wait`, `--json` |
 | `sideplane config get` | Show desired configuration. | `--server`, `--json` |
 | `sideplane config set` | Update global desired provider/model. | `--server`, `--operator-token`, `--provider`, `--model` |
 | `sideplane node inspect <nodeId>` | Show detailed node state and runtime status. | `--server`, `--json` |
+| `sideplane node label <nodeId>` | Set or remove operator-managed labels. | `--server`, `--operator-token`, `--remove`, `--json` |
 | `sideplane node remove <nodeId>` | Remove a decommissioned node record. | `--server`, `--operator-token`, `--yes` |
+| `sideplane backups list <nodeId>` | List rollback backups for a node. | `--server`, `--operator-token`, `--limit`, `--json` |
 | `sideplane enrollment create` | Create a one-time sidecar enrollment token. | `--server`, `--operator-token`, `--expires-in` |
 | `sideplane version` | Print CLI version. | none |
 

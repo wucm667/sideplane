@@ -68,6 +68,23 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		if len(args) >= 2 && args[1] == "list" {
 			return runBackupsList(args[2:], stdout, stderr)
 		}
+	case "rollout":
+		if len(args) >= 2 {
+			switch args[1] {
+			case "create":
+				return runRolloutCreate(args[2:], stdout, stderr)
+			case "list":
+				return runRolloutList(args[2:], stdout, stderr)
+			case "status":
+				return runRolloutStatus(args[2:], stdout, stderr)
+			case "pause":
+				return runRolloutAction(args[2:], stdout, stderr, protocol.RolloutActionPause)
+			case "resume":
+				return runRolloutAction(args[2:], stdout, stderr, protocol.RolloutActionResume)
+			case "abort":
+				return runRolloutAction(args[2:], stdout, stderr, protocol.RolloutActionAbort)
+			}
+		}
 	case "jobs":
 		if len(args) >= 2 && args[1] == "list" {
 			return runJobsList(args[2:], stdout, stderr)
@@ -123,6 +140,9 @@ Commands:
   restart <nodeId>    Create a standalone restart job
   rollback <nodeId>   Create a rollback job from a backup ref
   backups list <id>   List rollback backups for a node
+  rollout create      Create a staged fleet rollout
+  rollout list        List fleet rollouts
+  rollout status <id> Show rollout batch and node progress
   jobs list <nodeId>  List node jobs
   audit list          List audit events
   config apply <id>   Create a config apply job
@@ -150,6 +170,225 @@ func printCommandHelp(w io.Writer, usage string, flags *flag.FlagSet) {
 	fmt.Fprintf(w, "usage: %s\n\n", usage)
 	flags.SetOutput(w)
 	flags.PrintDefaults()
+}
+
+func runRolloutCreate(args []string, stdout io.Writer, stderr io.Writer) int {
+	flags := flag.NewFlagSet("sideplane rollout create", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+
+	serverURL := flags.String("server", "", "Sideplane server URL; can also be set with SIDEPLANE_SERVER_URL")
+	operatorTokenFlag := flags.String("operator-token", "", "operator bearer token; can also be set with SIDEPLANE_OPERATOR_TOKEN")
+	selector := flags.String("selector", "", "label selector with AND semantics, for example role=canary,zone=lab")
+	var nodeIDs stringList
+	flags.Var(&nodeIDs, "node", "target node ID; may be repeated")
+	provider := flags.String("provider", "", "target provider")
+	model := flags.String("model", "", "target model")
+	runtimeType := flags.String("runtime-type", "hermes", "runtime type")
+	profile := flags.String("profile", "default", "runtime profile")
+	batchSize := flags.Int("batch-size", 1, "sequential rollout batch size")
+	live := flags.Bool("live", false, "request live config apply instead of dry-run")
+	yes := flags.Bool("yes", false, "confirm live rollout")
+	healthTimeout := flags.Duration("health-timeout", 0, "batch health timeout; server default is used when omitted")
+	jsonOutput := flags.Bool("json", false, "print raw JSON response")
+	usage := "sideplane rollout create (--selector key=value[,key2=value2] | --node NODE [--node NODE...]) --provider PROVIDER --model MODEL [--runtime-type TYPE] [--profile PROFILE] [--batch-size N] [--live --yes] [--health-timeout DURATION] [--server URL] [--operator-token TOKEN] [--json]"
+	if commandHelpRequested(args) {
+		printCommandHelp(stdout, usage, flags)
+		return 0
+	}
+	if err := parseCommandFlags(flags, args, "live", "yes", "json"); err != nil {
+		return 2
+	}
+	if flags.NArg() != 0 {
+		fmt.Fprintln(stderr, "sideplane rollout create: unexpected positional arguments")
+		return 1
+	}
+	if *live && !*yes {
+		fmt.Fprintln(stderr, "rollout create: --live requires --yes")
+		return 1
+	}
+	if strings.TrimSpace(*provider) == "" || strings.TrimSpace(*model) == "" {
+		fmt.Fprintln(stderr, "rollout create: --provider and --model are required")
+		return 1
+	}
+	if *batchSize <= 0 {
+		fmt.Fprintln(stderr, "rollout create: --batch-size must be positive")
+		return 1
+	}
+	if *healthTimeout < 0 {
+		fmt.Fprintln(stderr, "rollout create: --health-timeout must be zero or positive")
+		return 1
+	}
+	selectorMap, err := parseCLISelector(*selector)
+	if err != nil {
+		fmt.Fprintf(stderr, "rollout create: %v\n", err)
+		return 1
+	}
+	trimmedNodes := uniqueTrimmedCLIStrings(nodeIDs)
+	if len(selectorMap) == 0 && len(trimmedNodes) == 0 {
+		fmt.Fprintln(stderr, "rollout create: --selector or --node is required")
+		return 1
+	}
+	if len(selectorMap) > 0 && len(trimmedNodes) > 0 {
+		fmt.Fprintln(stderr, "rollout create: --selector and --node are mutually exclusive")
+		return 1
+	}
+
+	req := protocol.CreateRolloutRequest{Spec: protocol.RolloutSpec{
+		Selector:      selectorMap,
+		NodeIDs:       trimmedNodes,
+		RuntimeType:   strings.TrimSpace(*runtimeType),
+		Profile:       strings.TrimSpace(*profile),
+		Target:        protocol.ProviderModelConfig{Provider: strings.TrimSpace(*provider), Model: strings.TrimSpace(*model)},
+		BatchSize:     *batchSize,
+		Live:          *live,
+		HealthTimeout: *healthTimeout,
+	}}
+	resp, body, err := postJSON[protocol.CreateRolloutResponse](context.Background(), serverURLValue(*serverURL), "/api/rollouts", req, operatorTokenValue(*operatorTokenFlag))
+	if err != nil {
+		fmt.Fprintf(stderr, "rollout create: %v\n", err)
+		return 1
+	}
+	if *jsonOutput {
+		writeRawJSON(stdout, body)
+		return 0
+	}
+	printRolloutSummary(stdout, resp.Rollout)
+	return 0
+}
+
+func runRolloutList(args []string, stdout io.Writer, stderr io.Writer) int {
+	flags := flag.NewFlagSet("sideplane rollout list", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+
+	serverURL := flags.String("server", "", "Sideplane server URL; can also be set with SIDEPLANE_SERVER_URL")
+	operatorTokenFlag := flags.String("operator-token", "", "operator bearer token; can also be set with SIDEPLANE_OPERATOR_TOKEN")
+	jsonOutput := flags.Bool("json", false, "print raw JSON response")
+	usage := "sideplane rollout list [--server URL] [--operator-token TOKEN] [--json]"
+	if commandHelpRequested(args) {
+		printCommandHelp(stdout, usage, flags)
+		return 0
+	}
+	if err := parseCommandFlags(flags, args, "json"); err != nil {
+		return 2
+	}
+	if flags.NArg() != 0 {
+		fmt.Fprintln(stderr, "sideplane rollout list: unexpected positional arguments")
+		return 1
+	}
+
+	resp, body, err := getJSON[protocol.ListRolloutsResponse](context.Background(), serverURLValue(*serverURL), "/api/rollouts", operatorTokenValue(*operatorTokenFlag))
+	if err != nil {
+		fmt.Fprintf(stderr, "rollout list: %v\n", err)
+		return 1
+	}
+	if *jsonOutput {
+		writeRawJSON(stdout, body)
+		return 0
+	}
+	printRolloutsTable(stdout, resp.Rollouts)
+	return 0
+}
+
+func runRolloutStatus(args []string, stdout io.Writer, stderr io.Writer) int {
+	flags := flag.NewFlagSet("sideplane rollout status", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+
+	serverURL := flags.String("server", "", "Sideplane server URL; can also be set with SIDEPLANE_SERVER_URL")
+	operatorTokenFlag := flags.String("operator-token", "", "operator bearer token; can also be set with SIDEPLANE_OPERATOR_TOKEN")
+	watch := flags.Bool("watch", false, "poll until the rollout reaches a terminal state")
+	jsonOutput := flags.Bool("json", false, "print JSON output")
+	usage := "sideplane rollout status <id> [--server URL] [--operator-token TOKEN] [--watch] [--json]"
+	if commandHelpRequested(args) {
+		printCommandHelp(stdout, usage, flags)
+		return 0
+	}
+	if err := parseCommandFlags(flags, args, "watch", "json"); err != nil {
+		return 2
+	}
+	if flags.NArg() != 1 {
+		fmt.Fprintln(stderr, "usage: "+usage)
+		return 1
+	}
+	rolloutID := strings.TrimSpace(flags.Arg(0))
+	if rolloutID == "" {
+		fmt.Fprintln(stderr, "rollout status: id is required")
+		return 1
+	}
+
+	server := serverURLValue(*serverURL)
+	operatorToken := operatorTokenValue(*operatorTokenFlag)
+	if *watch {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+		defer cancel()
+		rollout, err := waitForRollout(ctx, server, rolloutID, operatorToken)
+		if err != nil {
+			fmt.Fprintf(stderr, "rollout status: %v\n", err)
+			return 1
+		}
+		if *jsonOutput {
+			writeJSONValue(stdout, protocol.GetRolloutResponse{Rollout: rollout})
+			return 0
+		}
+		printRolloutDetail(stdout, rollout)
+		return 0
+	}
+
+	resp, body, err := getJSON[protocol.GetRolloutResponse](context.Background(), server, rolloutPath(rolloutID), operatorToken)
+	if err != nil {
+		fmt.Fprintf(stderr, "rollout status: %v\n", err)
+		return 1
+	}
+	if *jsonOutput {
+		writeRawJSON(stdout, body)
+		return 0
+	}
+	printRolloutDetail(stdout, resp.Rollout)
+	return 0
+}
+
+func runRolloutAction(args []string, stdout io.Writer, stderr io.Writer, action protocol.RolloutAction) int {
+	command := "sideplane rollout " + string(action)
+	flags := flag.NewFlagSet(command, flag.ContinueOnError)
+	flags.SetOutput(stderr)
+
+	serverURL := flags.String("server", "", "Sideplane server URL; can also be set with SIDEPLANE_SERVER_URL")
+	operatorTokenFlag := flags.String("operator-token", "", "operator bearer token; can also be set with SIDEPLANE_OPERATOR_TOKEN")
+	jsonOutput := flags.Bool("json", false, "print raw JSON response")
+	usage := command + " <id> [--server URL] [--operator-token TOKEN] [--json]"
+	if commandHelpRequested(args) {
+		printCommandHelp(stdout, usage, flags)
+		return 0
+	}
+	if err := parseCommandFlags(flags, args, "json"); err != nil {
+		return 2
+	}
+	if flags.NArg() != 1 {
+		fmt.Fprintln(stderr, "usage: "+usage)
+		return 1
+	}
+	rolloutID := strings.TrimSpace(flags.Arg(0))
+	if rolloutID == "" {
+		fmt.Fprintf(stderr, "rollout %s: id is required\n", action)
+		return 1
+	}
+
+	resp, body, err := postJSON[protocol.RolloutActionResponse](
+		context.Background(),
+		serverURLValue(*serverURL),
+		rolloutPath(rolloutID)+"/actions",
+		protocol.RolloutActionRequest{Action: action},
+		operatorTokenValue(*operatorTokenFlag),
+	)
+	if err != nil {
+		fmt.Fprintf(stderr, "rollout %s: %v\n", action, err)
+		return 1
+	}
+	if *jsonOutput {
+		writeRawJSON(stdout, body)
+		return 0
+	}
+	printRolloutSummary(stdout, resp.Rollout)
+	return 0
 }
 
 func runRollback(args []string, stdout io.Writer, stderr io.Writer) int {
@@ -1142,6 +1381,28 @@ func waitForNodeJob(ctx context.Context, serverURL string, nodeID string, jobID 
 	}
 }
 
+func waitForRollout(ctx context.Context, serverURL string, rolloutID string, operatorToken string) (protocol.Rollout, error) {
+	for {
+		resp, _, err := getJSON[protocol.GetRolloutResponse](ctx, serverURL, rolloutPath(rolloutID), operatorToken)
+		if err != nil {
+			return protocol.Rollout{}, err
+		}
+		if rolloutStateTerminal(resp.Rollout.State) {
+			return resp.Rollout, nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return protocol.Rollout{}, ctx.Err()
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+}
+
+func rolloutPath(rolloutID string) string {
+	return "/api/rollouts/" + url.PathEscape(rolloutID)
+}
+
 func latestNodeBackup(ctx context.Context, serverURL string, nodeID string, operatorToken string) (protocol.RollbackBackupInventoryItem, error) {
 	resp, _, err := getJSON[protocol.ListRollbackBackupsResponse](ctx, serverURL, nodeBackupsPath(nodeID, 1), operatorToken)
 	if err != nil {
@@ -1161,6 +1422,47 @@ func nodeBackupsPath(nodeID string, limit int) string {
 		path += "?" + params.Encode()
 	}
 	return path
+}
+
+func parseCLISelector(selector string) (map[string]string, error) {
+	selector = strings.TrimSpace(selector)
+	if selector == "" {
+		return nil, nil
+	}
+	labels := map[string]string{}
+	for _, part := range strings.Split(selector, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			return nil, fmt.Errorf("selector contains an empty label match")
+		}
+		key, value, ok := strings.Cut(part, "=")
+		key = strings.TrimSpace(key)
+		if !ok || key == "" {
+			return nil, fmt.Errorf("selector entries must use key=value")
+		}
+		if _, exists := labels[key]; exists {
+			return nil, fmt.Errorf("selector contains duplicate key %q", key)
+		}
+		labels[key] = strings.TrimSpace(value)
+	}
+	return labels, nil
+}
+
+func uniqueTrimmedCLIStrings(values []string) []string {
+	seen := map[string]struct{}{}
+	result := []string{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result
 }
 
 func printJobSummary(w io.Writer, job protocol.Job) {
@@ -1415,6 +1717,126 @@ func providerModelLabel(value protocol.ProviderModelConfig) string {
 		model = "-"
 	}
 	return provider + " / " + model
+}
+
+func printRolloutSummary(w io.Writer, rollout protocol.Rollout) {
+	fmt.Fprintf(w, "Rollout: %s\n", rollout.ID)
+	fmt.Fprintf(w, "State: %s\n", rollout.State)
+	fmt.Fprintf(w, "Mode: %s\n", rolloutMode(rollout))
+	fmt.Fprintf(w, "Runtime: %s\n", rolloutRuntimeLabel(rollout))
+	fmt.Fprintf(w, "Target: %s\n", providerModelLabel(rollout.Spec.Target))
+	fmt.Fprintf(w, "Batch size: %d\n", rollout.Spec.BatchSize)
+	fmt.Fprintf(w, "Nodes: %s\n", rolloutNodeIDsLabel(rollout.Spec.NodeIDs))
+	if strings.TrimSpace(rollout.PauseReason) != "" {
+		fmt.Fprintf(w, "Pause reason: %s\n", rollout.PauseReason)
+	}
+}
+
+func printRolloutsTable(w io.Writer, rollouts []protocol.Rollout) {
+	table := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(table, "ROLLOUT\tSTATE\tMODE\tTARGET\tRUNTIME\tBATCHES\tUPDATED")
+	for _, rollout := range rollouts {
+		fmt.Fprintf(
+			table,
+			"%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			valueOrDash(rollout.ID),
+			valueOrDash(string(rollout.State)),
+			rolloutMode(rollout),
+			providerModelLabel(rollout.Spec.Target),
+			rolloutRuntimeLabel(rollout),
+			rolloutBatchProgressLabel(rollout),
+			timeLabel(rollout.UpdatedAt),
+		)
+	}
+	table.Flush()
+}
+
+func printRolloutDetail(w io.Writer, rollout protocol.Rollout) {
+	printRolloutSummary(w, rollout)
+	if len(rollout.FailingNodeIDs) > 0 {
+		fmt.Fprintf(w, "Failing nodes: %s\n", strings.Join(rollout.FailingNodeIDs, ","))
+	}
+	fmt.Fprintln(w, "Batches:")
+	if len(rollout.Batches) == 0 {
+		fmt.Fprintln(w, "  (none)")
+		return
+	}
+	batchTable := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(batchTable, "  INDEX\tSTATE\tNODES")
+	for _, batch := range rollout.Batches {
+		fmt.Fprintf(batchTable, "  %d\t%s\t%s\n", batch.Index, batch.State, strings.Join(batch.NodeIDs, ","))
+	}
+	batchTable.Flush()
+
+	fmt.Fprintln(w, "Nodes:")
+	nodeTable := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(nodeTable, "  BATCH\tNODE\tSTATE\tJOB\tERROR")
+	for _, batch := range rollout.Batches {
+		for _, nodeID := range batch.NodeIDs {
+			progress := batch.Nodes[nodeID]
+			fmt.Fprintf(
+				nodeTable,
+				"  %d\t%s\t%s\t%s\t%s\n",
+				batch.Index,
+				valueOrDash(nodeID),
+				valueOrDash(string(progress.State)),
+				valueOrDash(progress.JobID),
+				valueOrDash(progress.LastError),
+			)
+		}
+	}
+	nodeTable.Flush()
+}
+
+func rolloutMode(rollout protocol.Rollout) string {
+	if rollout.Spec.Live {
+		return "live"
+	}
+	return "dry-run"
+}
+
+func rolloutRuntimeLabel(rollout protocol.Rollout) string {
+	runtimeType := strings.TrimSpace(rollout.Spec.RuntimeType)
+	profile := strings.TrimSpace(rollout.Spec.Profile)
+	if runtimeType == "" && profile == "" {
+		return "-"
+	}
+	if runtimeType == "" {
+		runtimeType = "-"
+	}
+	if profile == "" {
+		return runtimeType
+	}
+	return runtimeType + "/" + profile
+}
+
+func rolloutNodeIDsLabel(nodeIDs []string) string {
+	if len(nodeIDs) == 0 {
+		return "-"
+	}
+	return strings.Join(nodeIDs, ",")
+}
+
+func rolloutBatchProgressLabel(rollout protocol.Rollout) string {
+	if len(rollout.Batches) == 0 {
+		return "0/0"
+	}
+	completed := 0
+	for _, batch := range rollout.Batches {
+		if batch.State == protocol.RolloutBatchStateCompleted {
+			completed++
+		}
+	}
+	return fmt.Sprintf("%d/%d", completed, len(rollout.Batches))
+}
+
+func rolloutStateTerminal(state protocol.RolloutState) bool {
+	switch state {
+	case protocol.RolloutStateCompleted, protocol.RolloutStateAborted, protocol.RolloutStateFailed:
+		return true
+	default:
+		return false
+	}
 }
 
 func printFleetStatusTable(w io.Writer, nodes []cliNodeStatus) {
