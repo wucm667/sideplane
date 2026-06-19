@@ -802,6 +802,36 @@ func TestCreateEnrollmentTokenRequiresConfiguredOperatorToken(t *testing.T) {
 	}
 }
 
+func TestCreateEnrollmentTokenAcceptsNamedOperatorToken(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	now := time.Date(2026, 6, 18, 12, 0, 0, 0, time.UTC)
+	operatorToken, err := nodeStore.CreateOperatorToken(context.Background(), "ops laptop", now)
+	if err != nil {
+		t.Fatalf("create operator token: %v", err)
+	}
+	handler, err := NewHandlerWithConfig(HandlerConfig{
+		Store:     nodeStore,
+		Freshness: DefaultFreshnessPolicy(),
+	})
+	if err != nil {
+		t.Fatalf("build handler: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/enrollment-tokens", strings.NewReader(`{}`))
+	req.Header.Set("Authorization", "Bearer "+operatorToken.Token)
+	handler.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusCreated)
+
+	tokens, err := nodeStore.ListOperatorTokens(context.Background())
+	if err != nil {
+		t.Fatalf("list operator tokens: %v", err)
+	}
+	if len(tokens) != 1 || tokens[0].LastUsedAt == nil {
+		t.Fatalf("operator token lastUsedAt not recorded: %+v", tokens)
+	}
+}
+
 func TestDesiredConfigPutWritesAuditEvent(t *testing.T) {
 	nodeStore := store.NewMemoryNodeStore()
 	handler, err := NewHandlerWithStoreAndFreshnessPolicyAndOperatorToken(nodeStore, DefaultFreshnessPolicy(), "dev-token")
@@ -3545,6 +3575,26 @@ func (s staticNodeStore) EnrollNode(context.Context, protocol.EnrollNodeRequest,
 
 func (s staticNodeStore) VerifyNodeCredential(context.Context, string, string) (bool, error) {
 	return false, nil
+}
+
+func (s staticNodeStore) CreateOperatorToken(context.Context, string, time.Time) (protocol.CreateOperatorTokenResponse, error) {
+	return protocol.CreateOperatorTokenResponse{}, nil
+}
+
+func (s staticNodeStore) ListOperatorTokens(context.Context) ([]protocol.OperatorToken, error) {
+	return nil, nil
+}
+
+func (s staticNodeStore) RevokeOperatorToken(context.Context, string, time.Time) (protocol.OperatorToken, error) {
+	return protocol.OperatorToken{}, nil
+}
+
+func (s staticNodeStore) VerifyOperatorToken(context.Context, string) (string, bool, error) {
+	return "", false, nil
+}
+
+func (s staticNodeStore) UpdateOperatorTokenLastUsed(context.Context, string, time.Time) error {
+	return nil
 }
 
 func (s staticNodeStore) CreateJob(context.Context, protocol.CreateJobRequest, string, time.Time) (protocol.Job, error) {

@@ -51,6 +51,8 @@ var (
 	ErrLateJobResultRecorded = errors.New("late job result recorded after timeout")
 	// ErrRolloutNotFound means the requested rollout does not exist.
 	ErrRolloutNotFound = errors.New("rollout not found")
+	// ErrOperatorTokenNotFound means the requested operator token does not exist.
+	ErrOperatorTokenNotFound = errors.New("operator token not found")
 )
 
 func jobClaimLease(jobType protocol.JobType) time.Duration {
@@ -148,6 +150,26 @@ func hasControlCharacter(value string) bool {
 	return false
 }
 
+const (
+	// MaxOperatorTokenNameLength bounds operator-visible token names.
+	MaxOperatorTokenNameLength = 120
+)
+
+// ValidateOperatorTokenName trims and validates an operator API token name.
+func ValidateOperatorTokenName(name string) (string, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "", errors.New("operator token name is required")
+	}
+	if len(name) > MaxOperatorTokenNameLength {
+		return "", errors.New("operator token name is too long")
+	}
+	if hasControlCharacter(name) {
+		return "", errors.New("operator token name must not contain control characters")
+	}
+	return name, nil
+}
+
 func NormalizeNodeFilter(filter NodeFilter) NodeFilter {
 	if filter.Limit <= 0 {
 		filter.Limit = DefaultNodeListLimit
@@ -192,6 +214,15 @@ type EnrollmentStore interface {
 	CreateEnrollmentToken(ctx context.Context, expiresAt time.Time, now time.Time) (protocol.CreateEnrollmentTokenResponse, error)
 	EnrollNode(ctx context.Context, req protocol.EnrollNodeRequest, now time.Time) (protocol.EnrollNodeResponse, error)
 	VerifyNodeCredential(ctx context.Context, nodeID string, credential string) (bool, error)
+}
+
+// OperatorTokenStore persists named, revocable operator API tokens.
+type OperatorTokenStore interface {
+	CreateOperatorToken(ctx context.Context, name string, now time.Time) (protocol.CreateOperatorTokenResponse, error)
+	ListOperatorTokens(ctx context.Context) ([]protocol.OperatorToken, error)
+	RevokeOperatorToken(ctx context.Context, tokenID string, now time.Time) (protocol.OperatorToken, error)
+	VerifyOperatorToken(ctx context.Context, token string) (string, bool, error)
+	UpdateOperatorTokenLastUsed(ctx context.Context, tokenID string, usedAt time.Time) error
 }
 
 // JobStore persists server-assigned jobs and their lifecycle.
@@ -288,6 +319,7 @@ type HealthStore interface {
 type Store interface {
 	NodeStore
 	EnrollmentStore
+	OperatorTokenStore
 	JobStore
 	RolloutStore
 	AuditStore

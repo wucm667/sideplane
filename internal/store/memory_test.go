@@ -263,6 +263,77 @@ func TestMemoryNodeStorePruneHeartbeatsKeepsLatestPerNode(t *testing.T) {
 	}
 }
 
+func TestMemoryOperatorTokenFlow(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryNodeStore()
+	now := time.Date(2026, 6, 18, 12, 0, 0, 0, time.UTC)
+
+	created, err := store.CreateOperatorToken(ctx, "ops laptop", now)
+	if err != nil {
+		t.Fatalf("create operator token: %v", err)
+	}
+	if created.Token == "" {
+		t.Fatalf("plaintext token is empty")
+	}
+	if created.OperatorToken.ID == "" || created.OperatorToken.Name != "ops laptop" {
+		t.Fatalf("operator token metadata = %+v, want id/name", created.OperatorToken)
+	}
+
+	tokens, err := store.ListOperatorTokens(ctx)
+	if err != nil {
+		t.Fatalf("list operator tokens: %v", err)
+	}
+	if len(tokens) != 1 || tokens[0].ID != created.OperatorToken.ID || tokens[0].Name != "ops laptop" {
+		t.Fatalf("operator token list = %+v, want created metadata", tokens)
+	}
+	if strings.Contains(tokens[0].ID+tokens[0].Name, created.Token) {
+		t.Fatalf("operator token metadata exposed plaintext token")
+	}
+
+	tokenID, ok, err := store.VerifyOperatorToken(ctx, created.Token)
+	if err != nil {
+		t.Fatalf("verify operator token: %v", err)
+	}
+	if !ok || tokenID != created.OperatorToken.ID {
+		t.Fatalf("verify operator token = id:%q ok:%t, want created token", tokenID, ok)
+	}
+
+	usedAt := now.Add(time.Minute)
+	if err := store.UpdateOperatorTokenLastUsed(ctx, tokenID, usedAt); err != nil {
+		t.Fatalf("update last used: %v", err)
+	}
+	tokens, err = store.ListOperatorTokens(ctx)
+	if err != nil {
+		t.Fatalf("list operator tokens after last used: %v", err)
+	}
+	if tokens[0].LastUsedAt == nil || !tokens[0].LastUsedAt.Equal(usedAt) {
+		t.Fatalf("lastUsedAt = %v, want %s", tokens[0].LastUsedAt, usedAt)
+	}
+	*tokens[0].LastUsedAt = tokens[0].LastUsedAt.Add(time.Hour)
+	tokens, err = store.ListOperatorTokens(ctx)
+	if err != nil {
+		t.Fatalf("list operator tokens after mutation: %v", err)
+	}
+	if tokens[0].LastUsedAt == nil || !tokens[0].LastUsedAt.Equal(usedAt) {
+		t.Fatalf("mutated lastUsedAt leaked into store: %v", tokens[0].LastUsedAt)
+	}
+
+	revoked, err := store.RevokeOperatorToken(ctx, created.OperatorToken.ID, now.Add(2*time.Minute))
+	if err != nil {
+		t.Fatalf("revoke operator token: %v", err)
+	}
+	if revoked.RevokedAt == nil {
+		t.Fatalf("revokedAt is nil")
+	}
+	_, ok, err = store.VerifyOperatorToken(ctx, created.Token)
+	if err != nil {
+		t.Fatalf("verify revoked operator token: %v", err)
+	}
+	if ok {
+		t.Fatalf("revoked operator token verified")
+	}
+}
+
 func TestMemoryNodeStoreDeleteNodeRemovesAssociatedData(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemoryNodeStore()

@@ -38,6 +38,7 @@ func TestSQLiteNodeStoreMigratesAndPersistsHeartbeat(t *testing.T) {
 	assertSQLiteTableExists(t, ctx, first.db, "audit_events")
 	assertSQLiteTableExists(t, ctx, first.db, "node_labels")
 	assertSQLiteTableExists(t, ctx, first.db, "rollouts")
+	assertSQLiteTableExists(t, ctx, first.db, "operator_tokens")
 	assertSQLiteMigrationApplied(t, ctx, first.db, 1)
 	assertSQLiteMigrationApplied(t, ctx, first.db, 2)
 	assertSQLiteMigrationApplied(t, ctx, first.db, 3)
@@ -47,6 +48,7 @@ func TestSQLiteNodeStoreMigratesAndPersistsHeartbeat(t *testing.T) {
 	assertSQLiteMigrationApplied(t, ctx, first.db, 7)
 	assertSQLiteMigrationApplied(t, ctx, first.db, 8)
 	assertSQLiteMigrationApplied(t, ctx, first.db, 9)
+	assertSQLiteMigrationApplied(t, ctx, first.db, 10)
 
 	observedAt := time.Date(2026, 6, 16, 1, 2, 3, 0, time.UTC)
 	sentAt := observedAt.Add(-time.Second)
@@ -556,6 +558,78 @@ func TestSQLiteEnrollmentTokenFlow(t *testing.T) {
 	}, now.Add(2*time.Minute))
 	if !errors.Is(err, ErrEnrollmentTokenUsed) {
 		t.Fatalf("reuse token error = %v, want ErrEnrollmentTokenUsed", err)
+	}
+}
+
+func TestSQLiteOperatorTokenFlow(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenSQLiteNodeStore(ctx, filepath.Join(t.TempDir(), "sideplane.db"))
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer store.Close()
+
+	now := time.Date(2026, 6, 18, 12, 0, 0, 0, time.UTC)
+	created, err := store.CreateOperatorToken(ctx, "ops laptop", now)
+	if err != nil {
+		t.Fatalf("create operator token: %v", err)
+	}
+	if created.Token == "" {
+		t.Fatalf("plaintext token is empty")
+	}
+	if created.OperatorToken.ID == "" || created.OperatorToken.Name != "ops laptop" {
+		t.Fatalf("operator token metadata = %+v, want id/name", created.OperatorToken)
+	}
+	assertSQLiteDoesNotContainPlaintext(t, ctx, store.db, "operator_tokens", created.Token)
+
+	tokens, err := store.ListOperatorTokens(ctx)
+	if err != nil {
+		t.Fatalf("list operator tokens: %v", err)
+	}
+	if len(tokens) != 1 || tokens[0].ID != created.OperatorToken.ID || tokens[0].Name != "ops laptop" {
+		t.Fatalf("operator token list = %+v, want created metadata", tokens)
+	}
+
+	tokenID, ok, err := store.VerifyOperatorToken(ctx, created.Token)
+	if err != nil {
+		t.Fatalf("verify operator token: %v", err)
+	}
+	if !ok || tokenID != created.OperatorToken.ID {
+		t.Fatalf("verify operator token = id:%q ok:%t, want created token", tokenID, ok)
+	}
+	_, ok, err = store.VerifyOperatorToken(ctx, "wrong token")
+	if err != nil {
+		t.Fatalf("verify wrong operator token: %v", err)
+	}
+	if ok {
+		t.Fatalf("wrong operator token verified")
+	}
+
+	usedAt := now.Add(time.Minute)
+	if err := store.UpdateOperatorTokenLastUsed(ctx, tokenID, usedAt); err != nil {
+		t.Fatalf("update last used: %v", err)
+	}
+	tokens, err = store.ListOperatorTokens(ctx)
+	if err != nil {
+		t.Fatalf("list operator tokens after last used: %v", err)
+	}
+	if tokens[0].LastUsedAt == nil || !tokens[0].LastUsedAt.Equal(usedAt) {
+		t.Fatalf("lastUsedAt = %v, want %s", tokens[0].LastUsedAt, usedAt)
+	}
+
+	revoked, err := store.RevokeOperatorToken(ctx, created.OperatorToken.ID, now.Add(2*time.Minute))
+	if err != nil {
+		t.Fatalf("revoke operator token: %v", err)
+	}
+	if revoked.RevokedAt == nil {
+		t.Fatalf("revokedAt is nil")
+	}
+	_, ok, err = store.VerifyOperatorToken(ctx, created.Token)
+	if err != nil {
+		t.Fatalf("verify revoked operator token: %v", err)
+	}
+	if ok {
+		t.Fatalf("revoked operator token verified")
 	}
 }
 

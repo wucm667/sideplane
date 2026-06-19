@@ -189,6 +189,27 @@ ON heartbeats(node_id, observed_at DESC)`,
 	ON rollouts(state, finished_at)`,
 		},
 	},
+	{
+		version: 10,
+		name:    "create operator tokens table",
+		statements: []string{
+			`
+	CREATE TABLE IF NOT EXISTS operator_tokens (
+		id TEXT PRIMARY KEY,
+		name TEXT NOT NULL,
+		token_hash TEXT NOT NULL UNIQUE,
+		created_at TEXT NOT NULL,
+		last_used_at TEXT,
+		revoked_at TEXT
+	)`,
+			`
+	CREATE INDEX IF NOT EXISTS idx_operator_tokens_created_at
+	ON operator_tokens(created_at DESC, id DESC)`,
+			`
+	CREATE INDEX IF NOT EXISTS idx_operator_tokens_revoked_at
+	ON operator_tokens(revoked_at)`,
+		},
+	},
 }
 
 // LatestSQLiteSchemaVersion returns the newest migration version compiled into

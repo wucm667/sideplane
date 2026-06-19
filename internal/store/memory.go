@@ -20,6 +20,8 @@ type MemoryNodeStore struct {
 	heartbeats       map[string][]time.Time
 	enrollmentTokens map[string]memoryEnrollmentToken
 	nodeCredentials  map[string]string
+	operatorTokens   map[string]memoryOperatorToken
+	operatorHashes   map[string]string
 	jobs             map[string]protocol.Job
 	rollouts         map[string]protocol.Rollout
 	auditEvents      []protocol.AuditEvent
@@ -31,6 +33,11 @@ type memoryEnrollmentToken struct {
 	UsedAt    time.Time
 }
 
+type memoryOperatorToken struct {
+	Metadata  protocol.OperatorToken
+	TokenHash string
+}
+
 // NewMemoryNodeStore returns an empty in-memory node store.
 func NewMemoryNodeStore() *MemoryNodeStore {
 	return &MemoryNodeStore{
@@ -38,6 +45,8 @@ func NewMemoryNodeStore() *MemoryNodeStore {
 		heartbeats:       make(map[string][]time.Time),
 		enrollmentTokens: make(map[string]memoryEnrollmentToken),
 		nodeCredentials:  make(map[string]string),
+		operatorTokens:   make(map[string]memoryOperatorToken),
+		operatorHashes:   make(map[string]string),
 		jobs:             make(map[string]protocol.Job),
 		rollouts:         make(map[string]protocol.Rollout),
 		auditEvents:      []protocol.AuditEvent{},
@@ -335,6 +344,135 @@ func (s *MemoryNodeStore) VerifyNodeCredential(_ context.Context, nodeID string,
 	}
 
 	return secretHashMatches(credential, credentialHash)
+}
+
+// CreateOperatorToken creates a named operator token and stores only its hash.
+func (s *MemoryNodeStore) CreateOperatorToken(_ context.Context, name string, now time.Time) (protocol.CreateOperatorTokenResponse, error) {
+	name, err := ValidateOperatorTokenName(name)
+	if err != nil {
+		return protocol.CreateOperatorTokenResponse{}, err
+	}
+	token, err := newSecret()
+	if err != nil {
+		return protocol.CreateOperatorTokenResponse{}, err
+	}
+	tokenHash, err := hashSecret(token)
+	if err != nil {
+		return protocol.CreateOperatorTokenResponse{}, err
+	}
+	tokenID, err := newRandomID("optok_")
+	if err != nil {
+		return protocol.CreateOperatorTokenResponse{}, err
+	}
+
+	metadata := protocol.OperatorToken{
+		ID:        tokenID,
+		Name:      name,
+		CreatedAt: now.UTC(),
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.operatorTokens == nil {
+		s.operatorTokens = make(map[string]memoryOperatorToken)
+	}
+	if s.operatorHashes == nil {
+		s.operatorHashes = make(map[string]string)
+	}
+	if _, ok := s.operatorHashes[tokenHash]; ok {
+		return protocol.CreateOperatorTokenResponse{}, errors.New("operator token hash collision")
+	}
+	s.operatorTokens[tokenID] = memoryOperatorToken{
+		Metadata:  cloneOperatorToken(metadata),
+		TokenHash: tokenHash,
+	}
+	s.operatorHashes[tokenHash] = tokenID
+
+	return protocol.CreateOperatorTokenResponse{
+		OperatorToken: cloneOperatorToken(metadata),
+		Token:         token,
+	}, nil
+}
+
+// ListOperatorTokens returns operator token metadata without plaintext secrets.
+func (s *MemoryNodeStore) ListOperatorTokens(context.Context) ([]protocol.OperatorToken, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	tokens := make([]protocol.OperatorToken, 0, len(s.operatorTokens))
+	for _, token := range s.operatorTokens {
+		tokens = append(tokens, cloneOperatorToken(token.Metadata))
+	}
+	sort.Slice(tokens, func(i, j int) bool {
+		if !tokens[i].CreatedAt.Equal(tokens[j].CreatedAt) {
+			return tokens[i].CreatedAt.After(tokens[j].CreatedAt)
+		}
+		return tokens[i].ID > tokens[j].ID
+	})
+	return tokens, nil
+}
+
+// RevokeOperatorToken marks a named operator token as revoked.
+func (s *MemoryNodeStore) RevokeOperatorToken(_ context.Context, tokenID string, now time.Time) (protocol.OperatorToken, error) {
+	tokenID = strings.TrimSpace(tokenID)
+	if tokenID == "" {
+		return protocol.OperatorToken{}, ErrOperatorTokenNotFound
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	token, ok := s.operatorTokens[tokenID]
+	if !ok {
+		return protocol.OperatorToken{}, ErrOperatorTokenNotFound
+	}
+	if token.Metadata.RevokedAt == nil {
+		revokedAt := now.UTC()
+		token.Metadata.RevokedAt = &revokedAt
+		s.operatorTokens[tokenID] = token
+	}
+	return cloneOperatorToken(token.Metadata), nil
+}
+
+// VerifyOperatorToken verifies an active named operator token and returns its ID.
+func (s *MemoryNodeStore) VerifyOperatorToken(_ context.Context, token string) (string, bool, error) {
+	tokenHash, err := hashSecret(token)
+	if err != nil {
+		return "", false, nil
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	tokenID, ok := s.operatorHashes[tokenHash]
+	if !ok {
+		return "", false, nil
+	}
+	metadata, ok := s.operatorTokens[tokenID]
+	if !ok || metadata.Metadata.RevokedAt != nil {
+		return "", false, nil
+	}
+	return tokenID, true, nil
+}
+
+// UpdateOperatorTokenLastUsed records a best-effort named token use timestamp.
+func (s *MemoryNodeStore) UpdateOperatorTokenLastUsed(_ context.Context, tokenID string, usedAt time.Time) error {
+	tokenID = strings.TrimSpace(tokenID)
+	if tokenID == "" {
+		return ErrOperatorTokenNotFound
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	token, ok := s.operatorTokens[tokenID]
+	if !ok {
+		return ErrOperatorTokenNotFound
+	}
+	if token.Metadata.RevokedAt != nil {
+		return nil
+	}
+	lastUsedAt := usedAt.UTC()
+	token.Metadata.LastUsedAt = &lastUsedAt
+	s.operatorTokens[tokenID] = token
+	return nil
 }
 
 // GetJob retrieves a job by ID.
@@ -844,6 +982,19 @@ func cloneNodeStatus(node protocol.NodeStatus) protocol.NodeStatus {
 	node.Runtimes = cloneRuntimeStatuses(node.Runtimes)
 	node.Labels = cloneLabels(node.Labels)
 	return node
+}
+
+func cloneOperatorToken(token protocol.OperatorToken) protocol.OperatorToken {
+	clone := token
+	if token.LastUsedAt != nil {
+		lastUsedAt := token.LastUsedAt.UTC()
+		clone.LastUsedAt = &lastUsedAt
+	}
+	if token.RevokedAt != nil {
+		revokedAt := token.RevokedAt.UTC()
+		clone.RevokedAt = &revokedAt
+	}
+	return clone
 }
 
 func cloneLabels(labels map[string]string) map[string]string {

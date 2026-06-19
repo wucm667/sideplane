@@ -212,7 +212,7 @@ func (h *handler) createEventTicket(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) authorizeEventStream(w http.ResponseWriter, r *http.Request) bool {
-	if h.operatorAuth.AuthorizeHeader(r.Header.Get("Authorization")) {
+	if h.operatorAuth.AuthorizeHeaderContext(r.Context(), r.Header.Get("Authorization")) {
 		return true
 	}
 	if h.eventTickets.verify(r.URL.Query().Get("ticket"), time.Now().UTC()) {

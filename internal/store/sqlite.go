@@ -810,6 +810,167 @@ WHERE node_id = ?
 	return secretHashMatches(credential, credentialHash)
 }
 
+// CreateOperatorToken creates a named operator token and stores only its hash.
+func (s *SQLiteNodeStore) CreateOperatorToken(ctx context.Context, name string, now time.Time) (protocol.CreateOperatorTokenResponse, error) {
+	if s == nil || s.db == nil {
+		return protocol.CreateOperatorTokenResponse{}, errors.New("sqlite node store is closed")
+	}
+	name, err := ValidateOperatorTokenName(name)
+	if err != nil {
+		return protocol.CreateOperatorTokenResponse{}, err
+	}
+	token, err := newSecret()
+	if err != nil {
+		return protocol.CreateOperatorTokenResponse{}, err
+	}
+	tokenHash, err := hashSecret(token)
+	if err != nil {
+		return protocol.CreateOperatorTokenResponse{}, err
+	}
+	tokenID, err := newRandomID("optok_")
+	if err != nil {
+		return protocol.CreateOperatorTokenResponse{}, err
+	}
+
+	createdAt := now.UTC()
+	_, err = s.db.ExecContext(ctx, `
+INSERT INTO operator_tokens (
+	id,
+	name,
+	token_hash,
+	created_at
+) VALUES (?, ?, ?, ?)
+`, tokenID, name, tokenHash, formatDBTime(createdAt))
+	if err != nil {
+		return protocol.CreateOperatorTokenResponse{}, fmt.Errorf("insert operator token: %w", err)
+	}
+
+	return protocol.CreateOperatorTokenResponse{
+		OperatorToken: protocol.OperatorToken{
+			ID:        tokenID,
+			Name:      name,
+			CreatedAt: createdAt,
+		},
+		Token: token,
+	}, nil
+}
+
+// ListOperatorTokens returns operator token metadata without plaintext secrets.
+func (s *SQLiteNodeStore) ListOperatorTokens(ctx context.Context) ([]protocol.OperatorToken, error) {
+	if s == nil || s.db == nil {
+		return nil, errors.New("sqlite node store is closed")
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT id, name, created_at, last_used_at, revoked_at
+FROM operator_tokens
+ORDER BY created_at DESC, id DESC
+`)
+	if err != nil {
+		return nil, fmt.Errorf("query operator tokens: %w", err)
+	}
+	defer rows.Close()
+
+	tokens := []protocol.OperatorToken{}
+	for rows.Next() {
+		token, err := scanSQLiteOperatorToken(rows)
+		if err != nil {
+			return nil, err
+		}
+		tokens = append(tokens, token)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate operator tokens: %w", err)
+	}
+	return tokens, nil
+}
+
+// RevokeOperatorToken marks a named operator token as revoked.
+func (s *SQLiteNodeStore) RevokeOperatorToken(ctx context.Context, tokenID string, now time.Time) (protocol.OperatorToken, error) {
+	if s == nil || s.db == nil {
+		return protocol.OperatorToken{}, errors.New("sqlite node store is closed")
+	}
+	tokenID = strings.TrimSpace(tokenID)
+	if tokenID == "" {
+		return protocol.OperatorToken{}, ErrOperatorTokenNotFound
+	}
+
+	token, err := s.loadOperatorToken(ctx, tokenID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return protocol.OperatorToken{}, ErrOperatorTokenNotFound
+	}
+	if err != nil {
+		return protocol.OperatorToken{}, err
+	}
+	if token.RevokedAt != nil {
+		return token, nil
+	}
+
+	revokedAt := now.UTC()
+	_, err = s.db.ExecContext(ctx, `
+UPDATE operator_tokens
+SET revoked_at = ?
+WHERE id = ?
+`, formatDBTime(revokedAt), tokenID)
+	if err != nil {
+		return protocol.OperatorToken{}, fmt.Errorf("revoke operator token: %w", err)
+	}
+	token.RevokedAt = &revokedAt
+	return token, nil
+}
+
+// VerifyOperatorToken verifies an active named operator token and returns its ID.
+func (s *SQLiteNodeStore) VerifyOperatorToken(ctx context.Context, token string) (string, bool, error) {
+	if s == nil || s.db == nil {
+		return "", false, errors.New("sqlite node store is closed")
+	}
+	tokenHash, err := hashSecret(token)
+	if err != nil {
+		return "", false, nil
+	}
+
+	var tokenID string
+	err = s.db.QueryRowContext(ctx, `
+SELECT id
+FROM operator_tokens
+WHERE token_hash = ? AND (revoked_at IS NULL OR revoked_at = '')
+`, tokenHash).Scan(&tokenID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("query operator token: %w", err)
+	}
+	return tokenID, true, nil
+}
+
+// UpdateOperatorTokenLastUsed records a best-effort named token use timestamp.
+func (s *SQLiteNodeStore) UpdateOperatorTokenLastUsed(ctx context.Context, tokenID string, usedAt time.Time) error {
+	if s == nil || s.db == nil {
+		return errors.New("sqlite node store is closed")
+	}
+	tokenID = strings.TrimSpace(tokenID)
+	if tokenID == "" {
+		return ErrOperatorTokenNotFound
+	}
+
+	result, err := s.db.ExecContext(ctx, `
+UPDATE operator_tokens
+SET last_used_at = ?
+WHERE id = ? AND (revoked_at IS NULL OR revoked_at = '')
+`, formatDBTime(usedAt.UTC()), tokenID)
+	if err != nil {
+		return fmt.Errorf("update operator token last used: %w", err)
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("count operator token last-used update: %w", err)
+	}
+	if rowsAffected == 0 {
+		return ErrOperatorTokenNotFound
+	}
+	return nil
+}
+
 // GetJob retrieves a job by ID.
 func (s *SQLiteNodeStore) GetJob(ctx context.Context, jobID string) (*protocol.Job, error) {
 	if s == nil || s.db == nil {
@@ -1543,6 +1704,43 @@ func parseSQLiteRollout(payload string) (protocol.Rollout, error) {
 	return rollout, nil
 }
 
+type sqliteScanner interface {
+	Scan(dest ...any) error
+}
+
+func (s *SQLiteNodeStore) loadOperatorToken(ctx context.Context, tokenID string) (protocol.OperatorToken, error) {
+	return scanSQLiteOperatorToken(s.db.QueryRowContext(ctx, `
+SELECT id, name, created_at, last_used_at, revoked_at
+FROM operator_tokens
+WHERE id = ?
+`, tokenID))
+}
+
+func scanSQLiteOperatorToken(scanner sqliteScanner) (protocol.OperatorToken, error) {
+	var token protocol.OperatorToken
+	var createdAtText string
+	var lastUsedAtText, revokedAtText sql.NullString
+	if err := scanner.Scan(&token.ID, &token.Name, &createdAtText, &lastUsedAtText, &revokedAtText); err != nil {
+		return protocol.OperatorToken{}, err
+	}
+	createdAt, err := parseDBTime(createdAtText)
+	if err != nil {
+		return protocol.OperatorToken{}, fmt.Errorf("parse operator token created_at: %w", err)
+	}
+	lastUsedAt, err := parseOptionalDBTime(lastUsedAtText)
+	if err != nil {
+		return protocol.OperatorToken{}, fmt.Errorf("parse operator token last_used_at: %w", err)
+	}
+	revokedAt, err := parseOptionalDBTime(revokedAtText)
+	if err != nil {
+		return protocol.OperatorToken{}, fmt.Errorf("parse operator token revoked_at: %w", err)
+	}
+	token.CreatedAt = createdAt
+	token.LastUsedAt = lastUsedAt
+	token.RevokedAt = revokedAt
+	return token, nil
+}
+
 func (s *SQLiteNodeStore) loadJob(ctx context.Context, jobID string) (protocol.Job, error) {
 	var job protocol.Job
 	var status, createdAt string
@@ -1673,4 +1871,16 @@ func parseDBTime(value string) (time.Time, error) {
 		return time.Time{}, nil
 	}
 	return time.Parse(time.RFC3339Nano, value)
+}
+
+func parseOptionalDBTime(value sql.NullString) (*time.Time, error) {
+	if !value.Valid || value.String == "" {
+		return nil, nil
+	}
+	parsed, err := parseDBTime(value.String)
+	if err != nil {
+		return nil, err
+	}
+	parsed = parsed.UTC()
+	return &parsed, nil
 }

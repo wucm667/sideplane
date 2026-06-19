@@ -101,7 +101,7 @@ func NewHandlerWithConfig(cfg HandlerConfig) (http.Handler, error) {
 	handler := &handler{
 		store:        cfg.Store,
 		freshness:    freshness,
-		operatorAuth: auth.NewOperatorToken(cfg.OperatorToken, cfg.AllowUnauthenticatedOperatorAPI),
+		operatorAuth: auth.NewOperatorTokenWithVerifier(cfg.OperatorToken, cfg.AllowUnauthenticatedOperatorAPI, cfg.Store),
 		signingKey:   keyPair,
 		events:       cfg.Events,
 		eventTickets: newEventTicketStore(),
@@ -2035,7 +2035,7 @@ func writeJSONDecodeError(w http.ResponseWriter, err error, message string) {
 }
 
 func (h *handler) authorizeOperator(w http.ResponseWriter, r *http.Request) bool {
-	if h.operatorAuth.AuthorizeHeader(r.Header.Get("Authorization")) {
+	if h.operatorAuth.AuthorizeHeaderContext(r.Context(), r.Header.Get("Authorization")) {
 		return true
 	}
 	writeAPIError(w, http.StatusUnauthorized, http.StatusText(http.StatusUnauthorized))
