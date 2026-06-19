@@ -146,6 +146,15 @@ ON heartbeats(node_id, observed_at DESC)`,
 	},
 }
 
+// LatestSQLiteSchemaVersion returns the newest migration version compiled into
+// this binary.
+func LatestSQLiteSchemaVersion() int {
+	if len(sqliteMigrations) == 0 {
+		return 0
+	}
+	return sqliteMigrations[len(sqliteMigrations)-1].version
+}
+
 func runSQLiteMigrations(ctx context.Context, db *sql.DB) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {

@@ -53,6 +53,18 @@ func (s *SQLiteNodeStore) Close() error {
 	return s.db.Close()
 }
 
+// SchemaVersion reports the newest applied SQLite migration version.
+func (s *SQLiteNodeStore) SchemaVersion(ctx context.Context) (int, error) {
+	if s == nil || s.db == nil {
+		return 0, errors.New("sqlite node store is closed")
+	}
+	var version int
+	if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(version), 0) FROM schema_migrations`).Scan(&version); err != nil {
+		return 0, fmt.Errorf("query sqlite schema version: %w", err)
+	}
+	return version, nil
+}
+
 // RecordHeartbeat stores the latest heartbeat-derived status for a node.
 func (s *SQLiteNodeStore) RecordHeartbeat(ctx context.Context, req protocol.HeartbeatRequest, observedAt time.Time) (protocol.NodeStatus, error) {
 	if s == nil || s.db == nil {

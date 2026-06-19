@@ -135,6 +135,45 @@ func TestSQLiteReliabilityPragmas(t *testing.T) {
 	}
 }
 
+func TestSQLiteSchemaVersionReportsLatestAfterIdempotentMigration(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "sideplane.db")
+	first, err := OpenSQLiteNodeStore(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("open first sqlite store: %v", err)
+	}
+	version, err := first.SchemaVersion(ctx)
+	if err != nil {
+		t.Fatalf("first schema version: %v", err)
+	}
+	if version != LatestSQLiteSchemaVersion() {
+		t.Fatalf("first schema version = %d, want %d", version, LatestSQLiteSchemaVersion())
+	}
+	if err := first.Close(); err != nil {
+		t.Fatalf("close first store: %v", err)
+	}
+
+	second, err := OpenSQLiteNodeStore(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("open second sqlite store: %v", err)
+	}
+	defer second.Close()
+	version, err = second.SchemaVersion(ctx)
+	if err != nil {
+		t.Fatalf("second schema version: %v", err)
+	}
+	if version != LatestSQLiteSchemaVersion() {
+		t.Fatalf("second schema version = %d, want %d", version, LatestSQLiteSchemaVersion())
+	}
+	var migrationRows int
+	if err := second.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&migrationRows); err != nil {
+		t.Fatalf("count schema migrations: %v", err)
+	}
+	if migrationRows != len(sqliteMigrations) {
+		t.Fatalf("migration rows = %d, want %d", migrationRows, len(sqliteMigrations))
+	}
+}
+
 func TestSQLitePruneHeartbeatsKeepsLatestPerNode(t *testing.T) {
 	ctx := context.Background()
 	store, err := OpenSQLiteNodeStore(ctx, filepath.Join(t.TempDir(), "sideplane.db"))

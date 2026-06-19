@@ -110,6 +110,11 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 			logger.Error("close sqlite store", "db", *dbPath, "error", err)
 		}
 	}()
+	schemaVersion, err := nodeStore.SchemaVersion(context.Background())
+	if err != nil {
+		logger.Error("read sqlite schema version", "db", *dbPath, "error", err)
+		return 1
+	}
 
 	handler, err := server.NewHandlerWithConfig(server.HandlerConfig{
 		Store:                           nodeStore,
@@ -159,6 +164,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		"stale_after", staleAfter.String(),
 		"offline_after", offlineAfter.String(),
 		"heartbeat_retention", *heartbeatRetention,
+		"schema_version", schemaVersion,
 	)
 
 	errCh := make(chan error, 1)
