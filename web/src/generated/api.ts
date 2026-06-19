@@ -78,7 +78,7 @@ export interface HeartbeatResponse {
   node: NodeStatus;
 }
 
-export type JobType = "deep_probe" | "config_apply" | "restart";
+export type JobType = "deep_probe" | "config_apply" | "restart" | "rollback";
 
 export type JobStatus = "pending" | "claimed" | "completed" | "failed";
 
@@ -122,6 +122,7 @@ export interface ConfigApplyResult {
   planId: string;
   dryRun: boolean;
   backupPath?: string;
+  backup?: RollbackBackup;
   tempPath?: string;
   steps: ConfigApplyStep[];
 }
@@ -144,6 +145,41 @@ export interface RestartJobPayload {
 
 export interface RestartJobResult {
   controller?: string;
+  steps: ConfigApplyStep[];
+  healthStatus?: string;
+}
+
+export interface RollbackBackup {
+  ref: string;
+  sourceJobId: string;
+  planId?: string;
+  runtimeType?: string;
+  profile?: string;
+  configPath?: string;
+  backupPath?: string;
+  createdAt?: string;
+}
+
+export interface RollbackRequest {
+  runtimeType?: "hermes" | "openclaw";
+  runtimeName?: string;
+  profile?: string;
+  backupRef: string;
+  live?: boolean;
+}
+
+export interface RollbackJobPayload {
+  runtimeType?: string;
+  runtimeName?: string;
+  profile?: string;
+  backupRef: string;
+  configPath: string;
+  backupPath: string;
+  dryRun: boolean;
+}
+
+export interface RollbackJobResult {
+  backupRef: string;
   steps: ConfigApplyStep[];
   healthStatus?: string;
 }

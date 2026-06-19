@@ -151,6 +151,50 @@ func seedRuntimeConfigSnapshot(t *testing.T, nodeStore store.Store, nodeID, prov
 	}
 }
 
+func seedRollbackBackup(t *testing.T, nodeStore store.Store, nodeID, planID, configPath, backupPath string) protocol.RollbackBackup {
+	t.Helper()
+	ctx := context.Background()
+	now := time.Now().UTC()
+	job, err := nodeStore.CreateJob(ctx, protocol.CreateJobRequest{
+		Type:        protocol.JobTypeConfigApply,
+		PayloadJSON: configApplyPayloadForHTTPTest(t, "hermes", configPath),
+	}, nodeID, now)
+	if err != nil {
+		t.Fatalf("create config apply backup job: %v", err)
+	}
+	if _, err := nodeStore.ClaimNextJob(ctx, nodeID, now); err != nil {
+		t.Fatalf("claim config apply backup job: %v", err)
+	}
+	resultJSON, err := json.Marshal(protocol.ConfigApplyResult{
+		PlanID:     planID,
+		DryRun:     false,
+		BackupPath: backupPath,
+		Steps:      []protocol.ConfigApplyStep{{Name: "backup_created", Status: "completed"}},
+	})
+	if err != nil {
+		t.Fatalf("marshal config apply result: %v", err)
+	}
+	if err := nodeStore.CompleteJob(ctx, job.ID, protocol.JobResultRequest{
+		Status:     protocol.JobStatusCompleted,
+		ResultJSON: string(resultJSON),
+	}, now.Add(time.Second)); err != nil {
+		t.Fatalf("complete config apply backup job: %v", err)
+	}
+	backup, ok := store.RollbackBackupFromJob(protocol.Job{
+		ID:          job.ID,
+		Type:        protocol.JobTypeConfigApply,
+		Status:      protocol.JobStatusCompleted,
+		PayloadJSON: configApplyPayloadForHTTPTest(t, "hermes", configPath),
+		ResultJSON:  string(resultJSON),
+		CreatedAt:   now,
+		FinishedAt:  now.Add(time.Second),
+	})
+	if !ok {
+		t.Fatalf("seeded backup did not derive rollback metadata")
+	}
+	return backup
+}
+
 func TestCreateConfigApplyJobDryRun(t *testing.T) {
 	nodeStore := store.NewMemoryNodeStore()
 	enrollTestNode(t, nodeStore, "node-apply")
@@ -465,6 +509,105 @@ func TestCreateRestartJobRejectsUnknownNodeAndInvalidPayload(t *testing.T) {
 	}
 }
 
+func TestCreateRollbackJobRequiresKnownBackupAndWritesAudit(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	enrollTestNode(t, nodeStore, "node-rollback")
+	backup := seedRollbackBackup(t, nodeStore, "node-rollback", "plan_rollback", "/tmp/sideplane-test/config.json", "/tmp/sideplane-test/current.backup")
+	handler := newDevHandlerWithStore(t, nodeStore)
+
+	body, err := json.Marshal(protocol.RollbackRequest{
+		RuntimeType: "hermes",
+		BackupRef:   backup.Ref,
+	})
+	if err != nil {
+		t.Fatalf("marshal rollback request: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/nodes/node-rollback/rollback", bytes.NewReader(body))
+	handler.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusCreated)
+
+	var job protocol.Job
+	if err := json.NewDecoder(rec.Body).Decode(&job); err != nil {
+		t.Fatalf("decode rollback job: %v", err)
+	}
+	if job.Type != protocol.JobTypeRollback || job.NodeID != "node-rollback" {
+		t.Fatalf("rollback job = %#v, want rollback for node-rollback", job)
+	}
+	var payload protocol.RollbackJobPayload
+	if err := json.Unmarshal([]byte(job.PayloadJSON), &payload); err != nil {
+		t.Fatalf("decode rollback payload: %v", err)
+	}
+	if payload.BackupRef != backup.Ref || payload.BackupPath != backup.BackupPath || payload.ConfigPath != backup.ConfigPath {
+		t.Fatalf("rollback payload = %#v, want server-derived backup metadata %#v", payload, backup)
+	}
+	if !payload.DryRun {
+		t.Fatalf("rollback payload dryRun = false, want dry-run default")
+	}
+
+	auditRec := httptest.NewRecorder()
+	handler.ServeHTTP(auditRec, httptest.NewRequest(http.MethodGet, "/api/audit?action=rollback&nodeId=node-rollback", nil))
+	assertStatus(t, auditRec, http.StatusOK)
+	var auditResp protocol.ListAuditEventsResponse
+	if err := json.NewDecoder(auditRec.Body).Decode(&auditResp); err != nil {
+		t.Fatalf("decode audit response: %v", err)
+	}
+	if len(auditResp.Events) != 1 {
+		t.Fatalf("audit events = %d, want 1: %#v", len(auditResp.Events), auditResp.Events)
+	}
+	event := auditResp.Events[0]
+	if event.Action != audit.ActionRollback || event.TargetNode != "node-rollback" {
+		t.Fatalf("audit event = %#v, want rollback for node-rollback", event)
+	}
+	for _, fragment := range []string{"job=" + job.ID, "mode=dry-run", "backupRef=" + backup.Ref} {
+		if !strings.Contains(event.Detail, fragment) {
+			t.Fatalf("audit detail = %q, want %q", event.Detail, fragment)
+		}
+	}
+}
+
+func TestCreateRollbackJobRejectsMissingOrUnknownBackup(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       string
+		wantStatus int
+	}{
+		{
+			name:       "missing backup ref",
+			body:       `{}`,
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "unknown backup",
+			body:       `{"backupRef":"config_apply:missing:plan"}`,
+			wantStatus: http.StatusNotFound,
+		},
+		{
+			name:       "unknown field path rejected",
+			body:       `{"backupRef":"config_apply:missing:plan","backupPath":"/tmp/not-accepted"}`,
+			wantStatus: http.StatusBadRequest,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			nodeStore := store.NewMemoryNodeStore()
+			enrollTestNode(t, nodeStore, "node-rollback")
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/api/nodes/node-rollback/rollback", strings.NewReader(tt.body))
+			newDevHandlerWithStore(t, nodeStore).ServeHTTP(rec, req)
+			assertStatus(t, rec, tt.wantStatus)
+		})
+	}
+}
+
+func TestCreateRollbackJobRejectsUnknownNode(t *testing.T) {
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/nodes/missing/rollback", strings.NewReader(`{"backupRef":"config_apply:job:plan"}`))
+	newDevHandlerWithStore(t, store.NewMemoryNodeStore()).ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusNotFound)
+}
+
 func TestMutatingOperatorAPIsRejectWhenOperatorTokenNotConfigured(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -499,6 +642,15 @@ func TestMutatingOperatorAPIsRejectWhenOperatorTokenNotConfigured(t *testing.T) 
 				enrollTestNode(t, nodeStore, "node-restart")
 			},
 			req: httptest.NewRequest(http.MethodPost, "/api/nodes/node-restart/restart", strings.NewReader(`{}`)),
+		},
+		{
+			name: "rollback",
+			setup: func(t *testing.T, nodeStore store.Store) {
+				t.Helper()
+				enrollTestNode(t, nodeStore, "node-rollback")
+				seedRollbackBackup(t, nodeStore, "node-rollback", "plan_rollback", "/tmp/sideplane-test/config.json", "/tmp/sideplane-test/current.backup")
+			},
+			req: httptest.NewRequest(http.MethodPost, "/api/nodes/node-rollback/rollback", strings.NewReader(`{"backupRef":"config_apply:job_rollback:plan_rollback"}`)),
 		},
 		{
 			name: "desired config",

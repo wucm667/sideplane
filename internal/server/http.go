@@ -435,7 +435,7 @@ func hasKnownProviderModel(value protocol.ProviderModelConfig) bool {
 
 // nodeJobsRouter handles node-scoped API routes under /api/nodes/{nodeId}.
 func (h *handler) nodeJobsRouter(w http.ResponseWriter, r *http.Request) {
-	// Parse path: /api/nodes/{nodeId}/{jobs|config-apply|restart}
+	// Parse path: /api/nodes/{nodeId}/{jobs|config-apply|restart|rollback}
 	path := strings.TrimPrefix(r.URL.Path, "/api/nodes/")
 	parts := strings.Split(path, "/")
 	nodeID := strings.TrimSpace(parts[0])
@@ -483,6 +483,13 @@ func (h *handler) nodeJobsRouter(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.createRestartJob(w, r, nodeID)
+	case "rollback":
+		if r.Method != http.MethodPost {
+			w.Header().Set("Allow", http.MethodPost)
+			writeAPIError(w, http.StatusMethodNotAllowed, http.StatusText(http.StatusMethodNotAllowed))
+			return
+		}
+		h.createRollbackJob(w, r, nodeID)
 	default:
 		writeAPIError(w, http.StatusNotFound, http.StatusText(http.StatusNotFound))
 	}
@@ -734,6 +741,123 @@ func runtimeTargetSummary(runtimeType, runtimeName, profile string) string {
 		return "default"
 	}
 	return strings.Join(parts, " ")
+}
+
+func (h *handler) createRollbackJob(w http.ResponseWriter, r *http.Request, nodeID string) {
+	if !h.authorizeOperator(w, r) {
+		return
+	}
+	defer r.Body.Close()
+
+	var req protocol.RollbackRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeAPIError(w, http.StatusBadRequest, "invalid rollback JSON")
+		return
+	}
+	backupRef := strings.TrimSpace(req.BackupRef)
+	if backupRef == "" {
+		writeAPIError(w, http.StatusBadRequest, "backupRef is required")
+		return
+	}
+	runtimeType := strings.TrimSpace(req.RuntimeType)
+	if runtimeType != "" && runtimeType != "hermes" && runtimeType != "openclaw" {
+		writeAPIError(w, http.StatusBadRequest, "unsupported runtime type")
+		return
+	}
+	runtimeName := strings.TrimSpace(req.RuntimeName)
+	profile := strings.TrimSpace(req.Profile)
+
+	exists, err := h.store.NodeExists(r.Context(), nodeID)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "lookup node")
+		return
+	}
+	if !exists {
+		writeAPIError(w, http.StatusNotFound, "node not found")
+		return
+	}
+
+	backup, ok, err := h.findRollbackBackup(r.Context(), nodeID, backupRef)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "lookup rollback backup")
+		return
+	}
+	if !ok {
+		writeAPIError(w, http.StatusNotFound, "rollback backup not found")
+		return
+	}
+	if runtimeType == "" {
+		runtimeType = backup.RuntimeType
+	}
+	if profile == "" {
+		profile = backup.Profile
+	}
+	if backup.RuntimeType != "" && runtimeType != "" && backup.RuntimeType != runtimeType {
+		writeAPIError(w, http.StatusBadRequest, "rollback backup runtime type mismatch")
+		return
+	}
+	if backup.Profile != "" && profile != "" && backup.Profile != profile {
+		writeAPIError(w, http.StatusBadRequest, "rollback backup profile mismatch")
+		return
+	}
+
+	payload, err := json.Marshal(protocol.RollbackJobPayload{
+		RuntimeType: runtimeType,
+		RuntimeName: runtimeName,
+		Profile:     profile,
+		BackupRef:   backup.Ref,
+		ConfigPath:  backup.ConfigPath,
+		BackupPath:  backup.BackupPath,
+		DryRun:      !req.Live,
+	})
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "marshal rollback payload")
+		return
+	}
+
+	now := time.Now().UTC()
+	job, err := h.store.CreateJob(r.Context(), protocol.CreateJobRequest{
+		Type:        protocol.JobTypeRollback,
+		PayloadJSON: string(payload),
+	}, nodeID, now)
+	if err != nil {
+		if errors.Is(err, store.ErrActiveJobExists) {
+			writeAPIError(w, http.StatusConflict, "active rollback job already exists")
+			return
+		}
+		writeAPIError(w, http.StatusInternalServerError, "create rollback job")
+		return
+	}
+
+	mode := "dry-run"
+	if req.Live {
+		mode = "live"
+	}
+	h.metrics.IncJobCreated(string(protocol.JobTypeRollback))
+	h.audit(r.Context(), protocol.AuditEvent{
+		Actor:      audit.ActorOperator,
+		Action:     audit.ActionRollback,
+		TargetNode: nodeID,
+		Detail:     fmt.Sprintf("job=%s mode=%s backupRef=%s target=%s", job.ID, mode, backup.Ref, runtimeTargetSummary(runtimeType, runtimeName, profile)),
+		CreatedAt:  job.CreatedAt,
+	})
+
+	writeJSON(w, http.StatusCreated, job)
+}
+
+func (h *handler) findRollbackBackup(ctx context.Context, nodeID string, backupRef string) (protocol.RollbackBackup, bool, error) {
+	jobs, err := h.store.ListNodeJobs(ctx, nodeID)
+	if err != nil {
+		return protocol.RollbackBackup{}, false, err
+	}
+	for _, backup := range store.ListRollbackBackups(jobs) {
+		if backup.Ref == backupRef {
+			return backup, true, nil
+		}
+	}
+	return protocol.RollbackBackup{}, false, nil
 }
 
 // createConfigApplyJob builds a signed config plan from the desired config and

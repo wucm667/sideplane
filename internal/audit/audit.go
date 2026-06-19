@@ -25,6 +25,8 @@ const (
 	ActionConfigApply = "config.apply"
 	// ActionRestart records operator creation of a standalone restart job.
 	ActionRestart = "restart"
+	// ActionRollback records operator creation of an explicit rollback job.
+	ActionRollback = "rollback"
 	// ActionDesiredConfigUpdate records operator updates to desired config.
 	ActionDesiredConfigUpdate = "config.desired.update"
 )

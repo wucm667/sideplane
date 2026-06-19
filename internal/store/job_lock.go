@@ -14,6 +14,8 @@ func activeJobConflict(candidate protocol.Job, existing protocol.Job) bool {
 	switch candidate.Type {
 	case protocol.JobTypeDeepProbe:
 		return true
+	case protocol.JobTypeRestart, protocol.JobTypeRollback:
+		return true
 	case protocol.JobTypeConfigApply:
 		candidateRuntime, candidatePath, candidateOK := configApplyLockFields(candidate.PayloadJSON)
 		existingRuntime, existingPath, existingOK := configApplyLockFields(existing.PayloadJSON)

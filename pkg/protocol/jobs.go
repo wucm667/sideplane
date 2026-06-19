@@ -12,6 +12,8 @@ const (
 	JobTypeConfigApply JobType = "config_apply"
 	// JobTypeRestart requests an allowlisted runtime service restart.
 	JobTypeRestart JobType = "restart"
+	// JobTypeRollback requests restore of a sidecar-reported backup.
+	JobTypeRollback JobType = "rollback"
 )
 
 // JobStatus is the lifecycle state of a job.

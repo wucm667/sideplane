@@ -294,6 +294,44 @@ paths:
           $ref: "#/components/responses/APIError"
         "409":
           $ref: "#/components/responses/APIError"
+  /api/nodes/{nodeId}/rollback:
+    post:
+      tags: [Operator]
+      summary: Create an explicit rollback job.
+      operationId: createRollbackJob
+      description: >
+        Enqueues a rollback job for a server-known backup reference. The
+        operator supplies backupRef only; sidecar-local paths are derived from
+        previously reported config_apply results.
+      security:
+        - operatorBearer: []
+      parameters:
+        - $ref: "#/components/parameters/NodeId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RollbackRequest"
+            example:
+              runtimeType: hermes
+              backupRef: config_apply:job_example:plan_example
+              live: false
+      responses:
+        "201":
+          description: Rollback job created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Job"
+        "400":
+          $ref: "#/components/responses/APIError"
+        "401":
+          $ref: "#/components/responses/APIError"
+        "404":
+          $ref: "#/components/responses/APIError"
+        "409":
+          $ref: "#/components/responses/APIError"
   /api/sidecar/jobs/next:
     get:
       tags: [Sidecar]
@@ -652,7 +690,7 @@ components:
           $ref: "#/components/schemas/NodeStatus"
     JobType:
       type: string
-      enum: [deep_probe, config_apply, restart]
+      enum: [deep_probe, config_apply, restart, rollback]
     JobStatus:
       type: string
       enum: [pending, claimed, completed, failed]
@@ -739,6 +777,8 @@ components:
         backupPath:
           type: string
           description: Sidecar-local backup reference or path.
+        backup:
+          $ref: "#/components/schemas/RollbackBackup"
         tempPath:
           type: string
           description: Sidecar-local temporary validation path.
@@ -780,6 +820,75 @@ components:
       required: [steps]
       properties:
         controller:
+          type: string
+        steps:
+          type: array
+          items:
+            $ref: "#/components/schemas/ConfigApplyStep"
+        healthStatus:
+          type: string
+    RollbackBackup:
+      type: object
+      required: [ref, sourceJobId]
+      properties:
+        ref:
+          type: string
+        sourceJobId:
+          type: string
+        planId:
+          type: string
+        runtimeType:
+          type: string
+        profile:
+          type: string
+        configPath:
+          type: string
+          description: Sidecar-local config path from a prior signed plan.
+        backupPath:
+          type: string
+          description: Sidecar-local backup path reported by the sidecar.
+        createdAt:
+          type: string
+          format: date-time
+    RollbackRequest:
+      type: object
+      required: [backupRef]
+      properties:
+        runtimeType:
+          type: string
+          enum: [hermes, openclaw]
+        runtimeName:
+          type: string
+        profile:
+          type: string
+        backupRef:
+          type: string
+        live:
+          type: boolean
+          default: false
+    RollbackJobPayload:
+      type: object
+      required: [backupRef, configPath, backupPath, dryRun]
+      properties:
+        runtimeType:
+          type: string
+        runtimeName:
+          type: string
+        profile:
+          type: string
+        backupRef:
+          type: string
+        configPath:
+          type: string
+        backupPath:
+          type: string
+        dryRun:
+          type: boolean
+    RollbackJobResult:
+      type: object
+      required: [backupRef, steps]
+      properties:
+        backupRef:
           type: string
         steps:
           type: array
