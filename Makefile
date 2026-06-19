@@ -1,7 +1,8 @@
-.PHONY: all build test test-race vet fmt web web-dev typecheck lint clean docker install
+.PHONY: all build test test-race vet fmt web web-dev typecheck lint openapi-check clean docker install
 
 GO ?= go
 BIN_DIR ?= bin
+OPENAPI_PYYAML_VERSION ?= 6.0.2
 
 all: lint test build
 
@@ -35,6 +36,10 @@ typecheck:
 lint:
 	$(GO) vet ./...
 	cd web && npm run typecheck
+
+openapi-check:
+	python3 -c "import yaml" 2>/dev/null || python3 -m pip install --user PyYAML==$(OPENAPI_PYYAML_VERSION)
+	python3 -c "import yaml; yaml.safe_load(open('docs/openapi.yaml'))"
 
 clean:
 	rm -rf $(BIN_DIR) web/dist
