@@ -17,6 +17,10 @@ const (
 	DefaultJobListLimit = 50
 	// MaxJobListLimit is the largest node job page size accepted by the store.
 	MaxJobListLimit = 500
+	// DefaultNodeListLimit is the bounded default for fleet inventory listing.
+	DefaultNodeListLimit = 100
+	// MaxNodeListLimit is the largest fleet inventory page size accepted by the store.
+	MaxNodeListLimit = 1000
 	// DefaultHeartbeatRetention is the default number of recent heartbeats to keep per node.
 	DefaultHeartbeatRetention = 100
 	// DefaultJobRetention is the default age to retain completed and failed jobs.
@@ -72,9 +76,37 @@ func lateJobResultError(result protocol.JobResultRequest) string {
 type NodeStore interface {
 	RecordHeartbeat(ctx context.Context, req protocol.HeartbeatRequest, observedAt time.Time) (protocol.NodeStatus, error)
 	ListNodes(ctx context.Context) ([]protocol.NodeStatus, error)
+	ListNodesFiltered(ctx context.Context, filter NodeFilter) (NodeList, error)
 	NodeExists(ctx context.Context, nodeID string) (bool, error)
 	DeleteNode(ctx context.Context, nodeID string) error
 	PruneHeartbeats(ctx context.Context, keep int) (int64, error)
+}
+
+// NodeFilter constrains fleet inventory listing.
+type NodeFilter struct {
+	Limit  int
+	Offset int
+}
+
+// NodeList is a paginated fleet inventory snapshot.
+type NodeList struct {
+	Nodes  []protocol.NodeStatus
+	Total  int
+	Limit  int
+	Offset int
+}
+
+func NormalizeNodeFilter(filter NodeFilter) NodeFilter {
+	if filter.Limit <= 0 {
+		filter.Limit = DefaultNodeListLimit
+	}
+	if filter.Limit > MaxNodeListLimit {
+		filter.Limit = MaxNodeListLimit
+	}
+	if filter.Offset < 0 {
+		filter.Offset = 0
+	}
+	return filter
 }
 
 // EnrollmentStore persists one-time enrollment tokens and node credentials.

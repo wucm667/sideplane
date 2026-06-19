@@ -15,6 +15,7 @@ export type {
   JobStatus,
   JobType,
   ListAuditEventsResponse,
+  ListNodesResponse,
   NodeState,
   ProviderModelConfig,
   RollbackBackup,

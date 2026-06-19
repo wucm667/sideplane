@@ -36,6 +36,20 @@ type NodeStatus struct {
 	LastError       string          `json:"lastError,omitempty"`
 }
 
+// NodeStatusWithDrift is the operator-facing node status view.
+type NodeStatusWithDrift struct {
+	NodeStatus
+	Drift bool `json:"drift"`
+}
+
+// ListNodesResponse is a paginated fleet inventory response.
+type ListNodesResponse struct {
+	Nodes  []NodeStatusWithDrift `json:"nodes"`
+	Total  int                   `json:"total"`
+	Limit  int                   `json:"limit"`
+	Offset int                   `json:"offset"`
+}
+
 // HeartbeatRequest is sent by sidecars to report their current lightweight state.
 type HeartbeatRequest struct {
 	NodeID         string          `json:"nodeId"`

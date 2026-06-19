@@ -104,6 +104,50 @@ func TestSQLiteNodeStoreMigratesAndPersistsHeartbeat(t *testing.T) {
 	assertSQLiteNodeSnapshot(t, nodes, observedAt)
 }
 
+func TestSQLiteNodeStoreListNodesFilteredPaginatesAndCounts(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenSQLiteNodeStore(ctx, filepath.Join(t.TempDir(), "sideplane.db"))
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer store.Close()
+
+	now := time.Date(2026, 6, 16, 1, 2, 3, 0, time.UTC)
+	for _, nodeID := range []string{"node-c", "node-a", "node-b"} {
+		if _, err := store.RecordHeartbeat(ctx, protocol.HeartbeatRequest{
+			NodeID:   nodeID,
+			Runtimes: []protocol.RuntimeStatus{{Name: "default", Type: "hermes"}},
+		}, now); err != nil {
+			t.Fatalf("record %s heartbeat: %v", nodeID, err)
+		}
+	}
+
+	list, err := store.ListNodesFiltered(ctx, NodeFilter{Limit: 1, Offset: 1})
+	if err != nil {
+		t.Fatalf("list filtered nodes: %v", err)
+	}
+	if list.Total != 3 || list.Limit != 1 || list.Offset != 1 {
+		t.Fatalf("page metadata = total:%d limit:%d offset:%d, want 3/1/1", list.Total, list.Limit, list.Offset)
+	}
+	if len(list.Nodes) != 1 || list.Nodes[0].NodeID != "node-b" {
+		t.Fatalf("paged nodes = %#v, want node-b", list.Nodes)
+	}
+	if len(list.Nodes[0].Runtimes) != 1 || list.Nodes[0].Runtimes[0].Type != "hermes" {
+		t.Fatalf("paged node runtimes = %#v, want hermes", list.Nodes[0].Runtimes)
+	}
+
+	list, err = store.ListNodesFiltered(ctx, NodeFilter{Limit: MaxNodeListLimit + 1, Offset: 10})
+	if err != nil {
+		t.Fatalf("list capped offset nodes: %v", err)
+	}
+	if list.Limit != MaxNodeListLimit || list.Offset != 10 || list.Total != 3 {
+		t.Fatalf("capped metadata = total:%d limit:%d offset:%d, want 3/%d/10", list.Total, list.Limit, list.Offset, MaxNodeListLimit)
+	}
+	if len(list.Nodes) != 0 {
+		t.Fatalf("paged nodes length = %d, want 0", len(list.Nodes))
+	}
+}
+
 func TestSQLiteReliabilityPragmas(t *testing.T) {
 	ctx := context.Background()
 	store, err := OpenSQLiteNodeStore(ctx, filepath.Join(t.TempDir(), "sideplane.db"))

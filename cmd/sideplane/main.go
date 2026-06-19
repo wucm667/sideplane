@@ -32,6 +32,13 @@ type cliNodeStatus struct {
 	Drift bool `json:"drift"`
 }
 
+type cliListNodesResponse struct {
+	Nodes  []cliNodeStatus `json:"nodes"`
+	Total  int             `json:"total"`
+	Limit  int             `json:"limit"`
+	Offset int             `json:"offset"`
+}
+
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
@@ -551,7 +558,7 @@ func runNodeInspect(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 1
 	}
 
-	nodes, _, err := getJSON[[]cliNodeStatus](context.Background(), serverURLValue(*serverURL), "/api/nodes", "")
+	nodes, _, err := getNodeList(context.Background(), serverURLValue(*serverURL))
 	if err != nil {
 		fmt.Fprintf(stderr, "node inspect: %v\n", err)
 		return 1
@@ -789,7 +796,7 @@ func runFleetStatus(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 
 	server := serverURLValue(*serverURL)
-	nodes, body, err := getJSON[[]cliNodeStatus](context.Background(), server, "/api/nodes", "")
+	nodes, body, err := getNodeList(context.Background(), server)
 	if err != nil {
 		fmt.Fprintf(stderr, "fleet status: %v\n", err)
 		return 1
@@ -802,6 +809,40 @@ func runFleetStatus(args []string, stdout io.Writer, stderr io.Writer) int {
 
 	printFleetStatusTable(stdout, nodes)
 	return 0
+}
+
+func getNodeList(ctx context.Context, server string) ([]cliNodeStatus, []byte, error) {
+	_, body, err := getJSON[json.RawMessage](ctx, server, "/api/nodes", "")
+	if err != nil {
+		return nil, nil, err
+	}
+	nodes, err := decodeNodeList(body)
+	if err != nil {
+		return nil, nil, err
+	}
+	return nodes, body, nil
+}
+
+func decodeNodeList(body []byte) ([]cliNodeStatus, error) {
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) == 0 {
+		return nil, fmt.Errorf("decode response JSON: empty node list response")
+	}
+	if trimmed[0] == '[' {
+		var nodes []cliNodeStatus
+		if err := json.Unmarshal(trimmed, &nodes); err != nil {
+			return nil, fmt.Errorf("decode response JSON: %w", err)
+		}
+		return nodes, nil
+	}
+	var response cliListNodesResponse
+	if err := json.Unmarshal(trimmed, &response); err != nil {
+		return nil, fmt.Errorf("decode response JSON: %w", err)
+	}
+	if response.Nodes == nil {
+		return nil, fmt.Errorf("decode response JSON: nodes field is required")
+	}
+	return response.Nodes, nil
 }
 
 func serverURLValue(flagValue string) string {

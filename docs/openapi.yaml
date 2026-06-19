@@ -138,15 +138,31 @@ paths:
       tags: [Operator]
       summary: List freshness-adjusted fleet nodes.
       operationId: listNodes
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 100
+          description: Maximum number of nodes to return.
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+          description: Number of nodes to skip from the stable node ID order.
       responses:
         "200":
-          description: Fleet nodes.
+          description: Paginated fleet nodes.
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/NodeStatusWithDrift"
+                $ref: "#/components/schemas/ListNodesResponse"
   /api/nodes/{nodeId}:
     delete:
       tags: [Operator]
@@ -660,6 +676,20 @@ components:
           properties:
             drift:
               type: boolean
+    ListNodesResponse:
+      type: object
+      required: [nodes, total, limit, offset]
+      properties:
+        nodes:
+          type: array
+          items:
+            $ref: "#/components/schemas/NodeStatusWithDrift"
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
     HeartbeatRequest:
       type: object
       required: [nodeId, sentAt]

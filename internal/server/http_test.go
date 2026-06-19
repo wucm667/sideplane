@@ -885,12 +885,9 @@ func TestDeleteNodeAPIRequiresOperatorAndRemovesNode(t *testing.T) {
 	req = httptest.NewRequest(http.MethodGet, "/api/nodes", nil)
 	handler.ServeHTTP(rec, req)
 	assertStatus(t, rec, http.StatusOK)
-	var nodes []nodeStatusResponse
-	if err := json.NewDecoder(rec.Body).Decode(&nodes); err != nil {
-		t.Fatalf("decode nodes: %v", err)
-	}
-	if len(nodes) != 0 {
-		t.Fatalf("nodes length = %d, want 0: %#v", len(nodes), nodes)
+	nodesResp := decodeListNodesResponse(t, rec)
+	if len(nodesResp.Nodes) != 0 {
+		t.Fatalf("nodes length = %d, want 0: %#v", len(nodesResp.Nodes), nodesResp.Nodes)
 	}
 
 	rec = httptest.NewRecorder()
@@ -1481,9 +1478,9 @@ func TestOperatorWorkflowEndToEnd(t *testing.T) {
 		t.Fatalf("heartbeat accepted = false")
 	}
 
-	nodes := doJSONRequest[[]protocol.NodeStatus](t, client, http.MethodGet, server.URL+"/api/nodes", "", nil)
-	if len(nodes) != 1 || nodes[0].NodeID != "node-e2e" || nodes[0].State != protocol.NodeStateFresh {
-		t.Fatalf("nodes = %#v, want fresh node-e2e", nodes)
+	nodesResp := doJSONRequest[protocol.ListNodesResponse](t, client, http.MethodGet, server.URL+"/api/nodes", "", nil)
+	if len(nodesResp.Nodes) != 1 || nodesResp.Nodes[0].NodeID != "node-e2e" || nodesResp.Nodes[0].State != protocol.NodeStateFresh {
+		t.Fatalf("nodes = %#v, want fresh node-e2e", nodesResp.Nodes)
 	}
 
 	probeJob := doJSONRequest[protocol.Job](t, client, http.MethodPost, server.URL+"/api/nodes/node-e2e/jobs", "operator-token", protocol.CreateJobRequest{Type: protocol.JobTypeDeepProbe})
@@ -2296,10 +2293,8 @@ func TestHeartbeatRecordsNode(t *testing.T) {
 
 	assertStatus(t, rec, http.StatusOK)
 
-	var nodes []protocol.NodeStatus
-	if err := json.NewDecoder(rec.Body).Decode(&nodes); err != nil {
-		t.Fatalf("decode nodes response: %v", err)
-	}
+	nodesResp := decodeListNodesResponse(t, rec)
+	nodes := nodesResp.Nodes
 	if len(nodes) != 1 {
 		t.Fatalf("nodes length = %d, want 1", len(nodes))
 	}
@@ -2308,6 +2303,48 @@ func TestHeartbeatRecordsNode(t *testing.T) {
 	}
 	if nodes[0].Runtimes[0].Type != "hermes" {
 		t.Fatalf("runtime type = %q, want hermes", nodes[0].Runtimes[0].Type)
+	}
+}
+
+func TestNodesAPIPaginatesAndValidatesQuery(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	now := time.Date(2026, 6, 19, 12, 0, 0, 0, time.UTC)
+	for _, nodeID := range []string{"node-c", "node-a", "node-b"} {
+		if _, err := nodeStore.RecordHeartbeat(context.Background(), protocol.HeartbeatRequest{
+			NodeID:   nodeID,
+			Runtimes: []protocol.RuntimeStatus{{Name: "default", Type: "hermes"}},
+		}, now); err != nil {
+			t.Fatalf("record %s heartbeat: %v", nodeID, err)
+		}
+	}
+	handler := newDevHandlerWithStore(t, nodeStore)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/nodes?limit=1&offset=1", nil)
+	handler.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusOK)
+	resp := decodeListNodesResponse(t, rec)
+	if resp.Total != 3 || resp.Limit != 1 || resp.Offset != 1 {
+		t.Fatalf("page metadata = total:%d limit:%d offset:%d, want 3/1/1", resp.Total, resp.Limit, resp.Offset)
+	}
+	if len(resp.Nodes) != 1 || resp.Nodes[0].NodeID != "node-b" {
+		t.Fatalf("nodes = %#v, want node-b", resp.Nodes)
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/nodes?limit=2000", nil)
+	handler.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusOK)
+	resp = decodeListNodesResponse(t, rec)
+	if resp.Limit != store.MaxNodeListLimit || resp.Offset != 0 || resp.Total != 3 {
+		t.Fatalf("capped metadata = total:%d limit:%d offset:%d, want 3/%d/0", resp.Total, resp.Limit, resp.Offset, store.MaxNodeListLimit)
+	}
+
+	for _, path := range []string{"/api/nodes?limit=0", "/api/nodes?limit=bad", "/api/nodes?offset=-1"} {
+		rec = httptest.NewRecorder()
+		req = httptest.NewRequest(http.MethodGet, path, nil)
+		handler.ServeHTTP(rec, req)
+		assertStatus(t, rec, http.StatusBadRequest)
 	}
 }
 
@@ -2441,13 +2478,10 @@ func TestNodesApplyFreshnessPolicy(t *testing.T) {
 
 	assertStatus(t, rec, http.StatusOK)
 
-	var nodes []protocol.NodeStatus
-	if err := json.NewDecoder(rec.Body).Decode(&nodes); err != nil {
-		t.Fatalf("decode nodes response: %v", err)
-	}
+	nodesResp := decodeListNodesResponse(t, rec)
 
 	got := make(map[string]protocol.NodeState)
-	for _, node := range nodes {
+	for _, node := range nodesResp.Nodes {
 		got[node.NodeID] = node.State
 	}
 	want := map[string]protocol.NodeState{
@@ -2483,15 +2517,9 @@ func TestNodesReportConfigDrift(t *testing.T) {
 
 	assertStatus(t, rec, http.StatusOK)
 
-	var nodes []struct {
-		NodeID string `json:"nodeId"`
-		Drift  bool   `json:"drift"`
-	}
-	if err := json.NewDecoder(rec.Body).Decode(&nodes); err != nil {
-		t.Fatalf("decode nodes response: %v", err)
-	}
-	got := make(map[string]bool, len(nodes))
-	for _, node := range nodes {
+	nodesResp := decodeListNodesResponse(t, rec)
+	got := make(map[string]bool, len(nodesResp.Nodes))
+	for _, node := range nodesResp.Nodes {
 		got[node.NodeID] = node.Drift
 	}
 	want := map[string]bool{
@@ -2534,10 +2562,8 @@ func TestNodesTreatZeroHeartbeatAsOffline(t *testing.T) {
 
 	assertStatus(t, rec, http.StatusOK)
 
-	var nodes []protocol.NodeStatus
-	if err := json.NewDecoder(rec.Body).Decode(&nodes); err != nil {
-		t.Fatalf("decode nodes response: %v", err)
-	}
+	nodesResp := decodeListNodesResponse(t, rec)
+	nodes := nodesResp.Nodes
 	if len(nodes) != 1 {
 		t.Fatalf("nodes length = %d, want 1", len(nodes))
 	}
@@ -2719,6 +2745,15 @@ func assertStatus(t *testing.T, rec *httptest.ResponseRecorder, want int) {
 	}
 }
 
+func decodeListNodesResponse(t *testing.T, rec *httptest.ResponseRecorder) protocol.ListNodesResponse {
+	t.Helper()
+	var resp protocol.ListNodesResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode nodes response: %v", err)
+	}
+	return resp
+}
+
 func assertAPIError(t *testing.T, rec *httptest.ResponseRecorder, wantStatus int, wantCode string, wantMessage string) {
 	t.Helper()
 	assertStatus(t, rec, wantStatus)
@@ -2813,6 +2848,29 @@ func (s staticNodeStore) RecordHeartbeat(context.Context, protocol.HeartbeatRequ
 func (s staticNodeStore) ListNodes(context.Context) ([]protocol.NodeStatus, error) {
 	nodes := append([]protocol.NodeStatus(nil), s.nodes...)
 	return nodes, nil
+}
+
+func (s staticNodeStore) ListNodesFiltered(ctx context.Context, filter store.NodeFilter) (store.NodeList, error) {
+	nodes, err := s.ListNodes(ctx)
+	if err != nil {
+		return store.NodeList{}, err
+	}
+	filter = store.NormalizeNodeFilter(filter)
+	total := len(nodes)
+	start := filter.Offset
+	if start > total {
+		start = total
+	}
+	end := start + filter.Limit
+	if end > total {
+		end = total
+	}
+	return store.NodeList{
+		Nodes:  nodes[start:end],
+		Total:  total,
+		Limit:  filter.Limit,
+		Offset: filter.Offset,
+	}, nil
 }
 
 func (s staticNodeStore) NodeExists(context.Context, string) (bool, error) {

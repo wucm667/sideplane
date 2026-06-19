@@ -85,6 +85,30 @@ func (s *MemoryNodeStore) ListNodes(_ context.Context) ([]protocol.NodeStatus, e
 	return nodes, nil
 }
 
+// ListNodesFiltered returns a bounded, stable snapshot of known nodes.
+func (s *MemoryNodeStore) ListNodesFiltered(ctx context.Context, filter NodeFilter) (NodeList, error) {
+	nodes, err := s.ListNodes(ctx)
+	if err != nil {
+		return NodeList{}, err
+	}
+	filter = NormalizeNodeFilter(filter)
+	total := len(nodes)
+	start := filter.Offset
+	if start > total {
+		start = total
+	}
+	end := start + filter.Limit
+	if end > total {
+		end = total
+	}
+	return NodeList{
+		Nodes:  nodes[start:end],
+		Total:  total,
+		Limit:  filter.Limit,
+		Offset: filter.Offset,
+	}, nil
+}
+
 // NodeExists reports whether a node is known to the store.
 func (s *MemoryNodeStore) NodeExists(_ context.Context, nodeID string) (bool, error) {
 	nodeID = strings.TrimSpace(nodeID)

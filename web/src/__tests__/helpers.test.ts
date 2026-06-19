@@ -5,6 +5,7 @@ import {
   groupRows,
   jobBadgeClasses,
   latestConfigSnapshots,
+  normalizeNodeListResponse,
   snapshotForRuntime,
   stateBadgeClasses,
 } from '../helpers.ts'
@@ -117,6 +118,13 @@ describe('fleet helper summaries', () => {
 
     expect(snapshotForRuntime(runtime({ type: 'hermes', name: 'Hermes Agent' }), snapshots)?.runtimeType).toBe('hermes')
     expect(snapshotForRuntime(runtime({ name: 'custom-runtime' }), snapshots)?.runtimeName).toBe('custom-runtime')
+  })
+
+  it('normalizes paginated and legacy node list responses', () => {
+    const nodes = [node({ nodeId: 'node-a' })]
+
+    expect(normalizeNodeListResponse(nodes)).toEqual(nodes)
+    expect(normalizeNodeListResponse({ nodes, total: 1, limit: 100, offset: 0 })).toEqual(nodes)
   })
 })
 

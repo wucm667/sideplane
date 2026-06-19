@@ -366,12 +366,18 @@ func (h *handler) nodes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	nodes, err := h.store.ListNodes(r.Context())
+	filter, err := parseNodeFilter(r)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	nodeList, err := h.store.ListNodesFiltered(r.Context(), filter)
 	if err != nil {
 		writeAPIError(w, http.StatusInternalServerError, "list nodes")
 		return
 	}
-	h.applyFreshness(nodes)
+	h.applyFreshness(nodeList.Nodes)
 
 	desired, err := h.store.GetDesiredConfig(r.Context())
 	if err != nil {
@@ -379,25 +385,48 @@ func (h *handler) nodes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	response := make([]nodeStatusResponse, len(nodes))
-	for i, node := range nodes {
+	response := make([]protocol.NodeStatusWithDrift, len(nodeList.Nodes))
+	for i, node := range nodeList.Nodes {
 		drift, err := h.nodeHasConfigDrift(r.Context(), node.NodeID, desired)
 		if err != nil {
 			writeAPIError(w, http.StatusInternalServerError, "get actual config")
 			return
 		}
-		response[i] = nodeStatusResponse{
+		response[i] = protocol.NodeStatusWithDrift{
 			NodeStatus: node,
 			Drift:      drift,
 		}
 	}
 
-	writeJSON(w, http.StatusOK, response)
+	writeJSON(w, http.StatusOK, protocol.ListNodesResponse{
+		Nodes:  response,
+		Total:  nodeList.Total,
+		Limit:  nodeList.Limit,
+		Offset: nodeList.Offset,
+	})
 }
 
-type nodeStatusResponse struct {
-	protocol.NodeStatus
-	Drift bool `json:"drift"`
+func parseNodeFilter(r *http.Request) (store.NodeFilter, error) {
+	filter := store.NodeFilter{Limit: store.DefaultNodeListLimit}
+	query := r.URL.Query()
+	if limitValue := strings.TrimSpace(query.Get("limit")); limitValue != "" {
+		limit, err := strconv.Atoi(limitValue)
+		if err != nil || limit <= 0 {
+			return store.NodeFilter{}, fmt.Errorf("limit must be a positive integer")
+		}
+		if limit > store.MaxNodeListLimit {
+			limit = store.MaxNodeListLimit
+		}
+		filter.Limit = limit
+	}
+	if offsetValue := strings.TrimSpace(query.Get("offset")); offsetValue != "" {
+		offset, err := strconv.Atoi(offsetValue)
+		if err != nil || offset < 0 {
+			return store.NodeFilter{}, fmt.Errorf("offset must be a non-negative integer")
+		}
+		filter.Offset = offset
+	}
+	return filter, nil
 }
 
 func (h *handler) applyFreshness(nodes []protocol.NodeStatus) {

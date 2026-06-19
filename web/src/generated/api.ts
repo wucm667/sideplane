@@ -63,6 +63,13 @@ export interface NodeStatus {
 
 export type NodeStatusWithDrift = NodeStatus & { drift: boolean };
 
+export interface ListNodesResponse {
+  nodes: NodeStatusWithDrift[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
 export interface HeartbeatRequest {
   nodeId: string;
   hostname?: string;

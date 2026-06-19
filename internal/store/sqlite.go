@@ -194,7 +194,88 @@ ORDER BY node_id
 	if err != nil {
 		return nil, fmt.Errorf("query nodes: %w", err)
 	}
+	defer rows.Close()
 
+	nodes, indexByNodeID, err := scanSQLiteNodes(rows)
+	if err != nil {
+		return nil, err
+	}
+
+	runtimeRows, err := s.db.QueryContext(ctx, `
+SELECT node_id, name, type, version, state, provider, model, config_hash, last_error, warnings_json
+FROM node_runtimes
+ORDER BY node_id, runtime_index
+`)
+	if err != nil {
+		return nil, fmt.Errorf("query node runtimes: %w", err)
+	}
+	defer runtimeRows.Close()
+
+	if err := scanSQLiteNodeRuntimes(runtimeRows, nodes, indexByNodeID); err != nil {
+		return nil, err
+	}
+
+	return nodes, nil
+}
+
+// ListNodesFiltered returns a bounded, stable snapshot of known nodes.
+func (s *SQLiteNodeStore) ListNodesFiltered(ctx context.Context, filter NodeFilter) (NodeList, error) {
+	if s == nil || s.db == nil {
+		return NodeList{}, errors.New("sqlite node store is closed")
+	}
+	filter = NormalizeNodeFilter(filter)
+
+	var total int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM nodes`).Scan(&total); err != nil {
+		return NodeList{}, fmt.Errorf("count nodes: %w", err)
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+SELECT node_id, hostname, state, sidecar_version, last_heartbeat_at, config_hash, last_error
+FROM nodes
+ORDER BY node_id
+LIMIT ? OFFSET ?
+`, filter.Limit, filter.Offset)
+	if err != nil {
+		return NodeList{}, fmt.Errorf("query nodes: %w", err)
+	}
+	defer rows.Close()
+
+	nodes, indexByNodeID, err := scanSQLiteNodes(rows)
+	if err != nil {
+		return NodeList{}, err
+	}
+	if len(nodes) > 0 {
+		runtimeRows, err := s.db.QueryContext(ctx, `
+WITH page AS (
+	SELECT node_id
+	FROM nodes
+	ORDER BY node_id
+	LIMIT ? OFFSET ?
+)
+SELECT nr.node_id, nr.name, nr.type, nr.version, nr.state, nr.provider, nr.model, nr.config_hash, nr.last_error, nr.warnings_json
+FROM node_runtimes nr
+JOIN page ON page.node_id = nr.node_id
+ORDER BY nr.node_id, nr.runtime_index
+`, filter.Limit, filter.Offset)
+		if err != nil {
+			return NodeList{}, fmt.Errorf("query node runtimes: %w", err)
+		}
+		defer runtimeRows.Close()
+		if err := scanSQLiteNodeRuntimes(runtimeRows, nodes, indexByNodeID); err != nil {
+			return NodeList{}, err
+		}
+	}
+
+	return NodeList{
+		Nodes:  nodes,
+		Total:  total,
+		Limit:  filter.Limit,
+		Offset: filter.Offset,
+	}, nil
+}
+
+func scanSQLiteNodes(rows *sql.Rows) ([]protocol.NodeStatus, map[string]int, error) {
 	var nodes []protocol.NodeStatus
 	indexByNodeID := make(map[string]int)
 	for rows.Next() {
@@ -210,12 +291,12 @@ ORDER BY node_id
 			&node.ConfigHash,
 			&node.LastError,
 		); err != nil {
-			return nil, fmt.Errorf("scan node: %w", err)
+			return nil, nil, fmt.Errorf("scan node: %w", err)
 		}
 
 		parsed, err := parseDBTime(lastHeartbeatAt)
 		if err != nil {
-			return nil, fmt.Errorf("parse node %q heartbeat time: %w", node.NodeID, err)
+			return nil, nil, fmt.Errorf("parse node %q heartbeat time: %w", node.NodeID, err)
 		}
 		node.State = protocol.NodeState(state)
 		node.LastHeartbeatAt = parsed
@@ -224,27 +305,17 @@ ORDER BY node_id
 		nodes = append(nodes, node)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate nodes: %w", err)
+		return nil, nil, fmt.Errorf("iterate nodes: %w", err)
 	}
-	if err := rows.Close(); err != nil {
-		return nil, fmt.Errorf("close node rows: %w", err)
-	}
+	return nodes, indexByNodeID, nil
+}
 
-	runtimeRows, err := s.db.QueryContext(ctx, `
-SELECT node_id, name, type, version, state, provider, model, config_hash, last_error, warnings_json
-FROM node_runtimes
-ORDER BY node_id, runtime_index
-`)
-	if err != nil {
-		return nil, fmt.Errorf("query node runtimes: %w", err)
-	}
-	defer runtimeRows.Close()
-
-	for runtimeRows.Next() {
+func scanSQLiteNodeRuntimes(rows *sql.Rows, nodes []protocol.NodeStatus, indexByNodeID map[string]int) error {
+	for rows.Next() {
 		var nodeID string
 		var runtime protocol.RuntimeStatus
 		var warningsJSON string
-		if err := runtimeRows.Scan(
+		if err := rows.Scan(
 			&nodeID,
 			&runtime.Name,
 			&runtime.Type,
@@ -256,11 +327,11 @@ ORDER BY node_id, runtime_index
 			&runtime.LastError,
 			&warningsJSON,
 		); err != nil {
-			return nil, fmt.Errorf("scan node runtime: %w", err)
+			return fmt.Errorf("scan node runtime: %w", err)
 		}
 		if strings.TrimSpace(warningsJSON) != "" {
 			if err := json.Unmarshal([]byte(warningsJSON), &runtime.Warnings); err != nil {
-				return nil, fmt.Errorf("parse node runtime warnings: %w", err)
+				return fmt.Errorf("parse node runtime warnings: %w", err)
 			}
 		}
 
@@ -270,11 +341,10 @@ ORDER BY node_id, runtime_index
 		}
 		nodes[i].Runtimes = append(nodes[i].Runtimes, runtime)
 	}
-	if err := runtimeRows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate node runtimes: %w", err)
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate node runtimes: %w", err)
 	}
-
-	return nodes, nil
+	return nil
 }
 
 // NodeExists reports whether a node is known to the store.

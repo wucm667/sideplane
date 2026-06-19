@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { AuditEvent, AuditFilters, ConfigApplyResult, DeepProbeResult, EffectiveConfigResponse, Job, JobStatus, ListAuditEventsResponse, NodeState, NodeStatus, RestartRequest, RollbackRequest, RuntimeConfigSnapshot, RuntimeStatus } from './types.ts'
+import type { AuditEvent, AuditFilters, ConfigApplyResult, DeepProbeResult, EffectiveConfigResponse, Job, JobStatus, ListAuditEventsResponse, ListNodesResponse, NodeState, NodeStatus, RestartRequest, RollbackRequest, RuntimeConfigSnapshot, RuntimeStatus } from './types.ts'
 
 const NODE_REFRESH_MS = 10_000
 const ACTIVE_JOB_REFRESH_MS = 2_000
@@ -226,6 +226,10 @@ export function snapshotForRuntime(runtime: RuntimeStatus, snapshots: RuntimeCon
   })
 }
 
+export function normalizeNodeListResponse(payload: NodeStatus[] | ListNodesResponse): NodeStatus[] {
+  return Array.isArray(payload) ? payload : payload.nodes
+}
+
 export function useFleetPageController() {
   const [nodes, setNodes] = useState<NodeStatus[] | null>(null)
   const [jobsByNode, setJobsByNode] = useState<Record<string, Job[]>>({})
@@ -344,7 +348,8 @@ export function useFleetPageController() {
     if (!res.ok) {
       throw new Error(await apiErrorMessage(res))
     }
-    const data: NodeStatus[] = await res.json()
+    const payload = (await res.json()) as NodeStatus[] | ListNodesResponse
+    const data = normalizeNodeListResponse(payload)
     if (!mountedRef.current) return null
     setNodes(data)
     setError(null)

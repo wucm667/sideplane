@@ -82,15 +82,15 @@ func TestFleetStatusPrintsCompactTable(t *testing.T) {
 }
 
 func TestFleetStatusJSONOutput(t *testing.T) {
-	nodes := []cliNodeStatus{{
+	response := cliListNodesResponse{Nodes: []cliNodeStatus{{
 		NodeStatus: protocol.NodeStatus{
 			NodeID:          "node-json",
 			State:           protocol.NodeStateFresh,
 			LastHeartbeatAt: time.Now().UTC(),
 		},
 		Drift: true,
-	}}
-	server := httptest.NewServer(jsonHandler(t, http.MethodGet, "/api/nodes", nodes))
+	}}, Total: 1, Limit: 100, Offset: 0}
+	server := httptest.NewServer(jsonHandler(t, http.MethodGet, "/api/nodes", response))
 	defer server.Close()
 
 	var stdout bytes.Buffer
@@ -99,11 +99,11 @@ func TestFleetStatusJSONOutput(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("run returned %d, stderr=%q", code, stderr.String())
 	}
-	var got []cliNodeStatus
+	var got cliListNodesResponse
 	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
 		t.Fatalf("decode JSON output: %v\n%s", err, stdout.String())
 	}
-	if len(got) != 1 || got[0].NodeID != "node-json" || !got[0].Drift {
+	if got.Total != 1 || got.Limit != 100 || got.Offset != 0 || len(got.Nodes) != 1 || got.Nodes[0].NodeID != "node-json" || !got.Nodes[0].Drift {
 		t.Fatalf("nodes = %#v, want node-json with drift", got)
 	}
 }
@@ -181,6 +181,33 @@ func TestNodeInspectJSONAndMissingNode(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), `node "missing" not found`) {
 		t.Fatalf("stderr = %q, want missing node message", stderr.String())
+	}
+}
+
+func TestNodeInspectReadsPaginatedNodeListResponse(t *testing.T) {
+	response := cliListNodesResponse{Nodes: []cliNodeStatus{{
+		NodeStatus: protocol.NodeStatus{
+			NodeID:          "node-a",
+			State:           protocol.NodeStateFresh,
+			LastHeartbeatAt: time.Now().UTC(),
+		},
+		Drift: true,
+	}}, Total: 1, Limit: 100, Offset: 0}
+	server := httptest.NewServer(jsonHandler(t, http.MethodGet, "/api/nodes", response))
+	defer server.Close()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"node", "inspect", "node-a", "--server", server.URL, "--json"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("run returned %d, stderr=%q", code, stderr.String())
+	}
+	var got cliNodeStatus
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode JSON output: %v\n%s", err, stdout.String())
+	}
+	if got.NodeID != "node-a" || !got.Drift {
+		t.Fatalf("node = %#v, want drifted node-a", got)
 	}
 }
 
