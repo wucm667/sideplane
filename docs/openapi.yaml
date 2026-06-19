@@ -625,6 +625,10 @@ components:
           type: string
         lastError:
           type: string
+        warnings:
+          type: array
+          items:
+            type: string
     NodeStatus:
       type: object
       required: [nodeId, state, lastHeartbeatAt]

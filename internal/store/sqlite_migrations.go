@@ -144,6 +144,13 @@ ON heartbeats(node_id, observed_at DESC)`,
 	)`,
 		},
 	},
+	{
+		version: 7,
+		name:    "add runtime warnings",
+		statements: []string{
+			`ALTER TABLE node_runtimes ADD COLUMN warnings_json TEXT NOT NULL DEFAULT ''`,
+		},
+	},
 }
 
 // LatestSQLiteSchemaVersion returns the newest migration version compiled into

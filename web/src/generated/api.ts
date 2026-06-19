@@ -47,6 +47,7 @@ export interface RuntimeStatus {
   model?: string;
   configHash?: string;
   lastError?: string;
+  warnings?: string[];
 }
 
 export interface NodeStatus {

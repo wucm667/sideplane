@@ -48,6 +48,33 @@ func TestRuntimeConfigSnapshotJSONShape(t *testing.T) {
 	}
 }
 
+func TestRuntimeStatusJSONShape(t *testing.T) {
+	status := RuntimeStatus{
+		Name:       "hermes",
+		Type:       "hermes",
+		State:      "present",
+		Provider:   "openai",
+		Model:      "gpt-5",
+		ConfigHash: "sha256:abc",
+		Warnings:   []string{"config path unreadable"},
+	}
+
+	payload, err := json.Marshal(status)
+	if err != nil {
+		t.Fatalf("marshal runtime status: %v", err)
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(payload, &got); err != nil {
+		t.Fatalf("unmarshal runtime status: %v", err)
+	}
+	for _, key := range []string{"name", "type", "state", "provider", "model", "configHash", "warnings"} {
+		if _, ok := got[key]; !ok {
+			t.Fatalf("runtime status JSON omits %q: %s", key, payload)
+		}
+	}
+}
+
 func TestDesiredConfigJSONShape(t *testing.T) {
 	desired := DesiredConfig{
 		Global: ProviderModelConfig{Provider: "openai", Model: "gpt-5"},

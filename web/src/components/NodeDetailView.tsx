@@ -562,7 +562,7 @@ function MetricCard({ label, value, title, monospace = false, muted = false, ton
 }
 
 function RuntimeCard({ runtime, snapshot }: { runtime: RuntimeStatus; snapshot?: RuntimeConfigSnapshot }) {
-  const warnings = [...(snapshot?.warnings ?? [])]
+  const warnings = [...(runtime.warnings ?? []), ...(snapshot?.warnings ?? [])]
   if (runtime.lastError) warnings.unshift(runtime.lastError)
 
   return (

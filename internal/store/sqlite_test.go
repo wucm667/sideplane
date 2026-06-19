@@ -42,6 +42,7 @@ func TestSQLiteNodeStoreMigratesAndPersistsHeartbeat(t *testing.T) {
 	assertSQLiteMigrationApplied(t, ctx, first.db, 4)
 	assertSQLiteMigrationApplied(t, ctx, first.db, 5)
 	assertSQLiteMigrationApplied(t, ctx, first.db, 6)
+	assertSQLiteMigrationApplied(t, ctx, first.db, 7)
 
 	observedAt := time.Date(2026, 6, 16, 1, 2, 3, 0, time.UTC)
 	sentAt := observedAt.Add(-time.Second)
@@ -58,6 +59,7 @@ func TestSQLiteNodeStoreMigratesAndPersistsHeartbeat(t *testing.T) {
 				Provider:   "openai",
 				Model:      "gpt-5",
 				ConfigHash: "sha256:runtime",
+				Warnings:   []string{"config path unreadable"},
 			},
 		},
 		ConfigHash: "sha256:node",
@@ -1124,6 +1126,9 @@ func assertSQLiteNodeSnapshot(t *testing.T, nodes []protocol.NodeStatus, observe
 	}
 	if nodes[0].Runtimes[0].Type != "openclaw" {
 		t.Fatalf("runtime type = %q, want openclaw", nodes[0].Runtimes[0].Type)
+	}
+	if len(nodes[0].Runtimes[0].Warnings) != 1 || nodes[0].Runtimes[0].Warnings[0] != "config path unreadable" {
+		t.Fatalf("runtime warnings = %#v, want config path unreadable", nodes[0].Runtimes[0].Warnings)
 	}
 }
 

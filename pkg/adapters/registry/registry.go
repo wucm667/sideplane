@@ -39,8 +39,46 @@ func (r *Registry) CollectStatuses(ctx context.Context) []protocol.RuntimeStatus
 			continue
 		}
 		if status.Name != "" || status.Type != "" {
+			status.Warnings = appendRuntimeWarnings(status.Warnings, r.configSnapshotWarnings(ctx, a, status)...)
 			out = append(out, status)
 		}
+	}
+	return out
+}
+
+func (r *Registry) configSnapshotWarnings(ctx context.Context, a adapters.RuntimeAdapter, status protocol.RuntimeStatus) []string {
+	snapshots, err := a.ConfigSnapshots(ctx)
+	if err != nil {
+		return []string{err.Error()}
+	}
+	var warnings []string
+	for _, snapshot := range snapshots {
+		if snapshot.RuntimeName != "" && status.Name != "" && snapshot.RuntimeName != status.Name {
+			continue
+		}
+		if snapshot.RuntimeType != "" && status.Type != "" && snapshot.RuntimeType != status.Type {
+			continue
+		}
+		warnings = append(warnings, snapshot.Warnings...)
+	}
+	return warnings
+}
+
+func appendRuntimeWarnings(existing []string, next ...string) []string {
+	seen := map[string]struct{}{}
+	out := append([]string(nil), existing...)
+	for _, warning := range out {
+		seen[warning] = struct{}{}
+	}
+	for _, warning := range next {
+		if warning == "" {
+			continue
+		}
+		if _, ok := seen[warning]; ok {
+			continue
+		}
+		seen[warning] = struct{}{}
+		out = append(out, warning)
 	}
 	return out
 }

@@ -3,6 +3,7 @@ package registry
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/wucm667/sideplane/pkg/adapters"
@@ -83,6 +84,36 @@ func TestRegistrySurfacesAdapterErrorWithoutFailing(t *testing.T) {
 	}
 	if statuses[1].State != "present" {
 		t.Fatalf("statuses[1].State = %q, want present", statuses[1].State)
+	}
+}
+
+func TestRegistryMergesConfigSnapshotWarningsIntoStatus(t *testing.T) {
+	reg := New(
+		&fakeAdapter{
+			name:     "hermes",
+			typ:      "hermes",
+			detected: true,
+			status: protocol.RuntimeStatus{
+				Name:     "hermes",
+				Type:     "hermes",
+				State:    "present",
+				Warnings: []string{"existing warning"},
+			},
+			snapshots: []protocol.RuntimeConfigSnapshot{{
+				RuntimeName: "hermes",
+				RuntimeType: "hermes",
+				Warnings:    []string{"existing warning", "config path unreadable"},
+			}},
+		},
+	)
+
+	statuses := reg.CollectStatuses(context.Background())
+	if len(statuses) != 1 {
+		t.Fatalf("len(statuses) = %d, want 1", len(statuses))
+	}
+	want := []string{"existing warning", "config path unreadable"}
+	if strings.Join(statuses[0].Warnings, "|") != strings.Join(want, "|") {
+		t.Fatalf("warnings = %#v, want %#v", statuses[0].Warnings, want)
 	}
 }
 

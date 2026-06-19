@@ -1252,11 +1252,11 @@ func printNodeInspect(w io.Writer, node cliNodeStatus) {
 		return
 	}
 	table := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(table, "  NAME\tTYPE\tSTATE\tVERSION\tPROVIDER\tMODEL\tCONFIG HASH\tLAST ERROR")
+	fmt.Fprintln(table, "  NAME\tTYPE\tSTATE\tVERSION\tPROVIDER\tMODEL\tCONFIG HASH\tWARNINGS\tLAST ERROR")
 	for _, runtime := range node.Runtimes {
 		fmt.Fprintf(
 			table,
-			"  %s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			"  %s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			valueOrDash(runtime.Name),
 			valueOrDash(runtime.Type),
 			valueOrDash(runtime.State),
@@ -1264,10 +1264,18 @@ func printNodeInspect(w io.Writer, node cliNodeStatus) {
 			valueOrDash(runtime.Provider),
 			valueOrDash(runtime.Model),
 			valueOrDash(runtime.ConfigHash),
+			warningsLabel(runtime.Warnings),
 			valueOrDash(runtime.LastError),
 		)
 	}
 	table.Flush()
+}
+
+func warningsLabel(warnings []string) string {
+	if len(warnings) == 0 {
+		return "-"
+	}
+	return strings.Join(warnings, "; ")
 }
 
 func printJobsTable(w io.Writer, jobs []protocol.Job) {

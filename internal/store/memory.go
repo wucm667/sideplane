@@ -51,7 +51,7 @@ func (s *MemoryNodeStore) RecordHeartbeat(_ context.Context, req protocol.Heartb
 		State:           protocol.NodeStateFresh,
 		SidecarVersion:  req.SidecarVersion,
 		LastHeartbeatAt: observedAt,
-		Runtimes:        append([]protocol.RuntimeStatus(nil), req.Runtimes...),
+		Runtimes:        cloneRuntimeStatuses(req.Runtimes),
 		ConfigHash:      req.ConfigHash,
 		LastError:       req.LastError,
 	}
@@ -74,7 +74,7 @@ func (s *MemoryNodeStore) ListNodes(_ context.Context) ([]protocol.NodeStatus, e
 
 	nodes := make([]protocol.NodeStatus, 0, len(s.nodes))
 	for _, node := range s.nodes {
-		node.Runtimes = append([]protocol.RuntimeStatus(nil), node.Runtimes...)
+		node.Runtimes = cloneRuntimeStatuses(node.Runtimes)
 		nodes = append(nodes, node)
 	}
 
@@ -616,6 +616,18 @@ func cloneDesiredConfig(desired protocol.DesiredConfig) protocol.DesiredConfig {
 		for key, value := range desired.NodeRuntimeProfileOverrides {
 			clone.NodeRuntimeProfileOverrides[key] = value
 		}
+	}
+	return clone
+}
+
+func cloneRuntimeStatuses(runtimes []protocol.RuntimeStatus) []protocol.RuntimeStatus {
+	if runtimes == nil {
+		return nil
+	}
+	clone := make([]protocol.RuntimeStatus, len(runtimes))
+	copy(clone, runtimes)
+	for i := range clone {
+		clone[i].Warnings = append([]string(nil), clone[i].Warnings...)
 	}
 	return clone
 }

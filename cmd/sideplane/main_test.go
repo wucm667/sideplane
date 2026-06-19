@@ -99,6 +99,7 @@ func TestNodeInspectPrintsNodeDetail(t *testing.T) {
 				Provider:   "openai",
 				Model:      "gpt-4o",
 				ConfigHash: "sha256:def",
+				Warnings:   []string{"config path unreadable"},
 			}},
 		},
 		Drift: true,
@@ -113,7 +114,7 @@ func TestNodeInspectPrintsNodeDetail(t *testing.T) {
 		t.Fatalf("run returned %d, stderr=%q", code, stderr.String())
 	}
 	output := stdout.String()
-	for _, want := range []string{"Node: node-a", "Hostname: host-a", "Drift: yes", "hermes", "openai", "gpt-4o"} {
+	for _, want := range []string{"Node: node-a", "Hostname: host-a", "Drift: yes", "hermes", "openai", "gpt-4o", "config path unreadable"} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("output missing %q:\n%s", want, output)
 		}

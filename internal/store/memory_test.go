@@ -23,7 +23,7 @@ func TestMemoryNodeStoreRecordsAndListsNodes(t *testing.T) {
 	if _, err := store.RecordHeartbeat(ctx, protocol.HeartbeatRequest{
 		NodeID:   "node-a",
 		Hostname: "worker-a",
-		Runtimes: []protocol.RuntimeStatus{{Name: "default", Type: "hermes"}},
+		Runtimes: []protocol.RuntimeStatus{{Name: "default", Type: "hermes", Warnings: []string{"config path unreadable"}}},
 	}, now.Add(time.Second)); err != nil {
 		t.Fatalf("record node-a heartbeat: %v", err)
 	}
@@ -43,12 +43,16 @@ func TestMemoryNodeStoreRecordsAndListsNodes(t *testing.T) {
 	}
 
 	nodes[0].Runtimes[0].Type = "mutated"
+	nodes[0].Runtimes[0].Warnings[0] = "mutated"
 	again, err := store.ListNodes(ctx)
 	if err != nil {
 		t.Fatalf("list nodes again: %v", err)
 	}
 	if again[0].Runtimes[0].Type != "hermes" {
 		t.Fatalf("store snapshot was mutated: %#v", again[0].Runtimes)
+	}
+	if len(again[0].Runtimes[0].Warnings) != 1 || again[0].Runtimes[0].Warnings[0] != "config path unreadable" {
+		t.Fatalf("runtime warnings = %#v, want preserved warning", again[0].Runtimes[0].Warnings)
 	}
 }
 

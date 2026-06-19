@@ -12,7 +12,6 @@ import (
 	"testing"
 
 	"github.com/wucm667/sideplane/pkg/adapters"
-	"github.com/wucm667/sideplane/pkg/protocol"
 )
 
 func newTestAdapter(paths ...string) *Adapter {
@@ -93,13 +92,8 @@ func TestAdapterStatusPresentWhenFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Status error = %v, want nil", err)
 	}
-	want := protocol.RuntimeStatus{
-		Name:  AdapterName,
-		Type:  AdapterType,
-		State: "present",
-	}
-	if status != want {
-		t.Fatalf("status = %+v, want %+v", status, want)
+	if status.Name != AdapterName || status.Type != AdapterType || status.State != "present" {
+		t.Fatalf("status = %+v, want present openclaw runtime", status)
 	}
 }
 

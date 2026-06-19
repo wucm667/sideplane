@@ -131,6 +131,14 @@ ON CONFLICT(node_id) DO UPDATE SET
 	}
 
 	for i, runtime := range node.Runtimes {
+		warningsJSON := ""
+		if len(runtime.Warnings) > 0 {
+			payload, err := json.Marshal(runtime.Warnings)
+			if err != nil {
+				return protocol.NodeStatus{}, fmt.Errorf("marshal runtime %d warnings: %w", i, err)
+			}
+			warningsJSON = string(payload)
+		}
 		_, err := tx.ExecContext(ctx, `
 INSERT INTO node_runtimes (
 	node_id,
@@ -143,9 +151,10 @@ INSERT INTO node_runtimes (
 	model,
 	config_hash,
 	last_error,
+	warnings_json,
 	updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-`, node.NodeID, i, runtime.Name, runtime.Type, runtime.Version, runtime.State, runtime.Provider, runtime.Model, runtime.ConfigHash, runtime.LastError, now)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`, node.NodeID, i, runtime.Name, runtime.Type, runtime.Version, runtime.State, runtime.Provider, runtime.Model, runtime.ConfigHash, runtime.LastError, warningsJSON, now)
 		if err != nil {
 			return protocol.NodeStatus{}, fmt.Errorf("insert runtime %d: %w", i, err)
 		}
@@ -222,7 +231,7 @@ ORDER BY node_id
 	}
 
 	runtimeRows, err := s.db.QueryContext(ctx, `
-SELECT node_id, name, type, version, state, provider, model, config_hash, last_error
+SELECT node_id, name, type, version, state, provider, model, config_hash, last_error, warnings_json
 FROM node_runtimes
 ORDER BY node_id, runtime_index
 `)
@@ -234,6 +243,7 @@ ORDER BY node_id, runtime_index
 	for runtimeRows.Next() {
 		var nodeID string
 		var runtime protocol.RuntimeStatus
+		var warningsJSON string
 		if err := runtimeRows.Scan(
 			&nodeID,
 			&runtime.Name,
@@ -244,8 +254,14 @@ ORDER BY node_id, runtime_index
 			&runtime.Model,
 			&runtime.ConfigHash,
 			&runtime.LastError,
+			&warningsJSON,
 		); err != nil {
 			return nil, fmt.Errorf("scan node runtime: %w", err)
+		}
+		if strings.TrimSpace(warningsJSON) != "" {
+			if err := json.Unmarshal([]byte(warningsJSON), &runtime.Warnings); err != nil {
+				return nil, fmt.Errorf("parse node runtime warnings: %w", err)
+			}
 		}
 
 		i, ok := indexByNodeID[nodeID]
