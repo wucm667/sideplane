@@ -35,10 +35,11 @@ const (
 // reachable only when AllowLiveApply is true AND the plan explicitly requests
 // live mode. With AllowLiveApply false the live branch is never entered.
 type ConfigApplyExecutor struct {
-	NodeID         string
-	PublicKey      string
-	WorkDir        string
-	AllowLiveApply bool
+	NodeID            string
+	PublicKey         string
+	WorkDir           string
+	AllowedConfigDirs []string
+	AllowLiveApply    bool
 	// Controller restarts the runtime and verifies its health after a live
 	// replace. Live apply requires a controller so replacement is followed by
 	// restart and health-check; a failure in either step triggers rollback.
@@ -106,14 +107,14 @@ func (e ConfigApplyExecutor) Execute(ctx context.Context, signedPlan protocol.Si
 			addStep("validated", "failed", err.Error())
 			return result, err
 		}
-		if err := rejectLiveSymlinkPath(configPath); err != nil {
+		if err := validateLiveConfigPath(configPath, e.AllowedConfigDirs); err != nil {
 			addStep("validated", "failed", err.Error())
 			return result, err
 		}
 	}
 	workDir := strings.TrimSpace(e.WorkDir)
 	if workDir == "" {
-		workDir = filepath.Join(os.TempDir(), "sideplane-apply")
+		workDir = defaultApplyWorkDir()
 	}
 	if err := rejectDuplicatePlanRun(workDir, signedPlan.Plan.ID); err != nil {
 		addStep("validated", "failed", err.Error())
@@ -121,7 +122,9 @@ func (e ConfigApplyExecutor) Execute(ctx context.Context, signedPlan protocol.Si
 	}
 	readFile := e.ReadFile
 	if readFile == nil {
-		readFile = os.ReadFile
+		readFile = func(path string) ([]byte, error) {
+			return readConfigFile(path, live)
+		}
 	}
 	contents, err := readFile(configPath)
 	if err != nil {
@@ -254,13 +257,24 @@ func configWasMutated(err error) bool {
 	return errors.As(err, &mutated)
 }
 
-func rejectLiveSymlinkPath(path string) error {
+func validateLiveConfigPath(path string, allowedDirs []string) error {
+	if err := rejectPathOutsideAllowedDirs(path, allowedDirs, "config path"); err != nil {
+		return err
+	}
+	if len(nonEmptyPaths(allowedDirs)) > 0 {
+		if err := rejectSymlinkComponentsUnderAllowedDirs(path, allowedDirs, "config path"); err != nil {
+			return err
+		}
+	}
 	info, err := os.Lstat(path)
 	if err != nil {
 		return fmt.Errorf("inspect config path: %w", err)
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
 		return fmt.Errorf("live apply refuses symlink config path %q until target resolution is implemented", path)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("config path %q is not a regular file", path)
 	}
 	return nil
 }
@@ -285,6 +299,9 @@ func rejectDuplicatePlanRun(workDir string, planID string) error {
 func (e ConfigApplyExecutor) validateSignedPlan(plan protocol.ConfigPlan, now time.Time) error {
 	if strings.TrimSpace(plan.ID) == "" {
 		return errors.New("plan id is required")
+	}
+	if !safePathToken(plan.ID) {
+		return fmt.Errorf("plan id %q is not a safe path token", plan.ID)
 	}
 	if plan.Schema != protocol.ConfigPlanSchema {
 		return fmt.Errorf("unsupported plan schema %q", plan.Schema)
@@ -432,6 +449,128 @@ func configExt(path string) string {
 	return ".tmp"
 }
 
+func defaultApplyWorkDir() string {
+	return filepath.Join(os.TempDir(), "sideplane-apply")
+}
+
+func readConfigFile(path string, live bool) ([]byte, error) {
+	if live {
+		return readRegularFile(path, "config path")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, fmt.Errorf("inspect config path: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("config path %q is not a regular file", path)
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read config: %w", err)
+	}
+	return contents, nil
+}
+
+func rejectPathOutsideAllowedDirs(path string, allowedDirs []string, label string) error {
+	if len(nonEmptyPaths(allowedDirs)) == 0 {
+		return nil
+	}
+	_, err := matchingAllowedDir(path, allowedDirs, label)
+	return err
+}
+
+func matchingAllowedDir(path string, allowedDirs []string, label string) (string, error) {
+	cleanPath, err := cleanAbsPath(path, label)
+	if err != nil {
+		return "", err
+	}
+	for _, allowed := range allowedDirs {
+		allowed = strings.TrimSpace(allowed)
+		if allowed == "" {
+			continue
+		}
+		cleanAllowed, err := cleanAbsPath(allowed, "allowed directory")
+		if err != nil {
+			return "", err
+		}
+		if pathInsideDir(cleanPath, cleanAllowed) {
+			return cleanAllowed, nil
+		}
+	}
+	return "", fmt.Errorf("%s %q is outside allowed directories", label, path)
+}
+
+func pathInsideDir(cleanPath string, cleanDir string) bool {
+	rel, err := filepath.Rel(cleanDir, cleanPath)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator))
+}
+
+func nonEmptyPaths(paths []string) []string {
+	out := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if strings.TrimSpace(path) != "" {
+			out = append(out, path)
+		}
+	}
+	return out
+}
+
+func cleanAbsPath(path string, label string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", fmt.Errorf("%s is required", label)
+	}
+	cleaned := filepath.Clean(path)
+	if !filepath.IsAbs(cleaned) {
+		return "", fmt.Errorf("%s %q must be absolute", label, path)
+	}
+	return cleaned, nil
+}
+
+func rejectSymlinkComponentsUnderAllowedDirs(path string, allowedDirs []string, label string) error {
+	cleaned, err := cleanAbsPath(path, label)
+	if err != nil {
+		return err
+	}
+	root, err := matchingAllowedDir(path, allowedDirs, label)
+	if err != nil {
+		return err
+	}
+	for current := cleaned; ; current = filepath.Dir(current) {
+		info, err := os.Lstat(current)
+		if err != nil {
+			return fmt.Errorf("inspect %s: %w", label, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("%s %q includes symlink component %q", label, path, current)
+		}
+		if current == root {
+			return nil
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return fmt.Errorf("%s %q is outside allowed directories", label, path)
+		}
+	}
+}
+
+func safePathToken(value string) bool {
+	if value == "" || value == "." || value == ".." {
+		return false
+	}
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == '_' || r == '-':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 func (p *JobPoller) executeConfigApply(ctx context.Context, job *protocol.Job) protocol.JobResultRequest {
 	logger := p.jobLogger()
 	var signedPlan protocol.SignedConfigPlan
@@ -440,7 +579,7 @@ func (p *JobPoller) executeConfigApply(ctx context.Context, job *protocol.Job) p
 		return protocol.JobResultRequest{Status: protocol.JobStatusFailed, Error: fmt.Sprintf("parse config_apply payload: %v", err)}
 	}
 	logger.Info("config_apply execution started", "job_id", job.ID, "node_id", p.nodeID, "plan_id", signedPlan.Plan.ID, "mode", signedPlan.Plan.Mode, "dry_run", signedPlan.Plan.Body.DryRun)
-	executor := ConfigApplyExecutor{NodeID: p.nodeID, PublicKey: p.publicKey, WorkDir: p.applyWorkDir, AllowLiveApply: p.allowLiveApply, Controller: p.controller}
+	executor := ConfigApplyExecutor{NodeID: p.nodeID, PublicKey: p.publicKey, WorkDir: p.applyWorkDir, AllowedConfigDirs: p.allowedConfigDirs, AllowLiveApply: p.allowLiveApply, Controller: p.controller}
 	result, err := executor.Execute(ctx, signedPlan)
 	payload, marshalErr := json.Marshal(result)
 	if marshalErr != nil {

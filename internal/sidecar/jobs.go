@@ -18,33 +18,35 @@ import (
 
 // JobPollerConfig configures a sidecar job poller.
 type JobPollerConfig struct {
-	ServerURL       string
-	NodeID          string
-	NodeCredential  string
-	PublicKey       string
-	ApplyWorkDir    string
-	AllowLiveApply  bool
-	Controller      adapters.ServiceController
-	HTTPClient      *http.Client
-	Collector       adapters.RuntimeCollector
-	ConfigCollector adapters.ConfigSnapshotCollector
-	Logger          *slog.Logger
+	ServerURL         string
+	NodeID            string
+	NodeCredential    string
+	PublicKey         string
+	ApplyWorkDir      string
+	AllowedConfigDirs []string
+	AllowLiveApply    bool
+	Controller        adapters.ServiceController
+	HTTPClient        *http.Client
+	Collector         adapters.RuntimeCollector
+	ConfigCollector   adapters.ConfigSnapshotCollector
+	Logger            *slog.Logger
 }
 
 // JobPoller polls for jobs from the server and executes them.
 type JobPoller struct {
-	serverURL       string
-	endpoint        string
-	nodeID          string
-	nodeCredential  string
-	publicKey       string
-	applyWorkDir    string
-	allowLiveApply  bool
-	controller      adapters.ServiceController
-	httpClient      *http.Client
-	collector       adapters.RuntimeCollector
-	configCollector adapters.ConfigSnapshotCollector
-	logger          *slog.Logger
+	serverURL         string
+	endpoint          string
+	nodeID            string
+	nodeCredential    string
+	publicKey         string
+	applyWorkDir      string
+	allowedConfigDirs []string
+	allowLiveApply    bool
+	controller        adapters.ServiceController
+	httpClient        *http.Client
+	collector         adapters.RuntimeCollector
+	configCollector   adapters.ConfigSnapshotCollector
+	logger            *slog.Logger
 }
 
 // NewJobPoller creates a new job poller.
@@ -82,18 +84,19 @@ func NewJobPoller(cfg JobPollerConfig) (*JobPoller, error) {
 	}
 
 	return &JobPoller{
-		serverURL:       serverURL,
-		endpoint:        endpoint,
-		nodeID:          cfg.NodeID,
-		nodeCredential:  cfg.NodeCredential,
-		publicKey:       strings.TrimSpace(cfg.PublicKey),
-		applyWorkDir:    strings.TrimSpace(cfg.ApplyWorkDir),
-		allowLiveApply:  cfg.AllowLiveApply,
-		controller:      cfg.Controller,
-		httpClient:      httpClient,
-		collector:       cfg.Collector,
-		configCollector: configCollector,
-		logger:          logger,
+		serverURL:         serverURL,
+		endpoint:          endpoint,
+		nodeID:            cfg.NodeID,
+		nodeCredential:    cfg.NodeCredential,
+		publicKey:         strings.TrimSpace(cfg.PublicKey),
+		applyWorkDir:      strings.TrimSpace(cfg.ApplyWorkDir),
+		allowedConfigDirs: append([]string(nil), cfg.AllowedConfigDirs...),
+		allowLiveApply:    cfg.AllowLiveApply,
+		controller:        cfg.Controller,
+		httpClient:        httpClient,
+		collector:         cfg.Collector,
+		configCollector:   configCollector,
+		logger:            logger,
 	}, nil
 }
 

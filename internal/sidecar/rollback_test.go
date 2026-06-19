@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/wucm667/sideplane/pkg/protocol"
@@ -24,7 +25,7 @@ func TestRollbackDryRunReadsBackupWithoutRestoring(t *testing.T) {
 		DryRun:      true,
 	})
 
-	result := (&JobPoller{}).executeJob(context.Background(), &job)
+	result := (&JobPoller{applyWorkDir: dir}).executeJob(context.Background(), &job)
 	if result.Status != protocol.JobStatusCompleted {
 		t.Fatalf("rollback status = %q, want completed; error=%q", result.Status, result.Error)
 	}
@@ -57,7 +58,7 @@ func TestRollbackLiveRejectedWithoutAllowLive(t *testing.T) {
 		DryRun:      false,
 	})
 
-	result := (&JobPoller{controller: controller}).executeJob(context.Background(), &job)
+	result := (&JobPoller{applyWorkDir: dir, controller: controller}).executeJob(context.Background(), &job)
 	if result.Status != protocol.JobStatusFailed {
 		t.Fatalf("rollback status = %q, want failed", result.Status)
 	}
@@ -73,6 +74,163 @@ func TestRollbackLiveRejectedWithoutAllowLive(t *testing.T) {
 	}
 	if string(gotConfig) != string(original) {
 		t.Fatalf("policy rejection mutated config: %q", gotConfig)
+	}
+}
+
+func TestRollbackRejectsBackupPathTraversalOutsideWorkDir(t *testing.T) {
+	baseDir := t.TempDir()
+	workDir := filepath.Join(baseDir, "work")
+	outsideDir := filepath.Join(baseDir, "outside")
+	if err := os.MkdirAll(workDir, 0o700); err != nil {
+		t.Fatalf("mkdir work dir: %v", err)
+	}
+	if err := os.MkdirAll(outsideDir, 0o700); err != nil {
+		t.Fatalf("mkdir outside dir: %v", err)
+	}
+	configPath, original := writeHermesConfig(t, baseDir)
+	backupPath := writeRollbackBackup(t, outsideDir, "backup.yaml")
+	traversalBackupPath := filepath.Join(workDir, "..", "outside", filepath.Base(backupPath))
+	job := rollbackJobForTest(t, protocol.RollbackJobPayload{
+		RuntimeType: "hermes",
+		BackupRef:   "config_apply:job_apply:plan_rollback",
+		ConfigPath:  configPath,
+		BackupPath:  traversalBackupPath,
+		DryRun:      true,
+	})
+
+	result := (&JobPoller{applyWorkDir: workDir}).executeJob(context.Background(), &job)
+	if result.Status != protocol.JobStatusFailed {
+		t.Fatalf("rollback status = %q, want failed", result.Status)
+	}
+	if !strings.Contains(result.Error, "outside allowed directories") {
+		t.Fatalf("rollback error = %q, want outside allowed directories", result.Error)
+	}
+	gotConfig, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	if string(gotConfig) != string(original) {
+		t.Fatalf("backup path rejection mutated config: %q", gotConfig)
+	}
+}
+
+func TestRollbackRejectsBackupSymlinkComponent(t *testing.T) {
+	baseDir := t.TempDir()
+	workDir := filepath.Join(baseDir, "work")
+	actualDir := filepath.Join(baseDir, "actual")
+	if err := os.MkdirAll(workDir, 0o700); err != nil {
+		t.Fatalf("mkdir work dir: %v", err)
+	}
+	if err := os.MkdirAll(actualDir, 0o700); err != nil {
+		t.Fatalf("mkdir actual dir: %v", err)
+	}
+	configPath, _ := writeHermesConfig(t, baseDir)
+	backupPath := writeRollbackBackup(t, actualDir, "backup.yaml")
+	linkDir := filepath.Join(workDir, "link")
+	if err := os.Symlink(actualDir, linkDir); err != nil {
+		t.Fatalf("symlink backup dir: %v", err)
+	}
+	job := rollbackJobForTest(t, protocol.RollbackJobPayload{
+		RuntimeType: "hermes",
+		BackupRef:   "config_apply:job_apply:plan_rollback",
+		ConfigPath:  configPath,
+		BackupPath:  filepath.Join(linkDir, filepath.Base(backupPath)),
+		DryRun:      true,
+	})
+
+	result := (&JobPoller{applyWorkDir: workDir}).executeJob(context.Background(), &job)
+	if result.Status != protocol.JobStatusFailed {
+		t.Fatalf("rollback status = %q, want failed", result.Status)
+	}
+	if !strings.Contains(result.Error, "symlink component") {
+		t.Fatalf("rollback error = %q, want symlink component", result.Error)
+	}
+}
+
+func TestRollbackRejectsNonRegularBackupPath(t *testing.T) {
+	workDir := t.TempDir()
+	configPath, _ := writeHermesConfig(t, workDir)
+	directoryPath := filepath.Join(workDir, "backup-dir")
+	if err := os.Mkdir(directoryPath, 0o700); err != nil {
+		t.Fatalf("mkdir backup dir: %v", err)
+	}
+	fifoPath := filepath.Join(workDir, "backup.fifo")
+	fifoAvailable := true
+	if err := syscall.Mkfifo(fifoPath, 0o600); err != nil {
+		fifoAvailable = false
+	}
+
+	tests := []struct {
+		name string
+		path string
+	}{
+		{name: "directory", path: directoryPath},
+	}
+	if fifoAvailable {
+		tests = append(tests, struct {
+			name string
+			path string
+		}{name: "fifo", path: fifoPath})
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			job := rollbackJobForTest(t, protocol.RollbackJobPayload{
+				RuntimeType: "hermes",
+				BackupRef:   "config_apply:job_apply:plan_rollback",
+				ConfigPath:  configPath,
+				BackupPath:  tt.path,
+				DryRun:      true,
+			})
+
+			result := (&JobPoller{applyWorkDir: workDir}).executeJob(context.Background(), &job)
+			if result.Status != protocol.JobStatusFailed {
+				t.Fatalf("rollback status = %q, want failed", result.Status)
+			}
+			if !strings.Contains(result.Error, "not a regular file") {
+				t.Fatalf("rollback error = %q, want not regular", result.Error)
+			}
+		})
+	}
+}
+
+func TestRollbackLiveRejectsConfigPathOutsideAllowedDir(t *testing.T) {
+	baseDir := t.TempDir()
+	allowedDir := filepath.Join(baseDir, "allowed")
+	outsideDir := filepath.Join(baseDir, "outside")
+	workDir := filepath.Join(baseDir, "work")
+	for _, dir := range []string{allowedDir, outsideDir, workDir} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+	configPath, original := writeHermesConfig(t, outsideDir)
+	backupPath := writeRollbackBackup(t, workDir, "backup.yaml")
+	controller := &fakeServiceController{}
+	job := rollbackJobForTest(t, protocol.RollbackJobPayload{
+		RuntimeType: "hermes",
+		BackupRef:   "config_apply:job_apply:plan_rollback",
+		ConfigPath:  filepath.Join(allowedDir, "..", "outside", filepath.Base(configPath)),
+		BackupPath:  backupPath,
+		DryRun:      false,
+	})
+
+	result := (&JobPoller{applyWorkDir: workDir, allowedConfigDirs: []string{allowedDir}, allowLiveApply: true, controller: controller}).executeJob(context.Background(), &job)
+	if result.Status != protocol.JobStatusFailed {
+		t.Fatalf("rollback status = %q, want failed", result.Status)
+	}
+	if !strings.Contains(result.Error, "outside allowed directories") {
+		t.Fatalf("rollback error = %q, want outside allowed directories", result.Error)
+	}
+	if controller.restartCalls != 0 || controller.healthCalls != 0 {
+		t.Fatalf("controller calls restart=%d health=%d, want 0/0", controller.restartCalls, controller.healthCalls)
+	}
+	gotConfig, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	if string(gotConfig) != string(original) {
+		t.Fatalf("config path rejection mutated config: %q", gotConfig)
 	}
 }
 
@@ -93,7 +251,7 @@ func TestRollbackLiveRestoresBackupAndCallsControllerOnce(t *testing.T) {
 		DryRun:      false,
 	})
 
-	result := (&JobPoller{allowLiveApply: true, controller: controller}).executeJob(context.Background(), &job)
+	result := (&JobPoller{applyWorkDir: dir, allowLiveApply: true, controller: controller}).executeJob(context.Background(), &job)
 	if result.Status != protocol.JobStatusCompleted {
 		t.Fatalf("rollback status = %q, want completed; error=%q", result.Status, result.Error)
 	}
@@ -130,7 +288,7 @@ func TestRollbackHealthFailureReturnsFailedWithoutRecursiveRollback(t *testing.T
 		DryRun:      false,
 	})
 
-	result := (&JobPoller{allowLiveApply: true, controller: controller}).executeJob(context.Background(), &job)
+	result := (&JobPoller{applyWorkDir: dir, allowLiveApply: true, controller: controller}).executeJob(context.Background(), &job)
 	if result.Status != protocol.JobStatusFailed {
 		t.Fatalf("rollback status = %q, want failed", result.Status)
 	}

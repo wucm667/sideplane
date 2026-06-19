@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -392,6 +393,35 @@ func TestConfigApplyRejectsDuplicatePlanIDReplayBeforeMutation(t *testing.T) {
 	}
 }
 
+func TestConfigApplyRejectsUnsafePlanIDBeforeBackup(t *testing.T) {
+	pub, priv := newTestSigningKey(t)
+	srcDir := t.TempDir()
+	workDir := t.TempDir()
+	cfgPath, _ := writeHermesConfig(t, srcDir)
+
+	plan := dryRunPlan("node-1", cfgPath, "openai", "gpt-4o")
+	plan.ID = "../escape"
+	signed, err := protocol.SignConfigPlan(plan, priv)
+	if err != nil {
+		t.Fatalf("sign plan: %v", err)
+	}
+
+	exec := ConfigApplyExecutor{NodeID: "node-1", PublicKey: pub, WorkDir: workDir}
+	result, err := exec.Execute(context.Background(), signed)
+	if err == nil {
+		t.Fatal("expected unsafe plan ID rejection, got nil")
+	}
+	if !strings.Contains(err.Error(), "safe path token") {
+		t.Fatalf("error = %q, want safe path token", err)
+	}
+	if _, ok := findStep(t, result.Steps, "backup_created"); ok {
+		t.Fatal("backup_created reached for unsafe plan id")
+	}
+	if n := dirEntryCount(t, workDir); n != 0 {
+		t.Fatalf("work dir entry count = %d, want 0", n)
+	}
+}
+
 func TestConfigApplyRejectsLiveMode(t *testing.T) {
 	pub, priv := newTestSigningKey(t)
 	srcDir := t.TempDir()
@@ -442,6 +472,123 @@ func TestConfigApplyRejectsUnsupportedRuntime(t *testing.T) {
 	exec := ConfigApplyExecutor{NodeID: "node-1", PublicKey: pub, WorkDir: t.TempDir()}
 	if _, err := exec.Execute(context.Background(), signed); err == nil {
 		t.Fatal("expected unsupported runtime error, got nil")
+	}
+}
+
+func TestConfigApplyLiveRejectsPathTraversalOutsideAllowedDir(t *testing.T) {
+	pub, priv := newTestSigningKey(t)
+	baseDir := t.TempDir()
+	allowedDir := filepath.Join(baseDir, "allowed")
+	outsideDir := filepath.Join(baseDir, "outside")
+	if err := os.MkdirAll(allowedDir, 0o700); err != nil {
+		t.Fatalf("mkdir allowed: %v", err)
+	}
+	if err := os.MkdirAll(outsideDir, 0o700); err != nil {
+		t.Fatalf("mkdir outside: %v", err)
+	}
+	cfgPath, original := writeHermesConfig(t, outsideDir)
+	traversalPath := filepath.Join(allowedDir, "..", "outside", filepath.Base(cfgPath))
+
+	signed, err := protocol.SignConfigPlan(livePlan("node-1", traversalPath, "openai", "gpt-4o"), priv)
+	if err != nil {
+		t.Fatalf("sign plan: %v", err)
+	}
+
+	exec := ConfigApplyExecutor{NodeID: "node-1", PublicKey: pub, WorkDir: t.TempDir(), AllowedConfigDirs: []string{allowedDir}, AllowLiveApply: true, Controller: &stubController{}}
+	result, err := exec.Execute(context.Background(), signed)
+	if err == nil {
+		t.Fatal("expected outside allowed dir rejection, got nil")
+	}
+	if s, ok := findStep(t, result.Steps, "validated"); !ok || s.Status != "failed" || !strings.Contains(s.Detail, "outside allowed directories") {
+		t.Fatalf("validated step = %+v, want outside allowed directories", s)
+	}
+	after, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read config after rejection: %v", err)
+	}
+	if string(after) != string(original) {
+		t.Fatalf("outside config mutated: %q", after)
+	}
+}
+
+func TestConfigApplyLiveRejectsSymlinkComponentBeforeMutation(t *testing.T) {
+	pub, priv := newTestSigningKey(t)
+	baseDir := t.TempDir()
+	targetDir := filepath.Join(baseDir, "target")
+	if err := os.MkdirAll(targetDir, 0o700); err != nil {
+		t.Fatalf("mkdir target: %v", err)
+	}
+	cfgPath, original := writeHermesConfig(t, targetDir)
+	linkDir := filepath.Join(baseDir, "link")
+	if err := os.Symlink(targetDir, linkDir); err != nil {
+		t.Fatalf("symlink dir: %v", err)
+	}
+	linkConfigPath := filepath.Join(linkDir, filepath.Base(cfgPath))
+
+	signed, err := protocol.SignConfigPlan(livePlan("node-1", linkConfigPath, "openai", "gpt-4o"), priv)
+	if err != nil {
+		t.Fatalf("sign plan: %v", err)
+	}
+
+	exec := ConfigApplyExecutor{NodeID: "node-1", PublicKey: pub, WorkDir: t.TempDir(), AllowedConfigDirs: []string{baseDir}, AllowLiveApply: true, Controller: &stubController{}}
+	result, err := exec.Execute(context.Background(), signed)
+	if err == nil {
+		t.Fatal("expected symlink component rejection, got nil")
+	}
+	if s, ok := findStep(t, result.Steps, "validated"); !ok || s.Status != "failed" || !strings.Contains(s.Detail, "symlink component") {
+		t.Fatalf("validated step = %+v, want symlink component failure", s)
+	}
+	after, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read config after rejection: %v", err)
+	}
+	if string(after) != string(original) {
+		t.Fatalf("target config mutated: %q", after)
+	}
+}
+
+func TestConfigApplyRejectsNonRegularConfigPath(t *testing.T) {
+	pub, priv := newTestSigningKey(t)
+	dir := t.TempDir()
+	directoryPath := filepath.Join(dir, "config-dir")
+	if err := os.Mkdir(directoryPath, 0o700); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	fifoPath := filepath.Join(dir, "config.fifo")
+	fifoAvailable := true
+	if err := syscall.Mkfifo(fifoPath, 0o600); err != nil {
+		fifoAvailable = false
+	}
+
+	tests := []struct {
+		name string
+		path string
+	}{
+		{name: "directory", path: directoryPath},
+	}
+	if fifoAvailable {
+		tests = append(tests, struct {
+			name string
+			path string
+		}{name: "fifo", path: fifoPath})
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			signed, err := protocol.SignConfigPlan(dryRunPlan("node-1", tt.path, "openai", "gpt-4o"), priv)
+			if err != nil {
+				t.Fatalf("sign plan: %v", err)
+			}
+
+			exec := ConfigApplyExecutor{NodeID: "node-1", PublicKey: pub, WorkDir: t.TempDir()}
+			result, err := exec.Execute(context.Background(), signed)
+			if err == nil {
+				t.Fatal("expected non-regular config path rejection, got nil")
+			}
+			if s, ok := findStep(t, result.Steps, "backup_created"); !ok || s.Status != "failed" || !strings.Contains(s.Detail, "not a regular file") {
+				t.Fatalf("backup_created step = %+v, want not regular failure", s)
+			}
+		})
 	}
 }
 
@@ -498,6 +645,42 @@ func TestConfigApplyRejectsEmptyDesired(t *testing.T) {
 	}
 	if s, ok := findStep(t, result.Steps, "validated"); !ok || s.Status != "failed" {
 		t.Errorf("validated step = %+v, want failed", s)
+	}
+}
+
+func TestConfigApplyBackupDirectoryPermissionFailureStopsBeforeWrite(t *testing.T) {
+	pub, priv := newTestSigningKey(t)
+	srcDir := t.TempDir()
+	cfgPath, original := writeHermesConfig(t, srcDir)
+	signed, err := protocol.SignConfigPlan(dryRunPlan("node-1", cfgPath, "openai", "gpt-4o"), priv)
+	if err != nil {
+		t.Fatalf("sign plan: %v", err)
+	}
+
+	exec := ConfigApplyExecutor{
+		NodeID:    "node-1",
+		PublicKey: pub,
+		WorkDir:   t.TempDir(),
+		MkdirAll: func(string, os.FileMode) error {
+			return os.ErrPermission
+		},
+	}
+	result, err := exec.Execute(context.Background(), signed)
+	if err == nil {
+		t.Fatal("expected backup directory permission error, got nil")
+	}
+	if s, ok := findStep(t, result.Steps, "backup_created"); !ok || s.Status != "failed" || !strings.Contains(s.Detail, "permission") {
+		t.Fatalf("backup_created step = %+v, want permission failure", s)
+	}
+	if result.BackupPath != "" || result.TempPath != "" {
+		t.Fatalf("paths set after backup permission failure: backup=%q temp=%q", result.BackupPath, result.TempPath)
+	}
+	after, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read config after failure: %v", err)
+	}
+	if string(after) != string(original) {
+		t.Fatalf("config mutated after backup permission failure: %q", after)
 	}
 }
 

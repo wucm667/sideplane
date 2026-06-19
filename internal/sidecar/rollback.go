@@ -48,13 +48,26 @@ func (p *JobPoller) executeRollback(ctx context.Context, job *protocol.Job) prot
 			addStep("validated", "failed", err)
 			return marshalRollbackResult(protocol.JobStatusFailed, result, err)
 		}
-		if err := rejectLiveSymlinkPath(payload.ConfigPath); err != nil {
+		if err := validateLiveConfigPath(payload.ConfigPath, p.allowedConfigDirs); err != nil {
 			addStep("validated", "failed", err.Error())
 			return marshalRollbackResult(protocol.JobStatusFailed, result, err.Error())
 		}
 	}
 
-	backupContents, err := readRegularFile(payload.BackupPath)
+	workDir := strings.TrimSpace(p.applyWorkDir)
+	if workDir == "" {
+		workDir = defaultApplyWorkDir()
+	}
+	if err := rejectPathOutsideAllowedDirs(payload.BackupPath, []string{workDir}, "backup path"); err != nil {
+		addStep("backup_read", "failed", err.Error())
+		return marshalRollbackResult(protocol.JobStatusFailed, result, err.Error())
+	}
+	if err := rejectSymlinkComponentsUnderAllowedDirs(payload.BackupPath, []string{workDir}, "backup path"); err != nil {
+		addStep("backup_read", "failed", err.Error())
+		return marshalRollbackResult(protocol.JobStatusFailed, result, err.Error())
+	}
+
+	backupContents, err := readRegularFile(payload.BackupPath, "backup path")
 	if err != nil {
 		addStep("backup_read", "failed", err.Error())
 		return marshalRollbackResult(protocol.JobStatusFailed, result, err.Error())
@@ -124,17 +137,17 @@ func validateRollbackPayload(payload protocol.RollbackJobPayload) error {
 	return nil
 }
 
-func readRegularFile(path string) ([]byte, error) {
+func readRegularFile(path string, label string) ([]byte, error) {
 	info, err := os.Lstat(path)
 	if err != nil {
-		return nil, fmt.Errorf("inspect backup path: %w", err)
+		return nil, fmt.Errorf("inspect %s: %w", label, err)
 	}
 	if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("backup path %q is not a regular file", path)
+		return nil, fmt.Errorf("%s %q is not a regular file", label, path)
 	}
 	contents, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("read backup: %w", err)
+		return nil, fmt.Errorf("read %s: %w", label, err)
 	}
 	return contents, nil
 }
