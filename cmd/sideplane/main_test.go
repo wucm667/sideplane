@@ -312,6 +312,7 @@ func TestHelpListsCommands(t *testing.T) {
 		"probe <nodeId>",
 		"restart <nodeId>",
 		"rollback <nodeId>",
+		"backups list <id>",
 		"jobs list <nodeId>",
 		"audit list",
 		"config apply <id>",
@@ -335,6 +336,7 @@ func TestPerCommandHelpPrintsFlags(t *testing.T) {
 		{"config", "apply", "--help"},
 		{"restart", "--help"},
 		{"rollback", "--help"},
+		{"backups", "list", "--help"},
 		{"jobs", "list", "--help"},
 		{"node", "label", "--help"},
 		{"enrollment", "create", "--help"},
@@ -460,13 +462,13 @@ func TestCommandsRejectMissingRequiredArguments(t *testing.T) {
 	}{
 		{name: "probe node", args: []string{"probe"}, want: "usage: sideplane probe"},
 		{name: "restart node", args: []string{"restart"}, want: "usage: sideplane restart"},
+		{name: "backups node", args: []string{"backups", "list"}, want: "usage: sideplane backups list"},
 		{name: "jobs node", args: []string{"jobs", "list"}, want: "usage: sideplane jobs list"},
 		{name: "config apply node", args: []string{"config", "apply"}, want: "usage: sideplane config apply"},
 		{name: "config preview node", args: []string{"config", "preview"}, want: "usage: sideplane config preview"},
 		{name: "node inspect id", args: []string{"node", "inspect"}, want: "usage: sideplane node inspect"},
 		{name: "node label id", args: []string{"node", "label"}, want: "usage: sideplane node label"},
 		{name: "node remove id", args: []string{"node", "remove"}, want: "usage: sideplane node remove"},
-		{name: "rollback backup", args: []string{"rollback", "node-a"}, want: "--backup-ref is required"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1209,15 +1211,127 @@ func TestRollbackDryRunDefaultAndOperatorToken(t *testing.T) {
 	}
 }
 
-func TestRollbackRequiresBackupRef(t *testing.T) {
+func TestRollbackWithoutBackupRefUsesLatestBackup(t *testing.T) {
+	job := protocol.Job{
+		ID:          "job-rollback-latest",
+		NodeID:      "node-a",
+		Type:        protocol.JobTypeRollback,
+		Status:      protocol.JobStatusPending,
+		PayloadJSON: rollbackPayload(t, "hermes", "default", "config_apply:job_latest:plan_latest", true),
+		CreatedAt:   time.Now().UTC(),
+	}
+	var sawBackups bool
+	var sawRollback bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer test-token" {
+			t.Fatalf("Authorization = %q, want Bearer test-token", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/nodes/node-a/backups":
+			sawBackups = true
+			if got := r.URL.Query().Get("limit"); got != "1" {
+				t.Fatalf("backup limit = %q, want 1", got)
+			}
+			if err := json.NewEncoder(w).Encode(protocol.ListRollbackBackupsResponse{
+				Backups: []protocol.RollbackBackupInventoryItem{{
+					Ref:         "config_apply:job_latest:plan_latest",
+					SourceJobID: "job_latest",
+					RuntimeType: "hermes",
+					Profile:     "default",
+					CreatedAt:   time.Now().UTC(),
+				}},
+				Total: 1,
+				Limit: 1,
+			}); err != nil {
+				t.Fatalf("encode backups: %v", err)
+			}
+		case r.Method == http.MethodPost && r.URL.Path == "/api/nodes/node-a/rollback":
+			sawRollback = true
+			var req protocol.RollbackRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatalf("decode rollback request: %v", err)
+			}
+			if req.BackupRef != "config_apply:job_latest:plan_latest" {
+				t.Fatalf("backupRef = %q, want latest backup", req.BackupRef)
+			}
+			w.WriteHeader(http.StatusCreated)
+			if err := json.NewEncoder(w).Encode(job); err != nil {
+				t.Fatalf("encode job: %v", err)
+			}
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.String())
+		}
+	}))
+	defer server.Close()
+
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	code := run([]string{"rollback", "node-a", "--server", "http://127.0.0.1:9"}, &stdout, &stderr)
-	if code != 1 {
-		t.Fatalf("run returned %d, want 1", code)
+	code := run([]string{"rollback", "node-a", "--server", server.URL, "--operator-token", "test-token"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("run returned %d, stderr=%q", code, stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "--backup-ref is required") {
-		t.Fatalf("stderr = %q, want backup ref error", stderr.String())
+	if !sawBackups || !sawRollback {
+		t.Fatalf("sawBackups=%t sawRollback=%t, want both", sawBackups, sawRollback)
+	}
+	if !strings.Contains(stdout.String(), "Backup: config_apply:job_latest:plan_latest") {
+		t.Fatalf("stdout = %q, want latest backup summary", stdout.String())
+	}
+}
+
+func TestBackupsListPrintsTableAndJSON(t *testing.T) {
+	response := protocol.ListRollbackBackupsResponse{
+		Backups: []protocol.RollbackBackupInventoryItem{{
+			Ref:         "config_apply:job_apply:plan_1",
+			SourceJobID: "job_apply",
+			RuntimeType: "hermes",
+			Profile:     "default",
+			ConfigHash:  "sha256:before",
+			CreatedAt:   time.Now().UTC(),
+		}},
+		Total: 1,
+		Limit: 50,
+	}
+	var requestCount int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		if r.Method != http.MethodGet || r.URL.Path != "/api/nodes/node-a/backups" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer test-token" {
+			t.Fatalf("Authorization = %q, want Bearer test-token", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(response); err != nil {
+			t.Fatalf("encode backups: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"backups", "list", "node-a", "--server", server.URL, "--operator-token", "test-token", "--limit", "50"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("run returned %d, stderr=%q", code, stderr.String())
+	}
+	for _, want := range []string{"REF", "RUNTIME", "config_apply:job_apply:plan_1", "hermes", "sha256:before", "job_apply"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("output missing %q:\n%s", want, stdout.String())
+		}
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"backups", "list", "node-a", "--server", server.URL, "--operator-token", "test-token", "--json"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("json run returned %d, stderr=%q", code, stderr.String())
+	}
+	var got protocol.ListRollbackBackupsResponse
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode JSON output: %v", err)
+	}
+	if len(got.Backups) != 1 || got.Backups[0].Ref != response.Backups[0].Ref || requestCount != 2 {
+		t.Fatalf("json backups = %#v requestCount=%d, want one backup and two requests", got, requestCount)
 	}
 }
 

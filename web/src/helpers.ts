@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { AuditEvent, AuditFilters, ConfigApplyResult, DeepProbeResult, EffectiveConfigResponse, Job, JobStatus, ListAuditEventsResponse, ListNodesResponse, NodeLabels, NodeLabelsResponse, NodeState, NodeStatus, RestartRequest, RollbackRequest, RuntimeConfigSnapshot, RuntimeStatus } from './types.ts'
+import type { AuditEvent, AuditFilters, ConfigApplyResult, DeepProbeResult, EffectiveConfigResponse, Job, JobStatus, ListAuditEventsResponse, ListNodesResponse, ListRollbackBackupsResponse, NodeLabels, NodeLabelsResponse, NodeState, NodeStatus, RestartRequest, RollbackBackupInventoryItem, RollbackRequest, RuntimeConfigSnapshot, RuntimeStatus } from './types.ts'
 
 const NODE_REFRESH_MS = 10_000
 const ACTIVE_JOB_REFRESH_MS = 2_000
@@ -233,6 +233,9 @@ export function normalizeNodeListResponse(payload: NodeStatus[] | ListNodesRespo
 export function useFleetPageController() {
   const [nodes, setNodes] = useState<NodeStatus[] | null>(null)
   const [jobsByNode, setJobsByNode] = useState<Record<string, Job[]>>({})
+  const [backupsByNode, setBackupsByNode] = useState<Record<string, RollbackBackupInventoryItem[]>>({})
+  const [backupsLoadingByNode, setBackupsLoadingByNode] = useState<Record<string, boolean>>({})
+  const [backupsErrorByNode, setBackupsErrorByNode] = useState<Record<string, string>>({})
   const [jobsLoadingByNode, setJobsLoadingByNode] = useState<Record<string, boolean>>({})
   const [jobsErrorByNode, setJobsErrorByNode] = useState<Record<string, string>>({})
   const [jobStatusByNode, setJobStatusByNode] = useState<Record<string, JobStatus | ''>>({})
@@ -528,6 +531,45 @@ export function useFleetPageController() {
     }
   }, [loadNodeJobs, operatorToken])
 
+  const loadNodeBackups = useCallback(async (nodeId: string, showLoading = true) => {
+    if (!mountedRef.current) return
+    const token = operatorToken.trim()
+    if (!token) {
+      setBackupsByNode((current) => ({ ...current, [nodeId]: [] }))
+      return
+    }
+    if (showLoading) {
+      setBackupsLoadingByNode((current) => ({ ...current, [nodeId]: true }))
+    }
+    try {
+      const res = await fetch(`/api/nodes/${encodeURIComponent(nodeId)}/backups`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) {
+        if (res.status === 401) throw new Error('Operator token required or invalid')
+        throw new Error(await apiErrorMessage(res))
+      }
+      const data = (await res.json()) as ListRollbackBackupsResponse
+      if (!mountedRef.current) return
+      setBackupsByNode((current) => ({ ...current, [nodeId]: data.backups ?? [] }))
+      setBackupsErrorByNode((current) => {
+        const next = { ...current }
+        delete next[nodeId]
+        return next
+      })
+    } catch (e) {
+      if (!mountedRef.current) return
+      setBackupsErrorByNode((current) => ({
+        ...current,
+        [nodeId]: e instanceof Error ? e.message : 'Unknown error',
+      }))
+    } finally {
+      if (mountedRef.current && showLoading) {
+        setBackupsLoadingByNode((current) => ({ ...current, [nodeId]: false }))
+      }
+    }
+  }, [operatorToken])
+
   const saveNodeLabels = useCallback(async (nodeId: string, labels: NodeLabels) => {
     if (!mountedRef.current) return
     setSavingLabelsByNode((current) => ({ ...current, [nodeId]: true }))
@@ -664,8 +706,9 @@ export function useFleetPageController() {
   useEffect(() => {
     if (view === 'node' && selectedNodeId) {
       loadEffectiveConfig(selectedNodeId)
+      void loadNodeBackups(selectedNodeId)
     }
-  }, [loadEffectiveConfig, selectedNodeId, view])
+  }, [loadEffectiveConfig, loadNodeBackups, selectedNodeId, view])
 
   const safeNodes = nodes ?? []
   const stats = useMemo(() => {
@@ -700,6 +743,7 @@ export function useFleetPageController() {
     if (!selectedNodeId) return
     void loadNodeJobs(selectedNodeId, false)
     void loadEffectiveConfig(selectedNodeId)
+    void loadNodeBackups(selectedNodeId, false)
   }
 
   return {
@@ -708,6 +752,9 @@ export function useFleetPageController() {
     auditFilters,
     auditLimit,
     auditLoading,
+    backupsByNode,
+    backupsErrorByNode,
+    backupsLoadingByNode,
     bannerText,
     changeView,
     createDeepProbe,

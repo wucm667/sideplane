@@ -40,6 +40,21 @@ export interface NodeLabelsResponse {
   labels: NodeLabels
 }
 
+export interface RollbackBackupInventoryItem {
+  ref: string
+  sourceJobId: string
+  runtimeType?: string
+  profile?: string
+  configHash?: string
+  createdAt?: string
+}
+
+export interface ListRollbackBackupsResponse {
+  backups: RollbackBackupInventoryItem[]
+  total: number
+  limit: number
+}
+
 export type AuditAction =
   | 'enrollment.token.create'
   | 'node.enroll'

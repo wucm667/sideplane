@@ -1,12 +1,15 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import ConfigWizard from '../ConfigWizard.tsx'
-import { apiErrorMessage, compactHash, formatDate, formatRelativeTime, hasActiveConfigApply, hasActiveDeepProbe, hasActiveRestart, hasActiveRollback, jobBadgeClasses, latestConfigSnapshots, latestRollbackBackup, runtimeKey, snapshotForRuntime, stateBadgeClasses } from '../helpers.ts'
-import type { ConfigApplyResult, ConfigDiffEntry, DeepProbeResult, EffectiveConfigResponse, Job, JobStatus, NodeLabels, NodeStatus, RestartJobResult, RestartRequest, RollbackJobResult, RollbackRequest, RuntimeConfigSnapshot, RuntimeStatus } from '../types.ts'
+import { apiErrorMessage, compactHash, formatDate, formatRelativeTime, hasActiveConfigApply, hasActiveDeepProbe, hasActiveRestart, hasActiveRollback, jobBadgeClasses, latestConfigSnapshots, runtimeKey, snapshotForRuntime, stateBadgeClasses } from '../helpers.ts'
+import type { ConfigApplyResult, ConfigDiffEntry, DeepProbeResult, EffectiveConfigResponse, Job, JobStatus, NodeLabels, NodeStatus, RestartJobResult, RestartRequest, RollbackBackupInventoryItem, RollbackJobResult, RollbackRequest, RuntimeConfigSnapshot, RuntimeStatus } from '../types.ts'
 
 export function NodeDetailView({
   creating,
   rollingBack,
   restarting,
+  backups,
+  backupsError,
+  backupsLoading,
   jobs,
   jobsError,
   jobLimit,
@@ -30,6 +33,9 @@ export function NodeDetailView({
   creating: boolean
   rollingBack: boolean
   restarting: boolean
+  backups: RollbackBackupInventoryItem[]
+  backupsError?: string
+  backupsLoading: boolean
   jobs: Job[]
   jobsError?: string
   jobLimit: number
@@ -56,7 +62,8 @@ export function NodeDetailView({
   const activeRollback = hasActiveRollback(jobs)
   const snapshots = latestConfigSnapshots(jobs)
   const primarySnapshot = snapshots[0]
-  const rollbackBackup = latestRollbackBackup(jobs)
+  const [selectedBackupRef, setSelectedBackupRef] = useState('')
+  const rollbackBackup = backups.find((backup) => backup.ref === selectedBackupRef) ?? backups[0]
   const [wizardOpen, setWizardOpen] = useState(false)
   const [removing, setRemoving] = useState(false)
   const [removeError, setRemoveError] = useState<string | null>(null)
@@ -69,6 +76,16 @@ export function NodeDetailView({
   const canRemoveNode = tokenReady
   const restartRuntimeType = knownRestartRuntime(effective?.runtimeType || primarySnapshot?.runtimeType || 'hermes')
   const restartProfile = effective?.profile || primarySnapshot?.profile || 'default'
+
+  useEffect(() => {
+    if (backups.length === 0) {
+      setSelectedBackupRef('')
+      return
+    }
+    if (!backups.some((backup) => backup.ref === selectedBackupRef)) {
+      setSelectedBackupRef(backups[0].ref)
+    }
+  }, [backups, selectedBackupRef])
 
   const removeNode = async () => {
     if (!canRemoveNode || removing) return
@@ -124,11 +141,12 @@ export function NodeDetailView({
     }
     const request: RollbackRequest = {
       backupRef: rollbackBackup.ref,
-      profile: restartProfile,
+      profile: rollbackBackup.profile || restartProfile,
       live,
     }
-    if (restartRuntimeType) {
-      request.runtimeType = restartRuntimeType
+    const runtimeType = rollbackBackup.runtimeType || restartRuntimeType
+    if (runtimeType) {
+      request.runtimeType = runtimeType as 'hermes' | 'openclaw'
     }
     onRollback(request)
   }
@@ -190,8 +208,20 @@ export function NodeDetailView({
           >
             Live restart
           </button>
-          {rollbackBackup && (
-            <>
+          {backups.length > 0 && (
+            <div className="flex flex-wrap gap-2">
+              <select
+                className="h-9 max-w-80 rounded-lg border border-[var(--sp-border)] bg-[var(--sp-surface)] px-2 font-mono text-xs outline-none disabled:cursor-not-allowed disabled:opacity-60"
+                value={rollbackBackup?.ref ?? ''}
+                disabled={!tokenReady || rollingBack || activeRollback || backupsLoading}
+                onChange={(event) => setSelectedBackupRef(event.target.value)}
+              >
+                {backups.map((backup) => (
+                  <option key={backup.ref} value={backup.ref}>
+                    {backup.ref}
+                  </option>
+                ))}
+              </select>
               <button
                 type="button"
                 className="h-9 rounded-lg border border-[var(--sp-border-strong)] bg-[var(--sp-surface)] px-3 text-sm font-medium hover:bg-[var(--sp-surface-2)] disabled:cursor-not-allowed disabled:opacity-60"
@@ -210,7 +240,7 @@ export function NodeDetailView({
               >
                 Live rollback
               </button>
-            </>
+            </div>
           )}
           <button
             type="button"
@@ -236,6 +266,12 @@ export function NodeDetailView({
       {removeError && (
         <div className="mb-5 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-600">
           Failed to remove node: {removeError}
+        </div>
+      )}
+
+      {backupsError && (
+        <div className="mb-5 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-600">
+          Failed to load backups: {backupsError}
         </div>
       )}
 

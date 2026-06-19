@@ -13,6 +13,9 @@ export default function FleetPage() {
     auditFilters,
     auditLimit,
     auditLoading,
+    backupsByNode,
+    backupsErrorByNode,
+    backupsLoadingByNode,
     bannerText,
     changeView,
     createDeepProbe,
@@ -131,6 +134,9 @@ export default function FleetPage() {
               creating={Boolean(creatingByNode[selectedNode.nodeId])}
               rollingBack={Boolean(rollingBackByNode[selectedNode.nodeId])}
               restarting={Boolean(restartingByNode[selectedNode.nodeId])}
+              backups={backupsByNode[selectedNode.nodeId] ?? []}
+              backupsError={backupsErrorByNode[selectedNode.nodeId]}
+              backupsLoading={Boolean(backupsLoadingByNode[selectedNode.nodeId])}
               jobs={jobsByNode[selectedNode.nodeId] ?? []}
               jobsError={jobsErrorByNode[selectedNode.nodeId]}
               jobLimit={jobLimitByNode[selectedNode.nodeId] ?? 50}

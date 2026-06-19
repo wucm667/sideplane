@@ -64,6 +64,10 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		return runRestart(args[1:], stdout, stderr)
 	case "rollback":
 		return runRollback(args[1:], stdout, stderr)
+	case "backups":
+		if len(args) >= 2 && args[1] == "list" {
+			return runBackupsList(args[2:], stdout, stderr)
+		}
 	case "jobs":
 		if len(args) >= 2 && args[1] == "list" {
 			return runJobsList(args[2:], stdout, stderr)
@@ -118,6 +122,7 @@ Commands:
   probe <nodeId>      Run a deep probe on a node
   restart <nodeId>    Create a standalone restart job
   rollback <nodeId>   Create a rollback job from a backup ref
+  backups list <id>   List rollback backups for a node
   jobs list <nodeId>  List node jobs
   audit list          List audit events
   config apply <id>   Create a config apply job
@@ -160,7 +165,7 @@ func runRollback(args []string, stdout io.Writer, stderr io.Writer) int {
 	yes := flags.Bool("yes", false, "confirm live rollback")
 	wait := flags.Bool("wait", false, "poll until the rollback job completes or fails")
 	jsonOutput := flags.Bool("json", false, "print JSON output")
-	usage := "sideplane rollback <nodeId> [--server URL] [--operator-token TOKEN] --backup-ref REF [--runtime-type TYPE] [--profile PROFILE] [--live --yes] [--wait] [--json]"
+	usage := "sideplane rollback <nodeId> [--server URL] [--operator-token TOKEN] [--backup-ref REF] [--runtime-type TYPE] [--profile PROFILE] [--live --yes] [--wait] [--json]"
 	if commandHelpRequested(args) {
 		printCommandHelp(stdout, usage, flags)
 		return 0
@@ -170,10 +175,6 @@ func runRollback(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 	if flags.NArg() != 1 {
 		fmt.Fprintln(stderr, "usage: "+usage)
-		return 1
-	}
-	if strings.TrimSpace(*backupRef) == "" {
-		fmt.Fprintln(stderr, "rollback: --backup-ref is required")
 		return 1
 	}
 	if *live && !*yes {
@@ -188,11 +189,20 @@ func runRollback(args []string, stdout io.Writer, stderr io.Writer) int {
 
 	server := serverURLValue(*serverURL)
 	operatorToken := operatorTokenValue(*operatorTokenFlag)
+	backupRefValue := strings.TrimSpace(*backupRef)
+	if backupRefValue == "" {
+		latest, err := latestNodeBackup(context.Background(), server, nodeID, operatorToken)
+		if err != nil {
+			fmt.Fprintf(stderr, "rollback: %v\n", err)
+			return 1
+		}
+		backupRefValue = latest.Ref
+	}
 	path := "/api/nodes/" + url.PathEscape(nodeID) + "/rollback"
 	job, body, err := postJSON[protocol.Job](context.Background(), server, path, protocol.RollbackRequest{
 		RuntimeType: strings.TrimSpace(*runtimeType),
 		Profile:     strings.TrimSpace(*profile),
-		BackupRef:   strings.TrimSpace(*backupRef),
+		BackupRef:   backupRefValue,
 		Live:        *live,
 	}, operatorToken)
 	if err != nil {
@@ -222,6 +232,50 @@ func runRollback(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 	printRollbackJobSummary(stdout, finalJob)
 	printRollbackResultSummary(stdout, finalJob)
+	return 0
+}
+
+func runBackupsList(args []string, stdout io.Writer, stderr io.Writer) int {
+	flags := flag.NewFlagSet("sideplane backups list", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+
+	serverURL := flags.String("server", "", "Sideplane server URL; can also be set with SIDEPLANE_SERVER_URL")
+	operatorTokenFlag := flags.String("operator-token", "", "operator bearer token; can also be set with SIDEPLANE_OPERATOR_TOKEN")
+	limit := flags.Int("limit", 0, "maximum backups to list")
+	jsonOutput := flags.Bool("json", false, "print raw JSON response")
+	usage := "sideplane backups list <nodeId> [--server URL] [--operator-token TOKEN] [--limit N] [--json]"
+	if commandHelpRequested(args) {
+		printCommandHelp(stdout, usage, flags)
+		return 0
+	}
+	if err := parseCommandFlags(flags, args, "json"); err != nil {
+		return 2
+	}
+	if flags.NArg() != 1 {
+		fmt.Fprintln(stderr, "usage: "+usage)
+		return 1
+	}
+	if *limit < 0 {
+		fmt.Fprintln(stderr, "backups list: --limit must be positive")
+		return 1
+	}
+	nodeID := strings.TrimSpace(flags.Arg(0))
+	if nodeID == "" {
+		fmt.Fprintln(stderr, "backups list: nodeId is required")
+		return 1
+	}
+
+	path := nodeBackupsPath(nodeID, *limit)
+	resp, body, err := getJSON[protocol.ListRollbackBackupsResponse](context.Background(), serverURLValue(*serverURL), path, operatorTokenValue(*operatorTokenFlag))
+	if err != nil {
+		fmt.Fprintf(stderr, "backups list: %v\n", err)
+		return 1
+	}
+	if *jsonOutput {
+		writeRawJSON(stdout, body)
+		return 0
+	}
+	printBackupsTable(stdout, resp.Backups)
 	return 0
 }
 
@@ -1088,6 +1142,27 @@ func waitForNodeJob(ctx context.Context, serverURL string, nodeID string, jobID 
 	}
 }
 
+func latestNodeBackup(ctx context.Context, serverURL string, nodeID string, operatorToken string) (protocol.RollbackBackupInventoryItem, error) {
+	resp, _, err := getJSON[protocol.ListRollbackBackupsResponse](ctx, serverURL, nodeBackupsPath(nodeID, 1), operatorToken)
+	if err != nil {
+		return protocol.RollbackBackupInventoryItem{}, err
+	}
+	if len(resp.Backups) == 0 {
+		return protocol.RollbackBackupInventoryItem{}, fmt.Errorf("no rollback backups found; run config apply first or pass --backup-ref")
+	}
+	return resp.Backups[0], nil
+}
+
+func nodeBackupsPath(nodeID string, limit int) string {
+	path := "/api/nodes/" + url.PathEscape(nodeID) + "/backups"
+	if limit > 0 {
+		params := url.Values{}
+		params.Set("limit", strconv.Itoa(limit))
+		path += "?" + params.Encode()
+	}
+	return path
+}
+
 func printJobSummary(w io.Writer, job protocol.Job) {
 	fmt.Fprintf(w, "job %s %s\n", job.ID, job.Status)
 }
@@ -1477,6 +1552,24 @@ func printAuditTable(w io.Writer, events []protocol.AuditEvent) {
 			valueOrDash(event.Action),
 			valueOrDash(event.TargetNode),
 			valueOrDash(spconfig.RedactString(event.Detail)),
+		)
+	}
+	table.Flush()
+}
+
+func printBackupsTable(w io.Writer, backups []protocol.RollbackBackupInventoryItem) {
+	table := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(table, "REF\tRUNTIME\tPROFILE\tCONFIG HASH\tCREATED\tSOURCE JOB")
+	for _, backup := range backups {
+		fmt.Fprintf(
+			table,
+			"%s\t%s\t%s\t%s\t%s\t%s\n",
+			valueOrDash(backup.Ref),
+			valueOrDash(backup.RuntimeType),
+			valueOrDash(backup.Profile),
+			valueOrDash(backup.ConfigHash),
+			timeLabel(backup.CreatedAt),
+			valueOrDash(backup.SourceJobID),
 		)
 	}
 	table.Flush()
