@@ -216,7 +216,7 @@ func writeFleetMetrics(w http.ResponseWriter, snapshot fleetMetricsSnapshot) {
 func (h *handler) createEnrollmentToken(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
-		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
+		writeAPIError(w, http.StatusMethodNotAllowed, http.StatusText(http.StatusMethodNotAllowed))
 		return
 	}
 
@@ -227,7 +227,7 @@ func (h *handler) createEnrollmentToken(w http.ResponseWriter, r *http.Request) 
 
 	var req protocol.CreateEnrollmentTokenRequest
 	if err := decodeOptionalJSON(r.Body, &req); err != nil {
-		http.Error(w, "invalid enrollment token JSON", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, "invalid enrollment token JSON")
 		return
 	}
 
@@ -237,13 +237,13 @@ func (h *handler) createEnrollmentToken(w http.ResponseWriter, r *http.Request) 
 		expiresAt = now.Add(defaultEnrollmentTokenTTL)
 	}
 	if !expiresAt.After(now) {
-		http.Error(w, "expiresAt must be in the future", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, "expiresAt must be in the future")
 		return
 	}
 
 	resp, err := h.store.CreateEnrollmentToken(r.Context(), expiresAt, now)
 	if err != nil {
-		http.Error(w, "create enrollment token", http.StatusInternalServerError)
+		writeAPIError(w, http.StatusInternalServerError, "create enrollment token")
 		return
 	}
 	h.audit(r.Context(), protocol.AuditEvent{
@@ -259,7 +259,7 @@ func (h *handler) createEnrollmentToken(w http.ResponseWriter, r *http.Request) 
 func (h *handler) enrollNode(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
-		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
+		writeAPIError(w, http.StatusMethodNotAllowed, http.StatusText(http.StatusMethodNotAllowed))
 		return
 	}
 
@@ -269,11 +269,11 @@ func (h *handler) enrollNode(w http.ResponseWriter, r *http.Request) {
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&req); err != nil {
-		http.Error(w, "invalid enroll JSON", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, "invalid enroll JSON")
 		return
 	}
 	if strings.TrimSpace(req.Token) == "" {
-		http.Error(w, "token is required", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, "token is required")
 		return
 	}
 
@@ -283,11 +283,11 @@ func (h *handler) enrollNode(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, store.ErrEnrollmentTokenInvalid),
 			errors.Is(err, store.ErrEnrollmentTokenExpired),
 			errors.Is(err, store.ErrEnrollmentTokenUsed):
-			http.Error(w, "enrollment token rejected", http.StatusUnauthorized)
+			writeAPIError(w, http.StatusUnauthorized, "enrollment token rejected")
 		case errors.Is(err, store.ErrNodeAlreadyEnrolled):
-			http.Error(w, "node is already enrolled", http.StatusConflict)
+			writeAPIError(w, http.StatusConflict, "node is already enrolled")
 		default:
-			http.Error(w, "enroll node", http.StatusInternalServerError)
+			writeAPIError(w, http.StatusInternalServerError, "enroll node")
 		}
 		return
 	}
@@ -305,7 +305,7 @@ func (h *handler) enrollNode(w http.ResponseWriter, r *http.Request) {
 func (h *handler) heartbeat(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
-		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
+		writeAPIError(w, http.StatusMethodNotAllowed, http.StatusText(http.StatusMethodNotAllowed))
 		return
 	}
 
@@ -315,36 +315,36 @@ func (h *handler) heartbeat(w http.ResponseWriter, r *http.Request) {
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&req); err != nil {
-		http.Error(w, "invalid heartbeat JSON", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, "invalid heartbeat JSON")
 		return
 	}
 
 	req.NodeID = strings.TrimSpace(req.NodeID)
 	if req.NodeID == "" {
-		http.Error(w, "nodeId is required", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, "nodeId is required")
 		return
 	}
 
 	credential, ok := auth.BearerToken(r.Header.Get("Authorization"))
 	if !ok {
-		http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
+		writeAPIError(w, http.StatusUnauthorized, http.StatusText(http.StatusUnauthorized))
 		return
 	}
 
 	ok, err := h.store.VerifyNodeCredential(r.Context(), req.NodeID, credential)
 	if err != nil {
-		http.Error(w, "verify node credential", http.StatusInternalServerError)
+		writeAPIError(w, http.StatusInternalServerError, "verify node credential")
 		return
 	}
 	if !ok {
-		http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
+		writeAPIError(w, http.StatusUnauthorized, http.StatusText(http.StatusUnauthorized))
 		return
 	}
 
 	now := time.Now().UTC()
 	node, err := h.store.RecordHeartbeat(r.Context(), req, now)
 	if err != nil {
-		http.Error(w, "record heartbeat", http.StatusInternalServerError)
+		writeAPIError(w, http.StatusInternalServerError, "record heartbeat")
 		return
 	}
 
@@ -358,20 +358,20 @@ func (h *handler) heartbeat(w http.ResponseWriter, r *http.Request) {
 func (h *handler) nodes(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", http.MethodGet)
-		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
+		writeAPIError(w, http.StatusMethodNotAllowed, http.StatusText(http.StatusMethodNotAllowed))
 		return
 	}
 
 	nodes, err := h.store.ListNodes(r.Context())
 	if err != nil {
-		http.Error(w, "list nodes", http.StatusInternalServerError)
+		writeAPIError(w, http.StatusInternalServerError, "list nodes")
 		return
 	}
 	h.applyFreshness(nodes)
 
 	desired, err := h.store.GetDesiredConfig(r.Context())
 	if err != nil {
-		http.Error(w, "get desired config", http.StatusInternalServerError)
+		writeAPIError(w, http.StatusInternalServerError, "get desired config")
 		return
 	}
 
@@ -379,7 +379,7 @@ func (h *handler) nodes(w http.ResponseWriter, r *http.Request) {
 	for i, node := range nodes {
 		drift, err := h.nodeHasConfigDrift(r.Context(), node.NodeID, desired)
 		if err != nil {
-			http.Error(w, "get actual config", http.StatusInternalServerError)
+			writeAPIError(w, http.StatusInternalServerError, "get actual config")
 			return
 		}
 		response[i] = nodeStatusResponse{
@@ -440,21 +440,21 @@ func (h *handler) nodeJobsRouter(w http.ResponseWriter, r *http.Request) {
 	parts := strings.Split(path, "/")
 	nodeID := strings.TrimSpace(parts[0])
 	if nodeID == "" {
-		http.NotFound(w, r)
+		writeAPIError(w, http.StatusNotFound, http.StatusText(http.StatusNotFound))
 		return
 	}
 
 	if len(parts) == 1 {
 		if r.Method != http.MethodDelete {
 			w.Header().Set("Allow", http.MethodDelete)
-			http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
+			writeAPIError(w, http.StatusMethodNotAllowed, http.StatusText(http.StatusMethodNotAllowed))
 			return
 		}
 		h.deleteNode(w, r, nodeID)
 		return
 	}
 	if len(parts) != 2 {
-		http.NotFound(w, r)
+		writeAPIError(w, http.StatusNotFound, http.StatusText(http.StatusNotFound))
 		return
 	}
 
@@ -467,17 +467,17 @@ func (h *handler) nodeJobsRouter(w http.ResponseWriter, r *http.Request) {
 			h.createNodeJob(w, r, nodeID)
 		default:
 			w.Header().Set("Allow", http.MethodGet+", "+http.MethodPost)
-			http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
+			writeAPIError(w, http.StatusMethodNotAllowed, http.StatusText(http.StatusMethodNotAllowed))
 		}
 	case "config-apply":
 		if r.Method != http.MethodPost {
 			w.Header().Set("Allow", http.MethodPost)
-			http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
+			writeAPIError(w, http.StatusMethodNotAllowed, http.StatusText(http.StatusMethodNotAllowed))
 			return
 		}
 		h.createConfigApplyJob(w, r, nodeID)
 	default:
-		http.NotFound(w, r)
+		writeAPIError(w, http.StatusNotFound, http.StatusText(http.StatusNotFound))
 	}
 }
 
@@ -488,10 +488,10 @@ func (h *handler) deleteNode(w http.ResponseWriter, r *http.Request, nodeID stri
 
 	if err := h.store.DeleteNode(r.Context(), nodeID); err != nil {
 		if errors.Is(err, store.ErrNodeNotFound) {
-			http.Error(w, "node not found", http.StatusNotFound)
+			writeAPIError(w, http.StatusNotFound, "node not found")
 			return
 		}
-		http.Error(w, "delete node", http.StatusInternalServerError)
+		writeAPIError(w, http.StatusInternalServerError, "delete node")
 		return
 	}
 
@@ -508,13 +508,13 @@ func (h *handler) deleteNode(w http.ResponseWriter, r *http.Request, nodeID stri
 func (h *handler) listNodeJobs(w http.ResponseWriter, r *http.Request, nodeID string) {
 	filter, err := parseJobFilter(r)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
 	jobs, err := h.store.ListNodeJobsFiltered(r.Context(), nodeID, filter)
 	if err != nil {
-		http.Error(w, "list node jobs", http.StatusInternalServerError)
+		writeAPIError(w, http.StatusInternalServerError, "list node jobs")
 		return
 	}
 	h.observeTimedOutJobs(r.Context(), jobs)
@@ -580,36 +580,36 @@ func (h *handler) createNodeJob(w http.ResponseWriter, r *http.Request, nodeID s
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&req); err != nil {
-		http.Error(w, "invalid job JSON", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, "invalid job JSON")
 		return
 	}
 
 	if req.Type == "" {
-		http.Error(w, "type is required", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, "type is required")
 		return
 	}
 	if req.Type != protocol.JobTypeDeepProbe {
-		http.Error(w, "unsupported job type", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, "unsupported job type")
 		return
 	}
 
 	exists, err := h.store.NodeExists(r.Context(), nodeID)
 	if err != nil {
-		http.Error(w, "lookup node", http.StatusInternalServerError)
+		writeAPIError(w, http.StatusInternalServerError, "lookup node")
 		return
 	}
 	if !exists {
-		http.Error(w, "node not found", http.StatusNotFound)
+		writeAPIError(w, http.StatusNotFound, "node not found")
 		return
 	}
 
 	job, err := h.store.CreateJob(r.Context(), req, nodeID, time.Now().UTC())
 	if err != nil {
 		if errors.Is(err, store.ErrActiveJobExists) {
-			http.Error(w, "active job already exists", http.StatusConflict)
+			writeAPIError(w, http.StatusConflict, "active job already exists")
 			return
 		}
-		http.Error(w, "create job", http.StatusInternalServerError)
+		writeAPIError(w, http.StatusInternalServerError, "create job")
 		return
 	}
 	h.metrics.IncJobCreated(string(req.Type))
@@ -636,7 +636,7 @@ func (h *handler) createConfigApplyJob(w http.ResponseWriter, r *http.Request, n
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&req); err != nil && !errors.Is(err, io.EOF) {
-		http.Error(w, "invalid config apply JSON", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, "invalid config apply JSON")
 		return
 	}
 
@@ -645,7 +645,7 @@ func (h *handler) createConfigApplyJob(w http.ResponseWriter, r *http.Request, n
 		runtimeType = "hermes"
 	}
 	if runtimeType != "hermes" {
-		http.Error(w, "unsupported runtime type", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, "unsupported runtime type")
 		return
 	}
 	dryRun := true
@@ -655,23 +655,23 @@ func (h *handler) createConfigApplyJob(w http.ResponseWriter, r *http.Request, n
 	profile := strings.TrimSpace(req.Profile)
 
 	if len(h.signingKey.PrivateKey) == 0 {
-		http.Error(w, "server signing key is not configured", http.StatusServiceUnavailable)
+		writeAPIError(w, http.StatusServiceUnavailable, "server signing key is not configured")
 		return
 	}
 
 	exists, err := h.store.NodeExists(r.Context(), nodeID)
 	if err != nil {
-		http.Error(w, "lookup node", http.StatusInternalServerError)
+		writeAPIError(w, http.StatusInternalServerError, "lookup node")
 		return
 	}
 	if !exists {
-		http.Error(w, "node not found", http.StatusNotFound)
+		writeAPIError(w, http.StatusNotFound, "node not found")
 		return
 	}
 
 	desired, err := h.store.GetDesiredConfig(r.Context())
 	if err != nil {
-		http.Error(w, "get desired config", http.StatusInternalServerError)
+		writeAPIError(w, http.StatusInternalServerError, "get desired config")
 		return
 	}
 	effective := spconfig.EffectiveProviderModelConfig(desired, spconfig.EffectiveConfigTarget{
@@ -680,28 +680,28 @@ func (h *handler) createConfigApplyJob(w http.ResponseWriter, r *http.Request, n
 		Profile:     profile,
 	})
 	if strings.TrimSpace(effective.Provider) == "" || strings.TrimSpace(effective.Model) == "" {
-		http.Error(w, "desired provider and model must be set before applying config", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, "desired provider and model must be set before applying config")
 		return
 	}
 	if err := spconfig.ValidateProviderModelSelection(effective); err != nil {
-		http.Error(w, "invalid desired provider/model: "+err.Error(), http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, "invalid desired provider/model: "+err.Error())
 		return
 	}
 
 	actual, err := h.latestActualSnapshot(r.Context(), nodeID, runtimeType, profile)
 	if err != nil {
-		http.Error(w, "get actual config", http.StatusInternalServerError)
+		writeAPIError(w, http.StatusInternalServerError, "get actual config")
 		return
 	}
 	if actual == nil || strings.TrimSpace(actual.ConfigPath) == "" {
-		http.Error(w, "no known config path for node; run a deep probe first", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, "no known config path for node; run a deep probe first")
 		return
 	}
 
 	now := time.Now().UTC()
 	planID, err := newPlanID()
 	if err != nil {
-		http.Error(w, "generate plan id", http.StatusInternalServerError)
+		writeAPIError(w, http.StatusInternalServerError, "generate plan id")
 		return
 	}
 	mode := protocol.ConfigPlanModeDryRun
@@ -725,12 +725,12 @@ func (h *handler) createConfigApplyJob(w http.ResponseWriter, r *http.Request, n
 	}
 	signed, err := protocol.SignConfigPlan(plan, h.signingKey.PrivateKey)
 	if err != nil {
-		http.Error(w, "sign config plan", http.StatusInternalServerError)
+		writeAPIError(w, http.StatusInternalServerError, "sign config plan")
 		return
 	}
 	payload, err := json.Marshal(signed)
 	if err != nil {
-		http.Error(w, "marshal signed plan", http.StatusInternalServerError)
+		writeAPIError(w, http.StatusInternalServerError, "marshal signed plan")
 		return
 	}
 
@@ -740,10 +740,10 @@ func (h *handler) createConfigApplyJob(w http.ResponseWriter, r *http.Request, n
 	}, nodeID, now)
 	if err != nil {
 		if errors.Is(err, store.ErrActiveJobExists) {
-			http.Error(w, "active config_apply job already exists", http.StatusConflict)
+			writeAPIError(w, http.StatusConflict, "active config_apply job already exists")
 			return
 		}
-		http.Error(w, "create job", http.StatusInternalServerError)
+		writeAPIError(w, http.StatusInternalServerError, "create job")
 		return
 	}
 	h.metrics.IncJobCreated(string(protocol.JobTypeConfigApply))
@@ -770,35 +770,35 @@ func newPlanID() (string, error) {
 func (h *handler) claimNextJob(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", http.MethodGet)
-		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
+		writeAPIError(w, http.StatusMethodNotAllowed, http.StatusText(http.StatusMethodNotAllowed))
 		return
 	}
 
 	nodeID := strings.TrimSpace(r.URL.Query().Get("nodeId"))
 	if nodeID == "" {
-		http.Error(w, "nodeId query parameter is required", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, "nodeId query parameter is required")
 		return
 	}
 
 	credential, ok := auth.BearerToken(r.Header.Get("Authorization"))
 	if !ok {
-		http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
+		writeAPIError(w, http.StatusUnauthorized, http.StatusText(http.StatusUnauthorized))
 		return
 	}
 
 	ok, err := h.store.VerifyNodeCredential(r.Context(), nodeID, credential)
 	if err != nil {
-		http.Error(w, "verify node credential", http.StatusInternalServerError)
+		writeAPIError(w, http.StatusInternalServerError, "verify node credential")
 		return
 	}
 	if !ok {
-		http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
+		writeAPIError(w, http.StatusUnauthorized, http.StatusText(http.StatusUnauthorized))
 		return
 	}
 
 	job, err := h.store.ClaimNextJob(r.Context(), nodeID, time.Now().UTC())
 	if err != nil {
-		http.Error(w, "claim next job", http.StatusInternalServerError)
+		writeAPIError(w, http.StatusInternalServerError, "claim next job")
 		return
 	}
 
@@ -820,7 +820,7 @@ func (h *handler) claimNextJob(w http.ResponseWriter, r *http.Request) {
 func (h *handler) submitJobResult(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
-		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
+		writeAPIError(w, http.StatusMethodNotAllowed, http.StatusText(http.StatusMethodNotAllowed))
 		return
 	}
 
@@ -828,39 +828,39 @@ func (h *handler) submitJobResult(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/api/sidecar/jobs/")
 	parts := strings.Split(path, "/")
 	if len(parts) != 2 || parts[1] != "result" {
-		http.NotFound(w, r)
+		writeAPIError(w, http.StatusNotFound, http.StatusText(http.StatusNotFound))
 		return
 	}
 	jobID := strings.TrimSpace(parts[0])
 	if jobID == "" {
-		http.NotFound(w, r)
+		writeAPIError(w, http.StatusNotFound, http.StatusText(http.StatusNotFound))
 		return
 	}
 
 	credential, ok := auth.BearerToken(r.Header.Get("Authorization"))
 	if !ok {
-		http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
+		writeAPIError(w, http.StatusUnauthorized, http.StatusText(http.StatusUnauthorized))
 		return
 	}
 
 	// Load job to get nodeId for credential verification
 	job, err := h.store.GetJob(r.Context(), jobID)
 	if err != nil {
-		http.Error(w, "get job", http.StatusInternalServerError)
+		writeAPIError(w, http.StatusInternalServerError, "get job")
 		return
 	}
 	if job == nil {
-		http.Error(w, "job not found", http.StatusNotFound)
+		writeAPIError(w, http.StatusNotFound, "job not found")
 		return
 	}
 
 	ok, err = h.store.VerifyNodeCredential(r.Context(), job.NodeID, credential)
 	if err != nil {
-		http.Error(w, "verify node credential", http.StatusInternalServerError)
+		writeAPIError(w, http.StatusInternalServerError, "verify node credential")
 		return
 	}
 	if !ok {
-		http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
+		writeAPIError(w, http.StatusUnauthorized, http.StatusText(http.StatusUnauthorized))
 		return
 	}
 
@@ -870,7 +870,7 @@ func (h *handler) submitJobResult(w http.ResponseWriter, r *http.Request) {
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&req); err != nil {
-		http.Error(w, "invalid result JSON", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, "invalid result JSON")
 		return
 	}
 
@@ -884,7 +884,7 @@ func (h *handler) submitJobResult(w http.ResponseWriter, r *http.Request) {
 	} else if req.Status == protocol.JobStatusFailed {
 		err = h.store.FailJob(r.Context(), jobID, req, now)
 	} else {
-		http.Error(w, "status must be completed or failed", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, "status must be completed or failed")
 		return
 	}
 
@@ -892,7 +892,7 @@ func (h *handler) submitJobResult(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, store.ErrLateJobResultRecorded) {
 			lateResult = true
 		} else {
-			http.Error(w, "submit job result", http.StatusInternalServerError)
+			writeAPIError(w, http.StatusInternalServerError, "submit job result")
 			return
 		}
 	}
@@ -983,7 +983,7 @@ func (h *handler) markTimedOutJobObserved(jobID string) bool {
 func (h *handler) auditEvents(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", http.MethodGet)
-		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
+		writeAPIError(w, http.StatusMethodNotAllowed, http.StatusText(http.StatusMethodNotAllowed))
 		return
 	}
 
@@ -991,7 +991,7 @@ func (h *handler) auditEvents(w http.ResponseWriter, r *http.Request) {
 	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
 		parsed, err := strconv.Atoi(raw)
 		if err != nil {
-			http.Error(w, "invalid limit query parameter", http.StatusBadRequest)
+			writeAPIError(w, http.StatusBadRequest, "invalid limit query parameter")
 			return
 		}
 		limit = parsed
@@ -1003,7 +1003,7 @@ func (h *handler) auditEvents(w http.ResponseWriter, r *http.Request) {
 		Limit:  limit,
 	})
 	if err != nil {
-		http.Error(w, "list audit events", http.StatusInternalServerError)
+		writeAPIError(w, http.StatusInternalServerError, "list audit events")
 		return
 	}
 	writeJSON(w, http.StatusOK, protocol.ListAuditEventsResponse{Events: events})
@@ -1012,11 +1012,11 @@ func (h *handler) auditEvents(w http.ResponseWriter, r *http.Request) {
 func (h *handler) publicSigningKey(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", http.MethodGet)
-		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
+		writeAPIError(w, http.StatusMethodNotAllowed, http.StatusText(http.StatusMethodNotAllowed))
 		return
 	}
 	if len(h.signingKey.PublicKey) == 0 {
-		http.Error(w, "signing key unavailable", http.StatusServiceUnavailable)
+		writeAPIError(w, http.StatusServiceUnavailable, "signing key unavailable")
 		return
 	}
 	writeJSON(w, http.StatusOK, protocol.PublicSigningKeyResponse{
@@ -1030,7 +1030,7 @@ func (h *handler) desiredConfig(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		desired, err := h.store.GetDesiredConfig(r.Context())
 		if err != nil {
-			http.Error(w, "get desired config", http.StatusInternalServerError)
+			writeAPIError(w, http.StatusInternalServerError, "get desired config")
 			return
 		}
 		writeJSON(w, http.StatusOK, desired)
@@ -1043,16 +1043,16 @@ func (h *handler) desiredConfig(w http.ResponseWriter, r *http.Request) {
 		decoder := json.NewDecoder(r.Body)
 		decoder.DisallowUnknownFields()
 		if err := decoder.Decode(&desired); err != nil {
-			http.Error(w, "invalid desired config JSON", http.StatusBadRequest)
+			writeAPIError(w, http.StatusBadRequest, "invalid desired config JSON")
 			return
 		}
 		if err := spconfig.ValidateDesiredConfigValues(desired); err != nil {
-			http.Error(w, "invalid desired config: "+err.Error(), http.StatusBadRequest)
+			writeAPIError(w, http.StatusBadRequest, "invalid desired config: "+err.Error())
 			return
 		}
 		now := time.Now().UTC()
 		if err := h.store.SetDesiredConfig(r.Context(), desired, now); err != nil {
-			http.Error(w, "set desired config", http.StatusInternalServerError)
+			writeAPIError(w, http.StatusInternalServerError, "set desired config")
 			return
 		}
 		h.audit(r.Context(), protocol.AuditEvent{
@@ -1064,19 +1064,19 @@ func (h *handler) desiredConfig(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, desired)
 	default:
 		w.Header().Set("Allow", http.MethodGet+", "+http.MethodPut)
-		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
+		writeAPIError(w, http.StatusMethodNotAllowed, http.StatusText(http.StatusMethodNotAllowed))
 	}
 }
 
 func (h *handler) effectiveConfig(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", http.MethodGet)
-		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
+		writeAPIError(w, http.StatusMethodNotAllowed, http.StatusText(http.StatusMethodNotAllowed))
 		return
 	}
 	nodeID := strings.TrimSpace(r.URL.Query().Get("nodeId"))
 	if nodeID == "" {
-		http.Error(w, "nodeId query parameter is required", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, "nodeId query parameter is required")
 		return
 	}
 	runtimeType := strings.TrimSpace(r.URL.Query().Get("runtimeType"))
@@ -1084,7 +1084,7 @@ func (h *handler) effectiveConfig(w http.ResponseWriter, r *http.Request) {
 
 	desired, err := h.store.GetDesiredConfig(r.Context())
 	if err != nil {
-		http.Error(w, "get desired config", http.StatusInternalServerError)
+		writeAPIError(w, http.StatusInternalServerError, "get desired config")
 		return
 	}
 	h.writeEffectiveConfig(w, r, nodeID, runtimeType, profile, desired)
@@ -1093,7 +1093,7 @@ func (h *handler) effectiveConfig(w http.ResponseWriter, r *http.Request) {
 func (h *handler) previewEffectiveConfig(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
-		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
+		writeAPIError(w, http.StatusMethodNotAllowed, http.StatusText(http.StatusMethodNotAllowed))
 		return
 	}
 	if !h.authorizeOperator(w, r) {
@@ -1105,17 +1105,17 @@ func (h *handler) previewEffectiveConfig(w http.ResponseWriter, r *http.Request)
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&req); err != nil {
-		http.Error(w, "invalid config preview JSON", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, "invalid config preview JSON")
 		return
 	}
 	if err := spconfig.ValidateProviderModelSelection(req.Desired); err != nil {
-		http.Error(w, "invalid desired provider/model: "+err.Error(), http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, "invalid desired provider/model: "+err.Error())
 		return
 	}
 
 	nodeID := strings.TrimSpace(req.NodeID)
 	if nodeID == "" {
-		http.Error(w, "nodeId is required", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, "nodeId is required")
 		return
 	}
 	runtimeType := strings.TrimSpace(req.RuntimeType)
@@ -1123,7 +1123,7 @@ func (h *handler) previewEffectiveConfig(w http.ResponseWriter, r *http.Request)
 
 	desired, err := h.store.GetDesiredConfig(r.Context())
 	if err != nil {
-		http.Error(w, "get desired config", http.StatusInternalServerError)
+		writeAPIError(w, http.StatusInternalServerError, "get desired config")
 		return
 	}
 	target := spconfig.EffectiveConfigTarget{
@@ -1143,7 +1143,7 @@ func (h *handler) writeEffectiveConfig(w http.ResponseWriter, r *http.Request, n
 	})
 	actual, err := h.latestActualSnapshot(r.Context(), nodeID, runtimeType, profile)
 	if err != nil {
-		http.Error(w, "get actual config", http.StatusInternalServerError)
+		writeAPIError(w, http.StatusInternalServerError, "get actual config")
 		return
 	}
 	writeJSON(w, http.StatusOK, protocol.EffectiveConfigResponse{
@@ -1208,11 +1208,22 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 	}
 }
 
+func writeAPIError(w http.ResponseWriter, status int, message string) {
+	if message == "" {
+		message = http.StatusText(status)
+	}
+	code := strings.ToLower(strings.ReplaceAll(http.StatusText(status), " ", "_"))
+	writeJSON(w, status, protocol.APIError{
+		Code:    code,
+		Message: message,
+	})
+}
+
 func (h *handler) authorizeOperator(w http.ResponseWriter, r *http.Request) bool {
 	if h.operatorAuth.AuthorizeHeader(r.Header.Get("Authorization")) {
 		return true
 	}
-	http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
+	writeAPIError(w, http.StatusUnauthorized, http.StatusText(http.StatusUnauthorized))
 	return false
 }
 

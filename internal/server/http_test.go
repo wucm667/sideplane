@@ -1966,10 +1966,75 @@ func TestNodesRejectsNonGET(t *testing.T) {
 	}
 }
 
+func TestAPIEndpointsReturnStructuredJSONErrors(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	enrollTestNode(t, nodeStore, "node-errors")
+	devHandler := newDevHandlerWithStore(t, nodeStore)
+
+	tests := []struct {
+		name        string
+		handler     http.Handler
+		req         *http.Request
+		wantStatus  int
+		wantCode    string
+		wantMessage string
+	}{
+		{
+			name:        "operator auth failure",
+			handler:     NewHandlerWithStore(nodeStore),
+			req:         httptest.NewRequest(http.MethodPost, "/api/enrollment-tokens", strings.NewReader(`{}`)),
+			wantStatus:  http.StatusUnauthorized,
+			wantCode:    "unauthorized",
+			wantMessage: http.StatusText(http.StatusUnauthorized),
+		},
+		{
+			name:        "sidecar auth failure",
+			handler:     NewHandlerWithStore(nodeStore),
+			req:         httptest.NewRequest(http.MethodGet, "/api/sidecar/jobs/next?nodeId=node-errors", nil),
+			wantStatus:  http.StatusUnauthorized,
+			wantCode:    "unauthorized",
+			wantMessage: http.StatusText(http.StatusUnauthorized),
+		},
+		{
+			name:        "validation failure",
+			handler:     devHandler,
+			req:         httptest.NewRequest(http.MethodGet, "/api/nodes/node-errors/jobs?status=unknown", nil),
+			wantStatus:  http.StatusBadRequest,
+			wantCode:    "bad_request",
+			wantMessage: `unsupported job status "unknown"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+
+			tt.handler.ServeHTTP(rec, tt.req)
+
+			assertAPIError(t, rec, tt.wantStatus, tt.wantCode, tt.wantMessage)
+		})
+	}
+}
+
 func assertStatus(t *testing.T, rec *httptest.ResponseRecorder, want int) {
 	t.Helper()
 	if rec.Code != want {
 		t.Fatalf("status = %d, want %d; body: %s", rec.Code, want, rec.Body.String())
+	}
+}
+
+func assertAPIError(t *testing.T, rec *httptest.ResponseRecorder, wantStatus int, wantCode string, wantMessage string) {
+	t.Helper()
+	assertStatus(t, rec, wantStatus)
+	if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "application/json") {
+		t.Fatalf("Content-Type = %q, want application/json", got)
+	}
+	var apiErr protocol.APIError
+	if err := json.NewDecoder(rec.Body).Decode(&apiErr); err != nil {
+		t.Fatalf("decode API error: %v", err)
+	}
+	if apiErr.Code != wantCode || apiErr.Message != wantMessage {
+		t.Fatalf("API error = %#v, want code=%q message=%q", apiErr, wantCode, wantMessage)
 	}
 }
 

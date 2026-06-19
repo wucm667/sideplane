@@ -86,6 +86,25 @@ export function compactHash(hash: string | undefined): string {
   return `${normalized.slice(0, 12)}…`
 }
 
+export async function apiErrorMessage(res: Response): Promise<string> {
+  const fallback = `HTTP ${res.status}: ${res.statusText}`
+  try {
+    const contentType = res.headers.get('Content-Type') ?? ''
+    if (contentType.includes('application/json')) {
+      const data: unknown = await res.json()
+      if (data && typeof data === 'object' && 'message' in data) {
+        const message = String((data as { message?: unknown }).message ?? '').trim()
+        if (message) return message
+      }
+      return fallback
+    }
+    const text = (await res.text()).trim()
+    return text || fallback
+  } catch {
+    return fallback
+  }
+}
+
 function hasActiveJobs(jobs: Job[]): boolean {
   return jobs.some((job) => ACTIVE_JOB_STATUSES.includes(job.status))
 }
@@ -214,7 +233,7 @@ export function useFleetPageController() {
       }
       const res = await fetch(`/api/nodes/${encodeURIComponent(nodeId)}/jobs`, { headers })
       if (!res.ok) {
-        throw new Error(`HTTP ${res.status}: ${res.statusText}`)
+        throw new Error(await apiErrorMessage(res))
       }
       const data: Job[] = await res.json()
       if (!mountedRef.current) return
@@ -240,7 +259,7 @@ export function useFleetPageController() {
   const loadNodes = useCallback(async () => {
     const res = await fetch('/api/nodes')
     if (!res.ok) {
-      throw new Error(`HTTP ${res.status}: ${res.statusText}`)
+      throw new Error(await apiErrorMessage(res))
     }
     const data: NodeStatus[] = await res.json()
     if (!mountedRef.current) return null
@@ -292,7 +311,7 @@ export function useFleetPageController() {
         if (res.status === 401) {
           throw new Error('Operator token required or invalid')
         }
-        throw new Error(`HTTP ${res.status}: ${res.statusText}`)
+        throw new Error(await apiErrorMessage(res))
       }
       const job: Job = await res.json()
       if (!mountedRef.current) return
@@ -332,7 +351,7 @@ export function useFleetPageController() {
       const query = params.toString()
       const res = await fetch(query ? `/api/audit?${query}` : '/api/audit')
       if (!res.ok) {
-        throw new Error(`HTTP ${res.status}: ${res.statusText}`)
+        throw new Error(await apiErrorMessage(res))
       }
       const data: ListAuditEventsResponse = await res.json()
       if (!mountedRef.current) return
@@ -353,7 +372,7 @@ export function useFleetPageController() {
       const params = new URLSearchParams({ nodeId, runtimeType, profile })
       const res = await fetch(`/api/config/effective?${params.toString()}`)
       if (!res.ok) {
-        throw new Error(`HTTP ${res.status}: ${res.statusText}`)
+        throw new Error(await apiErrorMessage(res))
       }
       const data: EffectiveConfigResponse = await res.json()
       if (!mountedRef.current) return

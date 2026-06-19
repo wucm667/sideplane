@@ -1,6 +1,7 @@
 import type { NodeStatusWithDrift } from './generated/api.ts'
 
 export type {
+  APIError,
   AuditEvent,
   ConfigApplyResult,
   ConfigApplyStep,

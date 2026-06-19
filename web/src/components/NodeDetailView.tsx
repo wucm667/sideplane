@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from 'react'
 import ConfigWizard from '../ConfigWizard.tsx'
-import { compactHash, formatDate, formatRelativeTime, hasActiveConfigApply, hasActiveDeepProbe, jobBadgeClasses, latestConfigSnapshots, runtimeKey, snapshotForRuntime, stateBadgeClasses } from '../helpers.ts'
+import { apiErrorMessage, compactHash, formatDate, formatRelativeTime, hasActiveConfigApply, hasActiveDeepProbe, jobBadgeClasses, latestConfigSnapshots, runtimeKey, snapshotForRuntime, stateBadgeClasses } from '../helpers.ts'
 import type { ConfigApplyResult, ConfigDiffEntry, DeepProbeResult, EffectiveConfigResponse, Job, NodeStatus, RuntimeConfigSnapshot, RuntimeStatus } from '../types.ts'
 
 export function NodeDetailView({
@@ -56,7 +56,7 @@ export function NodeDetailView({
       })
       if (!res.ok) {
         if (res.status === 401) throw new Error('Operator token required or invalid')
-        throw new Error(`HTTP ${res.status}: ${res.statusText}`)
+        throw new Error(await apiErrorMessage(res))
       }
       removed = true
       onBack()

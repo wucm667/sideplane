@@ -80,7 +80,7 @@ paths:
                 token: "enroll_example_token"
                 expiresAt: "2026-06-19T12:00:00Z"
         "401":
-          $ref: "#/components/responses/TextError"
+          $ref: "#/components/responses/APIError"
   /api/enroll:
     post:
       tags: [Sidecar]
@@ -108,9 +108,9 @@ paths:
                 nodeId: "node-example"
                 nodeCredential: "node_example_credential"
         "401":
-          $ref: "#/components/responses/TextError"
+          $ref: "#/components/responses/APIError"
         "409":
-          $ref: "#/components/responses/TextError"
+          $ref: "#/components/responses/APIError"
   /api/heartbeat:
     post:
       tags: [Sidecar]
@@ -132,7 +132,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/HeartbeatResponse"
         "401":
-          $ref: "#/components/responses/TextError"
+          $ref: "#/components/responses/APIError"
   /api/nodes:
     get:
       tags: [Operator]
@@ -160,9 +160,9 @@ paths:
         "204":
           description: Node removed.
         "401":
-          $ref: "#/components/responses/TextError"
+          $ref: "#/components/responses/APIError"
         "404":
-          $ref: "#/components/responses/TextError"
+          $ref: "#/components/responses/APIError"
   /api/nodes/{nodeId}/jobs:
     get:
       tags: [Operator]
@@ -193,7 +193,7 @@ paths:
                 items:
                   $ref: "#/components/schemas/Job"
         "400":
-          $ref: "#/components/responses/TextError"
+          $ref: "#/components/responses/APIError"
     post:
       tags: [Operator]
       summary: Create an operator job for a node.
@@ -218,11 +218,11 @@ paths:
               schema:
                 $ref: "#/components/schemas/Job"
         "401":
-          $ref: "#/components/responses/TextError"
+          $ref: "#/components/responses/APIError"
         "404":
-          $ref: "#/components/responses/TextError"
+          $ref: "#/components/responses/APIError"
         "409":
-          $ref: "#/components/responses/TextError"
+          $ref: "#/components/responses/APIError"
   /api/nodes/{nodeId}/config-apply:
     post:
       tags: [Operator]
@@ -250,13 +250,13 @@ paths:
               schema:
                 $ref: "#/components/schemas/Job"
         "400":
-          $ref: "#/components/responses/TextError"
+          $ref: "#/components/responses/APIError"
         "401":
-          $ref: "#/components/responses/TextError"
+          $ref: "#/components/responses/APIError"
         "404":
-          $ref: "#/components/responses/TextError"
+          $ref: "#/components/responses/APIError"
         "409":
-          $ref: "#/components/responses/TextError"
+          $ref: "#/components/responses/APIError"
   /api/sidecar/jobs/next:
     get:
       tags: [Sidecar]
@@ -280,7 +280,7 @@ paths:
         "204":
           description: No pending jobs.
         "401":
-          $ref: "#/components/responses/TextError"
+          $ref: "#/components/responses/APIError"
   /api/sidecar/jobs/{jobId}/result:
     post:
       tags: [Sidecar]
@@ -308,11 +308,11 @@ paths:
               schema:
                 $ref: "#/components/schemas/AcceptedResponse"
         "400":
-          $ref: "#/components/responses/TextError"
+          $ref: "#/components/responses/APIError"
         "401":
-          $ref: "#/components/responses/TextError"
+          $ref: "#/components/responses/APIError"
         "404":
-          $ref: "#/components/responses/TextError"
+          $ref: "#/components/responses/APIError"
   /api/config/desired:
     get:
       tags: [Operator]
@@ -345,9 +345,9 @@ paths:
               schema:
                 $ref: "#/components/schemas/DesiredConfig"
         "400":
-          $ref: "#/components/responses/TextError"
+          $ref: "#/components/responses/APIError"
         "401":
-          $ref: "#/components/responses/TextError"
+          $ref: "#/components/responses/APIError"
   /api/config/effective:
     get:
       tags: [Operator]
@@ -377,7 +377,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/EffectiveConfigResponse"
         "400":
-          $ref: "#/components/responses/TextError"
+          $ref: "#/components/responses/APIError"
   /api/config/effective/preview:
     post:
       tags: [Operator]
@@ -399,9 +399,9 @@ paths:
               schema:
                 $ref: "#/components/schemas/EffectiveConfigResponse"
         "400":
-          $ref: "#/components/responses/TextError"
+          $ref: "#/components/responses/APIError"
         "401":
-          $ref: "#/components/responses/TextError"
+          $ref: "#/components/responses/APIError"
   /api/audit:
     get:
       tags: [Operator]
@@ -445,7 +445,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/PublicSigningKeyResponse"
         "503":
-          $ref: "#/components/responses/TextError"
+          $ref: "#/components/responses/APIError"
 components:
   securitySchemes:
     operatorBearer:
@@ -464,13 +464,21 @@ components:
       schema:
         type: string
   responses:
-    TextError:
-      description: Plain text error response used by the current server.
+    APIError:
+      description: Structured JSON error response.
       content:
-        text/plain:
+        application/json:
           schema:
-            type: string
+            $ref: "#/components/schemas/APIError"
   schemas:
+    APIError:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+        message:
+          type: string
     StatusResponse:
       type: object
       required: [status]

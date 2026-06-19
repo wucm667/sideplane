@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { formatDate } from '../helpers.ts'
+import { apiErrorMessage, formatDate } from '../helpers.ts'
 import type { CreateEnrollmentTokenResponse } from '../types.ts'
 
 export function EnrollmentView({ operatorToken }: { operatorToken: string }) {
@@ -29,7 +29,7 @@ export function EnrollmentView({ operatorToken }: { operatorToken: string }) {
       })
       if (!res.ok) {
         if (res.status === 401) throw new Error('Operator token required or invalid')
-        throw new Error(`HTTP ${res.status}: ${res.statusText}`)
+        throw new Error(await apiErrorMessage(res))
       }
       const data: CreateEnrollmentTokenResponse = await res.json()
       setCreated(data)

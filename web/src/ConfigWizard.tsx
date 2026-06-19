@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { apiErrorMessage } from './helpers.ts'
 import type { ConfigApplyResult, ConfigApplyStep, DesiredConfig, EffectiveConfigPreviewRequest, EffectiveConfigResponse, Job } from './types.ts'
 
 const WIZARD_STEPS = ['Edit', 'Review', 'Apply', 'Done'] as const
@@ -70,9 +71,9 @@ export default function ConfigWizard({
     [operatorToken],
   )
 
-  const failMessage = (res: Response): string => {
+  const failMessage = async (res: Response): Promise<string> => {
     if (res.status === 401) return 'Operator token required or invalid'
-    return `HTTP ${res.status}: ${res.statusText}`
+    return apiErrorMessage(res)
   }
 
   const goReview = useCallback(async () => {
@@ -90,7 +91,7 @@ export default function ConfigWizard({
         desired: { provider: provider.trim(), model: model.trim() },
       }
       const effRes = await authedFetch('/api/config/effective/preview', { method: 'POST', body: JSON.stringify(previewReq) })
-      if (!effRes.ok) throw new Error(failMessage(effRes))
+      if (!effRes.ok) throw new Error(await failMessage(effRes))
       const effData: EffectiveConfigResponse = await effRes.json()
       if (!mountedRef.current) return
       setReview(effData)
@@ -144,7 +145,7 @@ export default function ConfigWizard({
     setStep('Apply')
     try {
       const current: DesiredConfig = await fetch('/api/config/desired').then((res) => {
-        if (!res.ok) throw new Error(failMessage(res))
+        if (!res.ok) return failMessage(res).then((message) => { throw new Error(message) })
         return res.json()
       })
       const next: DesiredConfig = {
@@ -157,17 +158,16 @@ export default function ConfigWizard({
         },
       }
       const putRes = await authedFetch('/api/config/desired', { method: 'PUT', body: JSON.stringify(next) })
-      if (!putRes.ok) throw new Error(failMessage(putRes))
+      if (!putRes.ok) throw new Error(await failMessage(putRes))
 
       const res = await authedFetch(`/api/nodes/${encodeURIComponent(nodeId)}/config-apply`, {
         method: 'POST',
         body: JSON.stringify({ runtimeType, profile, dryRun }),
       })
       if (!res.ok) {
-        const body = await res.text()
         if (res.status === 401) throw new Error('Operator token required or invalid')
         if (res.status === 409) throw new Error('A config apply job is already pending or running for this node.')
-        throw new Error(body || failMessage(res))
+        throw new Error(await failMessage(res))
       }
       const job: Job = await res.json()
       await pollApply(job.id)

@@ -424,7 +424,7 @@ func apiJSONRequest(ctx context.Context, method string, serverURL string, path s
 		if readErr != nil {
 			return nil, fmt.Errorf("server returned status %d and response body could not be read: %w", httpResp.StatusCode, readErr)
 		}
-		return nil, fmt.Errorf("server returned status %d: %s", httpResp.StatusCode, strings.TrimSpace(string(respBody)))
+		return nil, fmt.Errorf("server returned status %d: %s", httpResp.StatusCode, apiErrorMessage(respBody))
 	}
 	if readErr != nil {
 		return nil, fmt.Errorf("read response body: %w", readErr)
@@ -656,7 +656,7 @@ func createEnrollmentToken(ctx context.Context, serverURL string, expiresIn time
 
 	if httpResp.StatusCode < http.StatusOK || httpResp.StatusCode >= http.StatusMultipleChoices {
 		body, _ := io.ReadAll(io.LimitReader(httpResp.Body, 1024))
-		return protocol.CreateEnrollmentTokenResponse{}, fmt.Errorf("server returned status %d: %s", httpResp.StatusCode, strings.TrimSpace(string(body)))
+		return protocol.CreateEnrollmentTokenResponse{}, fmt.Errorf("server returned status %d: %s", httpResp.StatusCode, apiErrorMessage(body))
 	}
 
 	var resp protocol.CreateEnrollmentTokenResponse
@@ -667,6 +667,18 @@ func createEnrollmentToken(ctx context.Context, serverURL string, expiresIn time
 		return protocol.CreateEnrollmentTokenResponse{}, fmt.Errorf("server response missing token or expiry")
 	}
 	return resp, nil
+}
+
+func apiErrorMessage(body []byte) string {
+	trimmed := strings.TrimSpace(string(body))
+	if trimmed == "" {
+		return ""
+	}
+	var apiErr protocol.APIError
+	if err := json.Unmarshal(body, &apiErr); err == nil && strings.TrimSpace(apiErr.Message) != "" {
+		return strings.TrimSpace(apiErr.Message)
+	}
+	return trimmed
 }
 
 func apiEndpoint(serverURL string, path string) (string, error) {
