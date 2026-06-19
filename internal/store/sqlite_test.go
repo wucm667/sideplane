@@ -36,6 +36,7 @@ func TestSQLiteNodeStoreMigratesAndPersistsHeartbeat(t *testing.T) {
 	assertSQLiteTableExists(t, ctx, first.db, "enrollment_tokens")
 	assertSQLiteTableExists(t, ctx, first.db, "node_credentials")
 	assertSQLiteTableExists(t, ctx, first.db, "audit_events")
+	assertSQLiteTableExists(t, ctx, first.db, "node_labels")
 	assertSQLiteMigrationApplied(t, ctx, first.db, 1)
 	assertSQLiteMigrationApplied(t, ctx, first.db, 2)
 	assertSQLiteMigrationApplied(t, ctx, first.db, 3)
@@ -43,6 +44,7 @@ func TestSQLiteNodeStoreMigratesAndPersistsHeartbeat(t *testing.T) {
 	assertSQLiteMigrationApplied(t, ctx, first.db, 5)
 	assertSQLiteMigrationApplied(t, ctx, first.db, 6)
 	assertSQLiteMigrationApplied(t, ctx, first.db, 7)
+	assertSQLiteMigrationApplied(t, ctx, first.db, 8)
 
 	observedAt := time.Date(2026, 6, 16, 1, 2, 3, 0, time.UTC)
 	sentAt := observedAt.Add(-time.Second)
@@ -145,6 +147,121 @@ func TestSQLiteNodeStoreListNodesFilteredPaginatesAndCounts(t *testing.T) {
 	}
 	if len(list.Nodes) != 0 {
 		t.Fatalf("paged nodes length = %d, want 0", len(list.Nodes))
+	}
+}
+
+func TestSQLiteNodeStoreSetGetOverwriteDeleteAndPersistLabels(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "sideplane.db")
+	store, err := OpenSQLiteNodeStore(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+
+	now := time.Date(2026, 6, 16, 1, 2, 3, 0, time.UTC)
+	if _, err := store.RecordHeartbeat(ctx, protocol.HeartbeatRequest{NodeID: "node-labels"}, now); err != nil {
+		t.Fatalf("record heartbeat: %v", err)
+	}
+	if err := store.SetNodeLabels(ctx, "node-labels", map[string]string{
+		" role ": " canary ",
+		"zone":   "lab",
+	}); err != nil {
+		t.Fatalf("set labels: %v", err)
+	}
+	labels, err := store.GetNodeLabels(ctx, "node-labels")
+	if err != nil {
+		t.Fatalf("get labels: %v", err)
+	}
+	if labels["role"] != "canary" || labels["zone"] != "lab" {
+		t.Fatalf("labels = %#v, want normalized role/zone", labels)
+	}
+
+	if _, err := store.RecordHeartbeat(ctx, protocol.HeartbeatRequest{NodeID: "node-labels"}, now.Add(time.Second)); err != nil {
+		t.Fatalf("record second heartbeat: %v", err)
+	}
+	list, err := store.ListNodes(ctx)
+	if err != nil {
+		t.Fatalf("list nodes: %v", err)
+	}
+	if len(list) != 1 || list[0].Labels["role"] != "canary" {
+		t.Fatalf("listed labels = %#v, want preserved canary label", list)
+	}
+
+	if err := store.SetNodeLabels(ctx, "node-labels", map[string]string{"role": "stable"}); err != nil {
+		t.Fatalf("overwrite labels: %v", err)
+	}
+	labels, err = store.GetNodeLabels(ctx, "node-labels")
+	if err != nil {
+		t.Fatalf("get overwritten labels: %v", err)
+	}
+	if labels["role"] != "stable" || len(labels) != 1 {
+		t.Fatalf("overwritten labels = %#v, want only stable role", labels)
+	}
+
+	if err := store.Close(); err != nil {
+		t.Fatalf("close sqlite store: %v", err)
+	}
+	store, err = OpenSQLiteNodeStore(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("reopen sqlite store: %v", err)
+	}
+	defer store.Close()
+	labels, err = store.GetNodeLabels(ctx, "node-labels")
+	if err != nil {
+		t.Fatalf("get persisted labels: %v", err)
+	}
+	if labels["role"] != "stable" || len(labels) != 1 {
+		t.Fatalf("persisted labels = %#v, want stable role", labels)
+	}
+	if err := store.SetNodeLabels(ctx, "node-labels", map[string]string{}); err != nil {
+		t.Fatalf("delete labels: %v", err)
+	}
+	labels, err = store.GetNodeLabels(ctx, "node-labels")
+	if err != nil {
+		t.Fatalf("get deleted labels: %v", err)
+	}
+	if len(labels) != 0 {
+		t.Fatalf("deleted labels = %#v, want empty", labels)
+	}
+}
+
+func TestSQLiteNodeStoreLabelValidationAndDeleteCascade(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenSQLiteNodeStore(ctx, filepath.Join(t.TempDir(), "sideplane.db"))
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer store.Close()
+
+	now := time.Date(2026, 6, 16, 1, 2, 3, 0, time.UTC)
+	if _, err := store.RecordHeartbeat(ctx, protocol.HeartbeatRequest{NodeID: "node-labels"}, now); err != nil {
+		t.Fatalf("record heartbeat: %v", err)
+	}
+	for name, labels := range map[string]map[string]string{
+		"empty key":        {"": "value"},
+		"long key":         {strings.Repeat("k", MaxNodeLabelKeyLength+1): "value"},
+		"long value":       {"key": strings.Repeat("v", MaxNodeLabelValueLength+1)},
+		"control in key":   {"bad\nkey": "value"},
+		"control in value": {"key": "bad\nvalue"},
+	} {
+		if err := store.SetNodeLabels(ctx, "node-labels", labels); err == nil {
+			t.Fatalf("%s labels unexpectedly accepted", name)
+		}
+	}
+	if err := store.SetNodeLabels(ctx, "missing", map[string]string{"role": "canary"}); !errors.Is(err, ErrNodeNotFound) {
+		t.Fatalf("missing node set labels error = %v, want ErrNodeNotFound", err)
+	}
+	if err := store.SetNodeLabels(ctx, "node-labels", map[string]string{"role": "canary"}); err != nil {
+		t.Fatalf("set valid labels: %v", err)
+	}
+	if err := store.DeleteNode(ctx, "node-labels"); err != nil {
+		t.Fatalf("delete node: %v", err)
+	}
+	if _, err := store.GetNodeLabels(ctx, "node-labels"); !errors.Is(err, ErrNodeNotFound) {
+		t.Fatalf("get labels after delete error = %v, want ErrNodeNotFound", err)
+	}
+	if got := countSQLiteRowsForValue(t, ctx, store.db, "node_labels", "node_id", "node-labels"); got != 0 {
+		t.Fatalf("node label rows after cascade = %d, want 0", got)
 	}
 }
 
@@ -550,6 +667,7 @@ func TestSQLiteDeleteNodeRemovesAssociatedData(t *testing.T) {
 	}{
 		{table: "node_credentials", column: "node_id"},
 		{table: "node_runtimes", column: "node_id"},
+		{table: "node_labels", column: "node_id"},
 		{table: "heartbeats", column: "node_id"},
 		{table: "jobs", column: "node_id"},
 		{table: "audit_events", column: "target_node"},

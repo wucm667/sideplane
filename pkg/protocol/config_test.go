@@ -75,6 +75,30 @@ func TestRuntimeStatusJSONShape(t *testing.T) {
 	}
 }
 
+func TestNodeStatusJSONIncludesOperatorLabels(t *testing.T) {
+	status := NodeStatus{
+		NodeID: "node-a",
+		State:  NodeStateFresh,
+		Labels: map[string]string{
+			"role":   "canary",
+			"region": "local",
+		},
+	}
+
+	payload, err := json.Marshal(status)
+	if err != nil {
+		t.Fatalf("marshal node status: %v", err)
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(payload, &got); err != nil {
+		t.Fatalf("unmarshal node status: %v", err)
+	}
+	if _, ok := got["labels"]; !ok {
+		t.Fatalf("node status JSON omits labels: %s", payload)
+	}
+}
+
 func TestDesiredConfigJSONShape(t *testing.T) {
 	desired := DesiredConfig{
 		Global: ProviderModelConfig{Provider: "openai", Model: "gpt-5"},

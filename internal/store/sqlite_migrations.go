@@ -151,6 +151,23 @@ ON heartbeats(node_id, observed_at DESC)`,
 			`ALTER TABLE node_runtimes ADD COLUMN warnings_json TEXT NOT NULL DEFAULT ''`,
 		},
 	},
+	{
+		version: 8,
+		name:    "create node labels table",
+		statements: []string{
+			`
+	CREATE TABLE IF NOT EXISTS node_labels (
+		node_id TEXT NOT NULL,
+		key TEXT NOT NULL,
+		value TEXT NOT NULL DEFAULT '',
+		PRIMARY KEY (node_id, key),
+		FOREIGN KEY (node_id) REFERENCES nodes(node_id) ON DELETE CASCADE
+	)`,
+			`
+	CREATE INDEX IF NOT EXISTS idx_node_labels_key_value
+	ON node_labels(key, value)`,
+		},
+	},
 }
 
 // LatestSQLiteSchemaVersion returns the newest migration version compiled into

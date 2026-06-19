@@ -191,6 +191,10 @@ INSERT INTO heartbeats (
 	if err := tx.Commit(); err != nil {
 		return protocol.NodeStatus{}, fmt.Errorf("commit heartbeat transaction: %w", err)
 	}
+	node.Labels, err = s.GetNodeLabels(ctx, node.NodeID)
+	if err != nil {
+		return protocol.NodeStatus{}, err
+	}
 
 	return node, nil
 }
@@ -227,6 +231,9 @@ ORDER BY node_id, runtime_index
 	defer runtimeRows.Close()
 
 	if err := scanSQLiteNodeRuntimes(runtimeRows, nodes, indexByNodeID); err != nil {
+		return nil, err
+	}
+	if err := s.scanSQLiteNodeLabels(ctx, nodes, indexByNodeID); err != nil {
 		return nil, err
 	}
 
@@ -278,6 +285,9 @@ ORDER BY nr.node_id, nr.runtime_index
 		}
 		defer runtimeRows.Close()
 		if err := scanSQLiteNodeRuntimes(runtimeRows, nodes, indexByNodeID); err != nil {
+			return NodeList{}, err
+		}
+		if err := s.scanSQLiteNodeLabels(ctx, nodes, indexByNodeID); err != nil {
 			return NodeList{}, err
 		}
 	}
@@ -362,6 +372,40 @@ func scanSQLiteNodeRuntimes(rows *sql.Rows, nodes []protocol.NodeStatus, indexBy
 	return nil
 }
 
+func (s *SQLiteNodeStore) scanSQLiteNodeLabels(ctx context.Context, nodes []protocol.NodeStatus, indexByNodeID map[string]int) error {
+	if len(nodes) == 0 {
+		return nil
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT node_id, key, value
+FROM node_labels
+ORDER BY node_id, key
+`)
+	if err != nil {
+		return fmt.Errorf("query node labels: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var nodeID, key, value string
+		if err := rows.Scan(&nodeID, &key, &value); err != nil {
+			return fmt.Errorf("scan node label: %w", err)
+		}
+		i, ok := indexByNodeID[nodeID]
+		if !ok {
+			continue
+		}
+		if nodes[i].Labels == nil {
+			nodes[i].Labels = map[string]string{}
+		}
+		nodes[i].Labels[key] = value
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate node labels: %w", err)
+	}
+	return nil
+}
+
 // NodeExists reports whether a node is known to the store.
 func (s *SQLiteNodeStore) NodeExists(ctx context.Context, nodeID string) (bool, error) {
 	if s == nil || s.db == nil {
@@ -381,6 +425,96 @@ func (s *SQLiteNodeStore) NodeExists(ctx context.Context, nodeID string) (bool, 
 		return false, fmt.Errorf("query node existence: %w", err)
 	}
 	return true, nil
+}
+
+// SetNodeLabels replaces operator-managed labels for a node.
+func (s *SQLiteNodeStore) SetNodeLabels(ctx context.Context, nodeID string, labels map[string]string) error {
+	if s == nil || s.db == nil {
+		return errors.New("sqlite node store is closed")
+	}
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" {
+		return errors.New("node ID is required")
+	}
+	normalized, err := ValidateNodeLabels(labels)
+	if err != nil {
+		return err
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin set node labels transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	var exists int
+	err = tx.QueryRowContext(ctx, `SELECT 1 FROM nodes WHERE node_id = ?`, nodeID).Scan(&exists)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNodeNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("query node before setting labels: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM node_labels WHERE node_id = ?`, nodeID); err != nil {
+		return fmt.Errorf("delete previous node labels: %w", err)
+	}
+	for key, value := range normalized {
+		if _, err := tx.ExecContext(ctx, `
+INSERT INTO node_labels (node_id, key, value)
+VALUES (?, ?, ?)
+`, nodeID, key, value); err != nil {
+			return fmt.Errorf("insert node label %q: %w", key, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit set node labels transaction: %w", err)
+	}
+	return nil
+}
+
+// GetNodeLabels returns a copy of operator-managed labels for a node.
+func (s *SQLiteNodeStore) GetNodeLabels(ctx context.Context, nodeID string) (map[string]string, error) {
+	if s == nil || s.db == nil {
+		return nil, errors.New("sqlite node store is closed")
+	}
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" {
+		return nil, errors.New("node ID is required")
+	}
+	exists, err := s.NodeExists(ctx, nodeID)
+	if err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, ErrNodeNotFound
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+SELECT key, value
+FROM node_labels
+WHERE node_id = ?
+ORDER BY key
+`, nodeID)
+	if err != nil {
+		return nil, fmt.Errorf("query node labels: %w", err)
+	}
+	defer rows.Close()
+
+	labels := map[string]string{}
+	for rows.Next() {
+		var key, value string
+		if err := rows.Scan(&key, &value); err != nil {
+			return nil, fmt.Errorf("scan node label: %w", err)
+		}
+		labels[key] = value
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate node labels: %w", err)
+	}
+	if len(labels) == 0 {
+		return nil, nil
+	}
+	return labels, nil
 }
 
 // DeleteNode removes a node and all node-scoped associated data.

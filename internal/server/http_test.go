@@ -2898,6 +2898,14 @@ func (s staticNodeStore) NodeExists(context.Context, string) (bool, error) {
 	return false, nil
 }
 
+func (s staticNodeStore) SetNodeLabels(context.Context, string, map[string]string) error {
+	return nil
+}
+
+func (s staticNodeStore) GetNodeLabels(context.Context, string) (map[string]string, error) {
+	return nil, nil
+}
+
 func (s staticNodeStore) DeleteNode(context.Context, string) error {
 	return nil
 }

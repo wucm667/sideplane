@@ -66,6 +66,9 @@ func (s *MemoryNodeStore) RecordHeartbeat(_ context.Context, req protocol.Heartb
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if existing, ok := s.nodes[req.NodeID]; ok {
+		node.Labels = cloneLabels(existing.Labels)
+	}
 	s.nodes[req.NodeID] = node
 	if s.heartbeats == nil {
 		s.heartbeats = make(map[string][]time.Time)
@@ -82,8 +85,7 @@ func (s *MemoryNodeStore) ListNodes(_ context.Context) ([]protocol.NodeStatus, e
 
 	nodes := make([]protocol.NodeStatus, 0, len(s.nodes))
 	for _, node := range s.nodes {
-		node.Runtimes = cloneRuntimeStatuses(node.Runtimes)
-		nodes = append(nodes, node)
+		nodes = append(nodes, cloneNodeStatus(node))
 	}
 
 	sort.Slice(nodes, func(i, j int) bool {
@@ -128,6 +130,44 @@ func (s *MemoryNodeStore) NodeExists(_ context.Context, nodeID string) (bool, er
 	defer s.mu.RUnlock()
 	_, ok := s.nodes[nodeID]
 	return ok, nil
+}
+
+// SetNodeLabels replaces operator-managed labels for a node.
+func (s *MemoryNodeStore) SetNodeLabels(_ context.Context, nodeID string, labels map[string]string) error {
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" {
+		return errors.New("node ID is required")
+	}
+	normalized, err := ValidateNodeLabels(labels)
+	if err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	node, ok := s.nodes[nodeID]
+	if !ok {
+		return ErrNodeNotFound
+	}
+	node.Labels = cloneLabels(normalized)
+	s.nodes[nodeID] = node
+	return nil
+}
+
+// GetNodeLabels returns a copy of operator-managed labels for a node.
+func (s *MemoryNodeStore) GetNodeLabels(_ context.Context, nodeID string) (map[string]string, error) {
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" {
+		return nil, errors.New("node ID is required")
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	node, ok := s.nodes[nodeID]
+	if !ok {
+		return nil, ErrNodeNotFound
+	}
+	return cloneLabels(node.Labels), nil
 }
 
 // DeleteNode removes a node and all node-scoped associated data.
@@ -648,6 +688,23 @@ func cloneDesiredConfig(desired protocol.DesiredConfig) protocol.DesiredConfig {
 		for key, value := range desired.NodeRuntimeProfileOverrides {
 			clone.NodeRuntimeProfileOverrides[key] = value
 		}
+	}
+	return clone
+}
+
+func cloneNodeStatus(node protocol.NodeStatus) protocol.NodeStatus {
+	node.Runtimes = cloneRuntimeStatuses(node.Runtimes)
+	node.Labels = cloneLabels(node.Labels)
+	return node
+}
+
+func cloneLabels(labels map[string]string) map[string]string {
+	if len(labels) == 0 {
+		return nil
+	}
+	clone := make(map[string]string, len(labels))
+	for key, value := range labels {
+		clone[key] = value
 	}
 	return clone
 }

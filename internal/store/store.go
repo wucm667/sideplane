@@ -78,6 +78,8 @@ type NodeStore interface {
 	ListNodes(ctx context.Context) ([]protocol.NodeStatus, error)
 	ListNodesFiltered(ctx context.Context, filter NodeFilter) (NodeList, error)
 	NodeExists(ctx context.Context, nodeID string) (bool, error)
+	SetNodeLabels(ctx context.Context, nodeID string, labels map[string]string) error
+	GetNodeLabels(ctx context.Context, nodeID string) (map[string]string, error)
 	DeleteNode(ctx context.Context, nodeID string) error
 	PruneHeartbeats(ctx context.Context, keep int) (int64, error)
 }
@@ -94,6 +96,49 @@ type NodeList struct {
 	Total  int
 	Limit  int
 	Offset int
+}
+
+const (
+	// MaxNodeLabelKeyLength bounds operator-managed label keys.
+	MaxNodeLabelKeyLength = 63
+	// MaxNodeLabelValueLength bounds operator-managed label values.
+	MaxNodeLabelValueLength = 255
+)
+
+// ValidateNodeLabels returns a trimmed copy of labels when all keys and values
+// fit Sideplane's operator metadata constraints.
+func ValidateNodeLabels(labels map[string]string) (map[string]string, error) {
+	if len(labels) == 0 {
+		return nil, nil
+	}
+	normalized := make(map[string]string, len(labels))
+	for rawKey, rawValue := range labels {
+		key := strings.TrimSpace(rawKey)
+		value := strings.TrimSpace(rawValue)
+		if key == "" {
+			return nil, errors.New("label key is required")
+		}
+		if len(key) > MaxNodeLabelKeyLength {
+			return nil, errors.New("label key is too long")
+		}
+		if len(value) > MaxNodeLabelValueLength {
+			return nil, errors.New("label value is too long")
+		}
+		if hasControlCharacter(key) || hasControlCharacter(value) {
+			return nil, errors.New("label key and value must not contain control characters")
+		}
+		normalized[key] = value
+	}
+	return normalized, nil
+}
+
+func hasControlCharacter(value string) bool {
+	for _, r := range value {
+		if r < 0x20 || r == 0x7f {
+			return true
+		}
+	}
+	return false
 }
 
 func NormalizeNodeFilter(filter NodeFilter) NodeFilter {

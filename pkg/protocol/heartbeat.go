@@ -26,14 +26,15 @@ type RuntimeStatus struct {
 
 // NodeStatus is the heartbeat-derived status the server exposes for a node.
 type NodeStatus struct {
-	NodeID          string          `json:"nodeId"`
-	Hostname        string          `json:"hostname,omitempty"`
-	State           NodeState       `json:"state"`
-	SidecarVersion  string          `json:"sidecarVersion,omitempty"`
-	LastHeartbeatAt time.Time       `json:"lastHeartbeatAt"`
-	Runtimes        []RuntimeStatus `json:"runtimes,omitempty"`
-	ConfigHash      string          `json:"configHash,omitempty"`
-	LastError       string          `json:"lastError,omitempty"`
+	NodeID          string            `json:"nodeId"`
+	Hostname        string            `json:"hostname,omitempty"`
+	State           NodeState         `json:"state"`
+	SidecarVersion  string            `json:"sidecarVersion,omitempty"`
+	LastHeartbeatAt time.Time         `json:"lastHeartbeatAt"`
+	Runtimes        []RuntimeStatus   `json:"runtimes,omitempty"`
+	ConfigHash      string            `json:"configHash,omitempty"`
+	LastError       string            `json:"lastError,omitempty"`
+	Labels          map[string]string `json:"labels,omitempty"`
 }
 
 // NodeStatusWithDrift is the operator-facing node status view.

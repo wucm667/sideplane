@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -89,6 +91,104 @@ func TestMemoryNodeStoreListNodesFilteredPaginatesAndCounts(t *testing.T) {
 	}
 	if len(list.Nodes) != 0 {
 		t.Fatalf("paged nodes length = %d, want 0", len(list.Nodes))
+	}
+}
+
+func TestMemoryNodeStoreSetGetOverwriteAndDeleteLabels(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryNodeStore()
+	now := time.Date(2026, 6, 16, 1, 2, 3, 0, time.UTC)
+	if _, err := store.RecordHeartbeat(ctx, protocol.HeartbeatRequest{NodeID: "node-labels"}, now); err != nil {
+		t.Fatalf("record heartbeat: %v", err)
+	}
+
+	if err := store.SetNodeLabels(ctx, "node-labels", map[string]string{
+		" role ": " canary ",
+		"zone":   "lab",
+	}); err != nil {
+		t.Fatalf("set labels: %v", err)
+	}
+	labels, err := store.GetNodeLabels(ctx, "node-labels")
+	if err != nil {
+		t.Fatalf("get labels: %v", err)
+	}
+	if labels["role"] != "canary" || labels["zone"] != "lab" {
+		t.Fatalf("labels = %#v, want normalized role/zone", labels)
+	}
+
+	labels["role"] = "mutated"
+	again, err := store.GetNodeLabels(ctx, "node-labels")
+	if err != nil {
+		t.Fatalf("get labels again: %v", err)
+	}
+	if again["role"] != "canary" {
+		t.Fatalf("returned labels mutated store: %#v", again)
+	}
+
+	if _, err := store.RecordHeartbeat(ctx, protocol.HeartbeatRequest{NodeID: "node-labels"}, now.Add(time.Second)); err != nil {
+		t.Fatalf("record second heartbeat: %v", err)
+	}
+	list, err := store.ListNodes(ctx)
+	if err != nil {
+		t.Fatalf("list nodes: %v", err)
+	}
+	if len(list) != 1 || list[0].Labels["role"] != "canary" {
+		t.Fatalf("listed labels = %#v, want preserved canary label", list)
+	}
+
+	if err := store.SetNodeLabels(ctx, "node-labels", map[string]string{"role": "stable"}); err != nil {
+		t.Fatalf("overwrite labels: %v", err)
+	}
+	labels, err = store.GetNodeLabels(ctx, "node-labels")
+	if err != nil {
+		t.Fatalf("get overwritten labels: %v", err)
+	}
+	if labels["role"] != "stable" || len(labels) != 1 {
+		t.Fatalf("overwritten labels = %#v, want only stable role", labels)
+	}
+
+	if err := store.SetNodeLabels(ctx, "node-labels", map[string]string{}); err != nil {
+		t.Fatalf("delete labels: %v", err)
+	}
+	labels, err = store.GetNodeLabels(ctx, "node-labels")
+	if err != nil {
+		t.Fatalf("get deleted labels: %v", err)
+	}
+	if len(labels) != 0 {
+		t.Fatalf("deleted labels = %#v, want empty", labels)
+	}
+}
+
+func TestMemoryNodeStoreLabelValidationAndDeleteCascade(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryNodeStore()
+	now := time.Date(2026, 6, 16, 1, 2, 3, 0, time.UTC)
+	if _, err := store.RecordHeartbeat(ctx, protocol.HeartbeatRequest{NodeID: "node-labels"}, now); err != nil {
+		t.Fatalf("record heartbeat: %v", err)
+	}
+
+	for name, labels := range map[string]map[string]string{
+		"empty key":        {"": "value"},
+		"long key":         {strings.Repeat("k", MaxNodeLabelKeyLength+1): "value"},
+		"long value":       {"key": strings.Repeat("v", MaxNodeLabelValueLength+1)},
+		"control in key":   {"bad\nkey": "value"},
+		"control in value": {"key": "bad\nvalue"},
+	} {
+		if err := store.SetNodeLabels(ctx, "node-labels", labels); err == nil {
+			t.Fatalf("%s labels unexpectedly accepted", name)
+		}
+	}
+	if err := store.SetNodeLabels(ctx, "missing", map[string]string{"role": "canary"}); !errors.Is(err, ErrNodeNotFound) {
+		t.Fatalf("missing node set labels error = %v, want ErrNodeNotFound", err)
+	}
+	if err := store.SetNodeLabels(ctx, "node-labels", map[string]string{"role": "canary"}); err != nil {
+		t.Fatalf("set valid labels: %v", err)
+	}
+	if err := store.DeleteNode(ctx, "node-labels"); err != nil {
+		t.Fatalf("delete node: %v", err)
+	}
+	if _, err := store.GetNodeLabels(ctx, "node-labels"); !errors.Is(err, ErrNodeNotFound) {
+		t.Fatalf("get labels after delete error = %v, want ErrNodeNotFound", err)
 	}
 }
 
