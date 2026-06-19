@@ -6,10 +6,17 @@ const AUDIT_ACTIONS: AuditAction[] = [
   'enrollment.token.create',
   'node.enroll',
   'node.delete',
+  'node.labels.update',
   'job.create',
   'job.complete',
   'job.fail',
   'config.apply',
+  'restart',
+  'rollback',
+  'rollout.create',
+  'rollout.pause',
+  'rollout.resume',
+  'rollout.abort',
   'config.desired.update',
 ]
 

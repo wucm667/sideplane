@@ -3,6 +3,7 @@ import { ActivityView } from './components/ActivityView.tsx'
 import { EnrollmentView } from './components/EnrollmentView.tsx'
 import { FleetOverview } from './components/FleetOverview.tsx'
 import { NodeDetailView } from './components/NodeDetailView.tsx'
+import { RolloutsView } from './components/RolloutsView.tsx'
 import { Sidebar } from './components/Sidebar.tsx'
 import { useFleetPageController } from './helpers.ts'
 
@@ -21,6 +22,8 @@ export default function FleetPage() {
     createDeepProbe,
     createRollback,
     createRestart,
+    createRollout,
+    creatingRollout,
     creatingByNode,
     effectiveByNode,
     effectiveErrorByNode,
@@ -35,12 +38,17 @@ export default function FleetPage() {
     labelErrorByNode,
     loading,
     loadMoreNodeJobs,
+    loadRollouts,
     nodes,
     operatorToken,
     openNode,
     refreshFleet,
     refreshSelectedNodeAfterApply,
     refreshing,
+    rolloutActioningId,
+    rollouts,
+    rolloutsError,
+    rolloutsLoading,
     rollingBackByNode,
     saveNodeLabels,
     savingLabelsByNode,
@@ -57,6 +65,7 @@ export default function FleetPage() {
     toggleTheme,
     view,
     loadAuditEvents,
+    performRolloutAction,
   } = useFleetPageController()
 
   useEffect(() => {
@@ -80,10 +89,17 @@ export default function FleetPage() {
         changeView('enrollment')
         return
       }
+      if (key === '4') {
+        event.preventDefault()
+        changeView('rollouts')
+        return
+      }
       if (key === 'r') {
         event.preventDefault()
         if (view === 'activity') {
           void loadAuditEvents()
+        } else if (view === 'rollouts') {
+          void loadRollouts()
         } else {
           void refreshFleet()
         }
@@ -97,7 +113,7 @@ export default function FleetPage() {
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [changeView, loadAuditEvents, refreshFleet, view])
+  }, [changeView, loadAuditEvents, loadRollouts, refreshFleet, view])
 
   return (
     <div data-sideplane-theme={theme} className="min-h-screen bg-[var(--sp-bg)] text-[var(--sp-text)]">
@@ -160,6 +176,21 @@ export default function FleetPage() {
           )}
           {view === 'node' && !selectedNode && (
             <EmptyState title="Node not found" body="Return to Fleet and select a registered node." />
+          )}
+          {view === 'rollouts' && (
+            <RolloutsView
+              actioningId={rolloutActioningId}
+              creating={creatingRollout}
+              error={rolloutsError}
+              loading={rolloutsLoading}
+              nodes={nodes}
+              operatorToken={operatorToken}
+              rollouts={rollouts}
+              onAction={performRolloutAction}
+              onCreate={createRollout}
+              onOpenNode={openNode}
+              onRefresh={loadRollouts}
+            />
           )}
           {view === 'activity' && (
             <ActivityView

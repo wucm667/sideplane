@@ -6,6 +6,7 @@ import {
   jobBadgeClasses,
   latestConfigSnapshots,
   normalizeNodeListResponse,
+  rolloutBadgeClasses,
   snapshotForRuntime,
   stateBadgeClasses,
 } from '../helpers.ts'
@@ -91,6 +92,13 @@ describe('badge class helpers', () => {
     expect(jobBadgeClasses('completed')).toContain('emerald')
     expect(jobBadgeClasses('failed')).toContain('rose')
     expect(jobBadgeClasses('unknown' as JobStatus)).toContain('var(--sp-muted)')
+  })
+
+  it('returns rollout-specific classes for active and terminal states', () => {
+    expect(rolloutBadgeClasses('running')).toContain('sky')
+    expect(rolloutBadgeClasses('paused')).toContain('amber')
+    expect(rolloutBadgeClasses('completed')).toContain('emerald')
+    expect(rolloutBadgeClasses('failed')).toContain('rose')
   })
 })
 

@@ -32,8 +32,9 @@ export function Sidebar({
         </div>
       </div>
 
-      <nav className="grid grid-cols-3 gap-1 px-3 py-3 md:flex md:flex-col">
+      <nav className="grid grid-cols-4 gap-1 px-3 py-3 md:flex md:flex-col">
         <NavButton active={currentView === 'fleet'} label="Fleet" onClick={() => onViewChange('fleet')} />
+        <NavButton active={currentView === 'rollouts'} label="Rollouts" onClick={() => onViewChange('rollouts')} />
         <NavButton active={currentView === 'activity'} label="Activity" onClick={() => onViewChange('activity')} />
         <NavButton active={currentView === 'enrollment'} label="Enrollment" onClick={() => onViewChange('enrollment')} />
       </nav>

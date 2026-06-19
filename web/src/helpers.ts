@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { AuditEvent, AuditFilters, ConfigApplyResult, DeepProbeResult, EffectiveConfigResponse, Job, JobStatus, ListAuditEventsResponse, ListNodesResponse, ListRollbackBackupsResponse, NodeLabels, NodeLabelsResponse, NodeState, NodeStatus, RestartRequest, RollbackBackupInventoryItem, RollbackRequest, RuntimeConfigSnapshot, RuntimeStatus } from './types.ts'
+import type { AuditEvent, AuditFilters, ConfigApplyResult, CreateRolloutRequest, DeepProbeResult, EffectiveConfigResponse, Job, JobStatus, ListAuditEventsResponse, ListNodesResponse, ListRollbackBackupsResponse, ListRolloutsResponse, NodeLabels, NodeLabelsResponse, NodeState, NodeStatus, RestartRequest, RollbackBackupInventoryItem, RollbackRequest, Rollout, RolloutAction, RolloutActionResponse, RolloutState, RuntimeConfigSnapshot, RuntimeStatus } from './types.ts'
 
 const NODE_REFRESH_MS = 10_000
 const ACTIVE_JOB_REFRESH_MS = 2_000
 const AUDIT_REFRESH_MS = 10_000
+const ROLLOUT_REFRESH_MS = 5_000
 const DEFAULT_AUDIT_LIMIT = 100
 const DEFAULT_JOB_LIMIT = 50
 const JOB_LIMIT_STEP = 50
@@ -11,7 +12,7 @@ const ACTIVE_JOB_STATUSES: JobStatus[] = ['pending', 'claimed']
 const OPERATOR_TOKEN_STORAGE_KEY = 'sideplane.operatorToken'
 const THEME_STORAGE_KEY = 'sideplane.theme'
 
-export type View = 'fleet' | 'node' | 'activity' | 'enrollment'
+export type View = 'fleet' | 'node' | 'rollouts' | 'activity' | 'enrollment'
 export type Theme = 'light' | 'dark'
 
 export interface RollbackCandidate {
@@ -58,6 +59,24 @@ export function jobBadgeClasses(status: JobStatus): string {
       return 'border-sky-500/30 bg-sky-500/10 text-sky-600'
     case 'completed':
       return 'border-emerald-500/25 bg-emerald-500/10 text-emerald-600'
+    case 'failed':
+      return 'border-rose-500/30 bg-rose-500/10 text-rose-600'
+    default:
+      return 'border-[var(--sp-border)] bg-[var(--sp-surface-2)] text-[var(--sp-muted)]'
+  }
+}
+
+export function rolloutBadgeClasses(state: RolloutState): string {
+  switch (state) {
+    case 'pending':
+      return 'border-[var(--sp-border)] bg-[var(--sp-surface-2)] text-[var(--sp-muted)]'
+    case 'running':
+      return 'border-sky-500/30 bg-sky-500/10 text-sky-600'
+    case 'paused':
+      return 'border-amber-500/30 bg-amber-500/10 text-amber-600'
+    case 'completed':
+      return 'border-emerald-500/25 bg-emerald-500/10 text-emerald-600'
+    case 'aborted':
     case 'failed':
       return 'border-rose-500/30 bg-rose-500/10 text-rose-600'
     default:
@@ -254,6 +273,11 @@ export function useFleetPageController() {
   const [auditLimit, setAuditLimit] = useState(DEFAULT_AUDIT_LIMIT)
   const [auditLoading, setAuditLoading] = useState(true)
   const [auditError, setAuditError] = useState<string | null>(null)
+  const [rollouts, setRollouts] = useState<Rollout[]>([])
+  const [rolloutsLoading, setRolloutsLoading] = useState(true)
+  const [rolloutsError, setRolloutsError] = useState<string | null>(null)
+  const [creatingRollout, setCreatingRollout] = useState(false)
+  const [rolloutActioningId, setRolloutActioningId] = useState<string | null>(null)
   const [effectiveByNode, setEffectiveByNode] = useState<Record<string, EffectiveConfigResponse>>({})
   const [effectiveErrorByNode, setEffectiveErrorByNode] = useState<Record<string, string>>({})
   const [theme, setTheme] = useState<Theme>(loadStoredTheme)
@@ -643,6 +667,114 @@ export function useFleetPageController() {
     }
   }, [auditFilters, auditLimit])
 
+  const loadRollouts = useCallback(async (showLoading = true) => {
+    if (!mountedRef.current) return
+    const token = operatorToken.trim()
+    if (!token) {
+      setRollouts([])
+      setRolloutsError('Operator token required')
+      setRolloutsLoading(false)
+      return
+    }
+    if (showLoading) {
+      setRolloutsLoading(true)
+    }
+    try {
+      const res = await fetch('/api/rollouts', {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) {
+        if (res.status === 401) throw new Error('Operator token required or invalid')
+        throw new Error(await apiErrorMessage(res))
+      }
+      const data = (await res.json()) as ListRolloutsResponse
+      if (!mountedRef.current) return
+      setRollouts(data.rollouts ?? [])
+      setRolloutsError(null)
+    } catch (e) {
+      if (!mountedRef.current) return
+      setRolloutsError(e instanceof Error ? e.message : 'Unknown error')
+    } finally {
+      if (mountedRef.current) {
+        setRolloutsLoading(false)
+      }
+    }
+  }, [operatorToken])
+
+  const createRollout = useCallback(async (request: CreateRolloutRequest): Promise<Rollout | null> => {
+    if (!mountedRef.current) return null
+    const token = operatorToken.trim()
+    if (!token) {
+      setRolloutsError('Operator token required')
+      return null
+    }
+    setCreatingRollout(true)
+    try {
+      const res = await fetch('/api/rollouts', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(request),
+      })
+      if (!res.ok) {
+        if (res.status === 401) throw new Error('Operator token required or invalid')
+        throw new Error(await apiErrorMessage(res))
+      }
+      const data = (await res.json()) as { rollout: Rollout }
+      if (!mountedRef.current) return null
+      setRollouts((current) => [data.rollout, ...current.filter((rollout) => rollout.id !== data.rollout.id)])
+      setRolloutsError(null)
+      return data.rollout
+    } catch (e) {
+      if (!mountedRef.current) return null
+      setRolloutsError(e instanceof Error ? e.message : 'Unknown error')
+      return null
+    } finally {
+      if (mountedRef.current) {
+        setCreatingRollout(false)
+      }
+    }
+  }, [operatorToken])
+
+  const performRolloutAction = useCallback(async (rolloutId: string, action: RolloutAction): Promise<Rollout | null> => {
+    if (!mountedRef.current) return null
+    const token = operatorToken.trim()
+    if (!token) {
+      setRolloutsError('Operator token required')
+      return null
+    }
+    setRolloutActioningId(rolloutId)
+    try {
+      const res = await fetch(`/api/rollouts/${encodeURIComponent(rolloutId)}/actions`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ action }),
+      })
+      if (!res.ok) {
+        if (res.status === 401) throw new Error('Operator token required or invalid')
+        throw new Error(await apiErrorMessage(res))
+      }
+      const data = (await res.json()) as RolloutActionResponse
+      if (!mountedRef.current) return null
+      setRollouts((current) => current.map((rollout) => (rollout.id === data.rollout.id ? data.rollout : rollout)))
+      setRolloutsError(null)
+      return data.rollout
+    } catch (e) {
+      if (!mountedRef.current) return null
+      setRolloutsError(e instanceof Error ? e.message : 'Unknown error')
+      return null
+    } finally {
+      if (mountedRef.current) {
+        setRolloutActioningId(null)
+      }
+    }
+  }, [operatorToken])
+
   const loadEffectiveConfig = useCallback(async (nodeId: string, runtimeType = 'hermes', profile = 'default') => {
     try {
       const params = new URLSearchParams({ nodeId, runtimeType, profile })
@@ -676,6 +808,10 @@ export function useFleetPageController() {
   }, [loadAuditEvents])
 
   useEffect(() => {
+    loadRollouts(false)
+  }, [loadRollouts])
+
+  useEffect(() => {
     const interval = window.setInterval(() => {
       refreshFleet(false)
     }, NODE_REFRESH_MS)
@@ -688,6 +824,13 @@ export function useFleetPageController() {
     }, AUDIT_REFRESH_MS)
     return () => window.clearInterval(interval)
   }, [loadAuditEvents])
+
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      void loadRollouts(false)
+    }, ROLLOUT_REFRESH_MS)
+    return () => window.clearInterval(interval)
+  }, [loadRollouts])
 
   useEffect(() => {
     const nodeIdsWithActiveJobs = Object.entries(jobsByNode)
@@ -757,9 +900,11 @@ export function useFleetPageController() {
     backupsLoadingByNode,
     bannerText,
     changeView,
+    createRollout,
     createDeepProbe,
     createRollback,
     createRestart,
+    creatingRollout,
     creatingByNode,
     effectiveByNode,
     effectiveErrorByNode,
@@ -773,6 +918,7 @@ export function useFleetPageController() {
     jobStatusByNode,
     loading,
     loadMoreNodeJobs,
+    loadRollouts,
     nodes: safeNodes,
     operatorToken,
     openNode,
@@ -780,6 +926,10 @@ export function useFleetPageController() {
     refreshSelectedNodeAfterApply,
     refreshing,
     rollingBackByNode,
+    rolloutActioningId,
+    rollouts,
+    rolloutsError,
+    rolloutsLoading,
     savingLabelsByNode,
     restartingByNode,
     selectedNode,
@@ -796,5 +946,6 @@ export function useFleetPageController() {
     toggleTheme,
     view,
     loadAuditEvents,
+    performRolloutAction,
   }
 }

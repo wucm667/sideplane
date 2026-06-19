@@ -1,4 +1,4 @@
-import type { NodeStatusWithDrift } from './generated/api.ts'
+import type { NodeStatusWithDrift, ProviderModelConfig } from './generated/api.ts'
 
 export type {
   APIError,
@@ -55,6 +55,77 @@ export interface ListRollbackBackupsResponse {
   limit: number
 }
 
+export type RolloutState = 'pending' | 'running' | 'paused' | 'completed' | 'aborted' | 'failed'
+export type RolloutBatchState = 'pending' | 'running' | 'completed' | 'paused' | 'failed'
+export type RolloutNodeState = 'pending' | 'dispatched' | 'succeeded' | 'failed' | 'timed_out' | 'offline'
+export type RolloutAction = 'pause' | 'resume' | 'abort'
+
+export interface RolloutSpec {
+  selector?: Record<string, string>
+  nodeIds?: string[]
+  runtimeType: string
+  profile?: string
+  target: ProviderModelConfig
+  batchSize?: number
+  live: boolean
+  healthTimeout?: number
+}
+
+export interface RolloutNodeProgress {
+  nodeId: string
+  jobId?: string
+  state: RolloutNodeState
+  lastError?: string
+  startedAt?: string
+  finishedAt?: string
+}
+
+export interface RolloutBatch {
+  index: number
+  nodeIds: string[]
+  state: RolloutBatchState
+  nodes: Record<string, RolloutNodeProgress>
+}
+
+export interface Rollout {
+  id: string
+  spec: RolloutSpec
+  state: RolloutState
+  batches: RolloutBatch[]
+  pauseReason?: string
+  failingNodeIds?: string[]
+  createdAt: string
+  updatedAt: string
+  finishedAt?: string
+}
+
+export interface CreateRolloutRequest {
+  spec: RolloutSpec
+}
+
+export interface CreateRolloutResponse {
+  rollout: Rollout
+}
+
+export interface ListRolloutsResponse {
+  rollouts: Rollout[]
+  total: number
+  limit: number
+  offset: number
+}
+
+export interface GetRolloutResponse {
+  rollout: Rollout
+}
+
+export interface RolloutActionRequest {
+  action: RolloutAction
+}
+
+export interface RolloutActionResponse {
+  rollout: Rollout
+}
+
 export type AuditAction =
   | 'enrollment.token.create'
   | 'node.enroll'
@@ -66,6 +137,10 @@ export type AuditAction =
   | 'config.apply'
   | 'restart'
   | 'rollback'
+  | 'rollout.create'
+  | 'rollout.pause'
+  | 'rollout.resume'
+  | 'rollout.abort'
   | 'config.desired.update'
 
 export interface AuditFilters {
