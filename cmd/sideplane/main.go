@@ -62,6 +62,9 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 			return runAuditList(args[2:], stdout, stderr)
 		}
 	case "config":
+		if len(args) >= 2 && args[1] == "preview" {
+			return runConfigPreview(args[2:], stdout, stderr)
+		}
 		if len(args) >= 2 && args[1] == "get" {
 			return runConfigGet(args[2:], stdout, stderr)
 		}
@@ -98,6 +101,7 @@ Commands:
   probe <nodeId>      Run a deep probe on a node
   jobs list <nodeId>  List node jobs
   audit list          List audit events
+  config preview <id> Preview effective node configuration
   config get          Show desired configuration
   config set          Update global desired configuration
   node inspect <id>   Show full node detail
@@ -105,6 +109,53 @@ Commands:
   enrollment create   Create a one-time enrollment token
   version             Print version
 `)
+}
+
+func runConfigPreview(args []string, stdout io.Writer, stderr io.Writer) int {
+	flags := flag.NewFlagSet("sideplane config preview", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+
+	serverURL := flags.String("server", "", "Sideplane server URL; can also be set with SIDEPLANE_SERVER_URL")
+	runtimeType := flags.String("runtime-type", "hermes", "runtime type")
+	profile := flags.String("profile", "default", "runtime profile")
+	actualHash := flags.String("actual-hash", "", "optional actual config hash to display")
+	jsonOutput := flags.Bool("json", false, "print JSON output")
+	if err := parseCommandFlags(flags, args, "json"); err != nil {
+		return 2
+	}
+	if flags.NArg() != 1 {
+		fmt.Fprintln(stderr, "usage: sideplane config preview <nodeId> [--server URL] [--runtime-type TYPE] [--profile PROFILE] [--actual-hash HASH] [--json]")
+		return 1
+	}
+	nodeID := strings.TrimSpace(flags.Arg(0))
+	if nodeID == "" {
+		fmt.Fprintln(stderr, "config preview: nodeId is required")
+		return 1
+	}
+
+	params := url.Values{}
+	params.Set("nodeId", nodeID)
+	if trimmed := strings.TrimSpace(*runtimeType); trimmed != "" {
+		params.Set("runtimeType", trimmed)
+	}
+	if trimmed := strings.TrimSpace(*profile); trimmed != "" {
+		params.Set("profile", trimmed)
+	}
+	if trimmed := strings.TrimSpace(*actualHash); trimmed != "" {
+		params.Set("actualHash", trimmed)
+	}
+	path := "/api/config/effective?" + params.Encode()
+	effective, body, err := getJSON[protocol.EffectiveConfigResponse](context.Background(), serverURLValue(*serverURL), path, "")
+	if err != nil {
+		fmt.Fprintf(stderr, "config preview: %v\n", err)
+		return 1
+	}
+	if *jsonOutput {
+		writeRawJSON(stdout, body)
+		return 0
+	}
+	printEffectiveConfigPreview(stdout, effective, strings.TrimSpace(*actualHash))
+	return 0
 }
 
 func runAuditList(args []string, stdout io.Writer, stderr io.Writer) int {
@@ -655,6 +706,37 @@ func printDesiredConfigSummary(w io.Writer, desired protocol.DesiredConfig) {
 	printConfigMapSummary(w, "Node overrides", desired.NodeOverrides)
 	printConfigMapSummary(w, "Runtime profile overrides", desired.RuntimeProfileOverrides)
 	printConfigMapSummary(w, "Node runtime profile overrides", desired.NodeRuntimeProfileOverrides)
+}
+
+func printEffectiveConfigPreview(w io.Writer, effective protocol.EffectiveConfigResponse, actualHashOverride string) {
+	fmt.Fprintf(w, "Node: %s\n", effective.NodeID)
+	fmt.Fprintf(w, "Runtime: %s/%s\n", valueOrDash(effective.RuntimeType), valueOrDash(effective.Profile))
+	fmt.Fprintf(w, "Desired provider: %s\n", valueOrDash(effective.Effective.Provider))
+	fmt.Fprintf(w, "Desired model: %s\n", valueOrDash(effective.Effective.Model))
+	fmt.Fprintf(w, "Desired hash: %s\n", valueOrDash(effective.DesiredHash))
+	actualHash := actualHashOverride
+	if actualHash == "" && effective.Actual != nil {
+		actualHash = effective.Actual.ConfigHash
+	}
+	fmt.Fprintf(w, "Actual hash: %s\n", valueOrDash(actualHash))
+	fmt.Fprintln(w, "Diff:")
+	if len(effective.Diff) == 0 {
+		fmt.Fprintln(w, "  (none)")
+		return
+	}
+	table := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(table, "  FIELD\tCHANGE\tACTUAL\tDESIRED")
+	for _, entry := range effective.Diff {
+		fmt.Fprintf(
+			table,
+			"  %s\t%s\t%s\t%s\n",
+			valueOrDash(entry.Field),
+			valueOrDash(entry.Change),
+			valueOrDash(entry.Actual),
+			valueOrDash(entry.Desired),
+		)
+	}
+	table.Flush()
 }
 
 func printConfigMapSummary(w io.Writer, label string, values map[string]protocol.ProviderModelConfig) {

@@ -473,6 +473,79 @@ func TestAuditListJSONOutput(t *testing.T) {
 	}
 }
 
+func TestConfigPreviewPrintsSummary(t *testing.T) {
+	effective := protocol.EffectiveConfigResponse{
+		NodeID:      "node-a",
+		RuntimeType: "hermes",
+		Profile:     "default",
+		Effective: protocol.ProviderModelConfig{
+			Provider: "openai",
+			Model:    "gpt-4o",
+		},
+		DesiredHash: "sha256:desired",
+		Actual:      &protocol.RuntimeConfigSnapshot{ConfigHash: "sha256:actual"},
+		Diff: []protocol.ConfigDiffEntry{{
+			Field:   "model",
+			Actual:  "gpt-3.5",
+			Desired: "gpt-4o",
+			Change:  protocol.ConfigDiffChangeUpdate,
+		}},
+	}
+	var gotQuery string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/config/effective" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		gotQuery = r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(effective); err != nil {
+			t.Fatalf("encode effective config: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"config", "preview", "node-a", "--server", server.URL, "--runtime-type", "hermes", "--profile", "default", "--actual-hash", "sha256:provided"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("run returned %d, stderr=%q", code, stderr.String())
+	}
+	for _, want := range []string{"nodeId=node-a", "runtimeType=hermes", "profile=default", "actualHash=sha256%3Aprovided"} {
+		if !strings.Contains(gotQuery, want) {
+			t.Fatalf("query = %q, missing %s", gotQuery, want)
+		}
+	}
+	output := stdout.String()
+	for _, want := range []string{"Node: node-a", "Desired provider: openai", "Desired model: gpt-4o", "Desired hash: sha256:desired", "Actual hash: sha256:provided", "model", "gpt-3.5", "gpt-4o"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output missing %q:\n%s", want, output)
+		}
+	}
+}
+
+func TestConfigPreviewJSONOutput(t *testing.T) {
+	effective := protocol.EffectiveConfigResponse{
+		NodeID:    "node-a",
+		Effective: protocol.ProviderModelConfig{Provider: "openai", Model: "gpt-4o"},
+	}
+	server := httptest.NewServer(jsonHandler(t, http.MethodGet, "/api/config/effective", effective))
+	defer server.Close()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"config", "preview", "node-a", "--server", server.URL, "--json"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("run returned %d, stderr=%q", code, stderr.String())
+	}
+	var got protocol.EffectiveConfigResponse
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode JSON output: %v", err)
+	}
+	if got.NodeID != "node-a" || got.Effective.Provider != "openai" {
+		t.Fatalf("effective = %#v, want node-a/openai", got)
+	}
+}
+
 func TestConfigGetPrintsDesiredConfigSummary(t *testing.T) {
 	desired := protocol.DesiredConfig{
 		Global: protocol.ProviderModelConfig{Provider: "openai", Model: "gpt-4o"},
