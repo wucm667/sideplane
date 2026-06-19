@@ -57,6 +57,10 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		if len(args) >= 2 && args[1] == "list" {
 			return runJobsList(args[2:], stdout, stderr)
 		}
+	case "audit":
+		if len(args) >= 2 && args[1] == "list" {
+			return runAuditList(args[2:], stdout, stderr)
+		}
 	case "config":
 		if len(args) >= 2 && args[1] == "get" {
 			return runConfigGet(args[2:], stdout, stderr)
@@ -93,6 +97,7 @@ Commands:
   fleet status        Show fleet node status
   probe <nodeId>      Run a deep probe on a node
   jobs list <nodeId>  List node jobs
+  audit list          List audit events
   config get          Show desired configuration
   config set          Update global desired configuration
   node inspect <id>   Show full node detail
@@ -100,6 +105,54 @@ Commands:
   enrollment create   Create a one-time enrollment token
   version             Print version
 `)
+}
+
+func runAuditList(args []string, stdout io.Writer, stderr io.Writer) int {
+	flags := flag.NewFlagSet("sideplane audit list", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+
+	serverURL := flags.String("server", "", "Sideplane server URL; can also be set with SIDEPLANE_SERVER_URL")
+	nodeID := flags.String("node-id", "", "optional node ID filter")
+	action := flags.String("action", "", "optional audit action filter")
+	limit := flags.Int("limit", 0, "maximum audit events to list")
+	jsonOutput := flags.Bool("json", false, "print JSON output")
+	if err := parseCommandFlags(flags, args, "json"); err != nil {
+		return 2
+	}
+	if flags.NArg() != 0 {
+		fmt.Fprintln(stderr, "usage: sideplane audit list [--server URL] [--node-id NODE] [--action ACTION] [--limit N] [--json]")
+		return 1
+	}
+	if *limit < 0 {
+		fmt.Fprintln(stderr, "audit list: --limit must be positive")
+		return 1
+	}
+
+	params := url.Values{}
+	if trimmed := strings.TrimSpace(*nodeID); trimmed != "" {
+		params.Set("nodeId", trimmed)
+	}
+	if trimmed := strings.TrimSpace(*action); trimmed != "" {
+		params.Set("action", trimmed)
+	}
+	if *limit > 0 {
+		params.Set("limit", strconv.Itoa(*limit))
+	}
+	path := "/api/audit"
+	if query := params.Encode(); query != "" {
+		path += "?" + query
+	}
+	resp, body, err := getJSON[protocol.ListAuditEventsResponse](context.Background(), serverURLValue(*serverURL), path, "")
+	if err != nil {
+		fmt.Fprintf(stderr, "audit list: %v\n", err)
+		return 1
+	}
+	if *jsonOutput {
+		writeRawJSON(stdout, body)
+		return 0
+	}
+	printAuditTable(stdout, resp.Events)
+	return 0
 }
 
 func runJobsList(args []string, stdout io.Writer, stderr io.Writer) int {
@@ -701,6 +754,23 @@ func printJobsTable(w io.Writer, jobs []protocol.Job) {
 			job.Status,
 			timeLabel(job.CreatedAt),
 			jobFinishedOrError(job),
+		)
+	}
+	table.Flush()
+}
+
+func printAuditTable(w io.Writer, events []protocol.AuditEvent) {
+	table := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(table, "CREATED\tACTOR\tACTION\tNODE\tDETAIL")
+	for _, event := range events {
+		fmt.Fprintf(
+			table,
+			"%s\t%s\t%s\t%s\t%s\n",
+			timeLabel(event.CreatedAt),
+			valueOrDash(event.Actor),
+			valueOrDash(event.Action),
+			valueOrDash(event.TargetNode),
+			valueOrDash(spconfig.RedactString(event.Detail)),
 		)
 	}
 	table.Flush()

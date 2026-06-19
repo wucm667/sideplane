@@ -401,6 +401,78 @@ func TestJobsListJSONAndInvalidStatus(t *testing.T) {
 	}
 }
 
+func TestAuditListPrintsTableAndUsesFilters(t *testing.T) {
+	events := []protocol.AuditEvent{{
+		ID:         "audit-1",
+		Actor:      "operator",
+		Action:     "job.create",
+		TargetNode: "node-a",
+		Detail:     "deep_probe token=secret-token",
+		CreatedAt:  time.Date(2026, 6, 19, 10, 0, 0, 0, time.UTC),
+	}}
+	var gotQuery string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Fatalf("method = %s, want GET", r.Method)
+		}
+		if r.URL.Path != "/api/audit" {
+			t.Fatalf("path = %s, want /api/audit", r.URL.Path)
+		}
+		gotQuery = r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(protocol.ListAuditEventsResponse{Events: events}); err != nil {
+			t.Fatalf("encode audit response: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"audit", "list", "--server", server.URL, "--node-id", "node-a", "--action", "job.create", "--limit", "25"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("run returned %d, stderr=%q", code, stderr.String())
+	}
+	for _, want := range []string{"nodeId=node-a", "action=job.create", "limit=25"} {
+		if !strings.Contains(gotQuery, want) {
+			t.Fatalf("query = %q, missing %s", gotQuery, want)
+		}
+	}
+	output := stdout.String()
+	for _, want := range []string{"CREATED", "ACTOR", "ACTION", "NODE", "DETAIL", "operator", "job.create", "node-a", "deep_probe"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output missing %q:\n%s", want, output)
+		}
+	}
+	if strings.Contains(output, "secret-token") {
+		t.Fatalf("audit output leaked secret: %s", output)
+	}
+}
+
+func TestAuditListJSONOutput(t *testing.T) {
+	resp := protocol.ListAuditEventsResponse{Events: []protocol.AuditEvent{{
+		ID:        "audit-2",
+		Actor:     "sidecar",
+		Action:    "job.complete",
+		CreatedAt: time.Now().UTC(),
+	}}}
+	server := httptest.NewServer(jsonHandler(t, http.MethodGet, "/api/audit", resp))
+	defer server.Close()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"audit", "list", "--server", server.URL, "--json"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("run returned %d, stderr=%q", code, stderr.String())
+	}
+	var got protocol.ListAuditEventsResponse
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode JSON output: %v", err)
+	}
+	if len(got.Events) != 1 || got.Events[0].ID != "audit-2" {
+		t.Fatalf("events = %#v, want audit-2", got.Events)
+	}
+}
+
 func TestConfigGetPrintsDesiredConfigSummary(t *testing.T) {
 	desired := protocol.DesiredConfig{
 		Global: protocol.ProviderModelConfig{Provider: "openai", Model: "gpt-4o"},
