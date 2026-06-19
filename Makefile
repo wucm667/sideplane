@@ -3,6 +3,11 @@
 GO ?= go
 BIN_DIR ?= bin
 OPENAPI_PYYAML_VERSION ?= 6.0.2
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+BUILD_DATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+BUILDINFO_PKG := github.com/wucm667/sideplane/internal/buildinfo
+LDFLAGS := -X $(BUILDINFO_PKG).Version=$(VERSION) -X $(BUILDINFO_PKG).Commit=$(COMMIT) -X $(BUILDINFO_PKG).BuildDate=$(BUILD_DATE)
 
 all: lint test build
 
@@ -11,9 +16,9 @@ web:
 
 build: web
 	mkdir -p $(BIN_DIR)
-	$(GO) build -o $(BIN_DIR)/sideplane-server ./cmd/sideplane-server
-	$(GO) build -o $(BIN_DIR)/sideplane-sidecar ./cmd/sideplane-sidecar
-	$(GO) build -o $(BIN_DIR)/sideplane ./cmd/sideplane
+	$(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/sideplane-server ./cmd/sideplane-server
+	$(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/sideplane-sidecar ./cmd/sideplane-sidecar
+	$(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/sideplane ./cmd/sideplane
 
 test:
 	$(GO) test ./...

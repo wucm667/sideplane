@@ -17,12 +17,12 @@ import (
 	"time"
 
 	"github.com/wucm667/sideplane/internal/auth"
+	"github.com/wucm667/sideplane/internal/buildinfo"
 	"github.com/wucm667/sideplane/internal/server"
 	"github.com/wucm667/sideplane/internal/store"
 	webassets "github.com/wucm667/sideplane/web"
 )
 
-const version = "dev"
 const shutdownTimeout = 10 * time.Second
 const heartbeatPruneInterval = 10 * time.Minute
 const retentionPruneInterval = time.Hour
@@ -52,7 +52,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 
 	if *showVersion {
-		fmt.Fprintf(stdout, "sideplane-server %s\n", version)
+		fmt.Fprintln(stdout, buildinfo.Format("sideplane-server"))
 		return 0
 	}
 

@@ -1772,6 +1772,7 @@ func TestMetricsExposesCounters(t *testing.T) {
 	}
 	body := rec.Body.String()
 	for _, want := range []string{
+		"sideplane_build_info",
 		"sideplane_heartbeats_total",
 		"sideplane_jobs_created_total",
 		"sideplane_sidecar_job_claims_total",

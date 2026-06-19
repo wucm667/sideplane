@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/wucm667/sideplane/internal/buildinfo"
 	"github.com/wucm667/sideplane/internal/sidecar"
 	"github.com/wucm667/sideplane/pkg/adapters/hermes"
 	"github.com/wucm667/sideplane/pkg/adapters/openclaw"
@@ -21,8 +22,6 @@ import (
 	spcrypto "github.com/wucm667/sideplane/pkg/crypto"
 	"github.com/wucm667/sideplane/pkg/protocol"
 )
-
-const version = "dev"
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
@@ -58,7 +57,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 
 	if *showVersion {
-		fmt.Fprintf(stdout, "sideplane-sidecar %s\n", version)
+		fmt.Fprintln(stdout, buildinfo.Format("sideplane-sidecar"))
 		return 0
 	}
 
@@ -118,7 +117,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		ServerURL:      runtimeConfig.ServerURL,
 		NodeID:         runtimeConfig.NodeID,
 		NodeCredential: runtimeConfig.NodeCredential,
-		SidecarVersion: version,
+		SidecarVersion: buildinfo.Version,
 		Collector:      reg,
 	})
 	if err != nil {
@@ -482,7 +481,7 @@ func runEnroll(args []string, stdout io.Writer, stderr io.Writer) int {
 		ServerURL:      *serverURL,
 		NodeID:         *nodeID,
 		Token:          *token,
-		SidecarVersion: version,
+		SidecarVersion: buildinfo.Version,
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "configure enrollment client: %v\n", err)

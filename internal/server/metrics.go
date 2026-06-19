@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"sort"
 	"sync"
+
+	"github.com/wucm667/sideplane/internal/buildinfo"
 )
 
 // Metrics holds Prometheus-compatible counters for job and config-apply
@@ -114,6 +116,7 @@ func (m *Metrics) WriteProm(w http.ResponseWriter) {
 	rolledBack := m.configApplyRolledBack
 	m.mu.Unlock()
 
+	writeBuildInfo(w)
 	writeCounterWithLabel(w, "sideplane_heartbeats_total", "Heartbeats accepted or rejected by status.", "status", heartbeats)
 	writeCounter(w, "sideplane_jobs_created_total", "Jobs created by type.", created)
 	writeCounter(w, "sideplane_sidecar_job_claims_total", "Jobs claimed by sidecars by type.", claims)
@@ -124,6 +127,13 @@ func (m *Metrics) WriteProm(w http.ResponseWriter) {
 	fmt.Fprintln(w, "# HELP sideplane_config_apply_rolled_back_total Config applies that rolled back to backup.")
 	fmt.Fprintln(w, "# TYPE sideplane_config_apply_rolled_back_total counter")
 	fmt.Fprintf(w, "sideplane_config_apply_rolled_back_total %d\n", rolledBack)
+}
+
+func writeBuildInfo(w http.ResponseWriter) {
+	version, commit, buildDate := buildinfo.Labels()
+	fmt.Fprintln(w, "# HELP sideplane_build_info Build metadata for this sideplane-server process.")
+	fmt.Fprintln(w, "# TYPE sideplane_build_info gauge")
+	fmt.Fprintf(w, "sideplane_build_info{version=%q,commit=%q,build_date=%q} 1\n", version, commit, buildDate)
 }
 
 type counterSample struct {

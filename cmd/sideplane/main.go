@@ -18,11 +18,11 @@ import (
 	"time"
 
 	"github.com/wucm667/sideplane/internal/auth"
+	"github.com/wucm667/sideplane/internal/buildinfo"
 	spconfig "github.com/wucm667/sideplane/pkg/config"
 	"github.com/wucm667/sideplane/pkg/protocol"
 )
 
-const version = "dev"
 const serverURLEnv = "SIDEPLANE_SERVER_URL"
 
 var cliStdin io.Reader = os.Stdin
@@ -42,7 +42,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 0
 	}
 	if len(args) == 1 && (args[0] == "version" || args[0] == "--version") {
-		fmt.Fprintf(stdout, "sideplane %s\n", version)
+		fmt.Fprintln(stdout, buildinfo.Format("sideplane"))
 		return 0
 	}
 
