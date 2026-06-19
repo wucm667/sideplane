@@ -224,7 +224,12 @@ The Web UI is intentionally a compact infrastructure console. It includes:
   opens Enrollment, `r` refreshes the current view, and `Esc` returns from a
   node detail view to Fleet.
 
-For systemd deployment files, see `deployments/systemd/`. The root `install.sh` creates the `sideplane` user/group, `/etc/sideplane`, `/var/lib/sideplane`, and copies systemd units/env examples. It does not download binaries yet; build and copy `sideplane-server` and `sideplane-sidecar` manually until release CI exists.
+For systemd deployment files, see `deployments/systemd/`. The root
+`install.sh` creates the `sideplane` user/group, `/etc/sideplane`,
+`/var/lib/sideplane`, and copies systemd units/env examples. Pass
+`--version vX.Y.Z` to download release binaries from GitHub and verify them
+against `SHA256SUMS`; pass `--no-download` to keep the local build-and-copy
+workflow.
 
 ## Security
 
