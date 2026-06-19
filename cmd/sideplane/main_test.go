@@ -546,6 +546,157 @@ func TestConfigPreviewJSONOutput(t *testing.T) {
 	}
 }
 
+func TestConfigApplyDryRunDefaultAndOperatorToken(t *testing.T) {
+	job := protocol.Job{
+		ID:          "job-apply",
+		NodeID:      "node-a",
+		Type:        protocol.JobTypeConfigApply,
+		Status:      protocol.JobStatusPending,
+		PayloadJSON: signedPlanPayload(t, "plan-dry-run", protocol.ConfigPlanModeDryRun),
+		CreatedAt:   time.Now().UTC(),
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/nodes/node-a/config-apply" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer test-token" {
+			t.Fatalf("Authorization = %q, want bearer token", got)
+		}
+		var req protocol.ConfigApplyRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if req.DryRun == nil || !*req.DryRun {
+			t.Fatalf("dryRun = %#v, want true", req.DryRun)
+		}
+		if req.RuntimeType != "hermes" || req.Profile != "default" {
+			t.Fatalf("request = %#v, want hermes/default", req)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		if err := json.NewEncoder(w).Encode(job); err != nil {
+			t.Fatalf("encode job: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"config", "apply", "node-a", "--server", server.URL, "--operator-token", "test-token", "--runtime-type", "hermes", "--profile", "default", "--config-path", "fake-config.json"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("run returned %d, stderr=%q", code, stderr.String())
+	}
+	for _, want := range []string{"Plan: plan-dry-run", "Job: job-apply", "Mode: dry_run", "Status: pending", "Requested config path: fake-config.json"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("output missing %q:\n%s", want, stdout.String())
+		}
+	}
+}
+
+func TestConfigApplyLiveRequiresYes(t *testing.T) {
+	var called bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+	}))
+	defer server.Close()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"config", "apply", "node-a", "--server", server.URL, "--live"}, &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("run returned %d, want 1", code)
+	}
+	if called {
+		t.Fatal("server was called despite missing --yes")
+	}
+	if !strings.Contains(stderr.String(), "--live requires --yes") {
+		t.Fatalf("stderr = %q, want live confirmation error", stderr.String())
+	}
+}
+
+func TestConfigApplyWaitPrintsResultSteps(t *testing.T) {
+	created := protocol.Job{
+		ID:          "job-apply",
+		NodeID:      "node-a",
+		Type:        protocol.JobTypeConfigApply,
+		Status:      protocol.JobStatusPending,
+		PayloadJSON: signedPlanPayload(t, "plan-live", protocol.ConfigPlanModeLive),
+		CreatedAt:   time.Now().UTC(),
+	}
+	resultJSON, err := json.Marshal(protocol.ConfigApplyResult{
+		PlanID: "plan-live",
+		DryRun: false,
+		Steps: []protocol.ConfigApplyStep{
+			{Name: "validated", Status: "completed"},
+			{Name: "restarted", Status: "completed", Detail: "fake controller"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal result: %v", err)
+	}
+	completed := created
+	completed.Status = protocol.JobStatusCompleted
+	completed.ResultJSON = string(resultJSON)
+	completed.FinishedAt = time.Now().UTC()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/api/nodes/node-a/config-apply":
+			w.WriteHeader(http.StatusCreated)
+			if err := json.NewEncoder(w).Encode(created); err != nil {
+				t.Fatalf("encode created job: %v", err)
+			}
+		case r.Method == http.MethodGet && r.URL.Path == "/api/nodes/node-a/jobs":
+			if err := json.NewEncoder(w).Encode([]protocol.Job{completed}); err != nil {
+				t.Fatalf("encode jobs: %v", err)
+			}
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"config", "apply", "node-a", "--server", server.URL, "--live", "--yes", "--wait"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("run returned %d, stderr=%q", code, stderr.String())
+	}
+	for _, want := range []string{"Plan: plan-live", "Status: completed", "Result mode: live", "Steps:", "validated", "restarted", "fake controller"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("output missing %q:\n%s", want, stdout.String())
+		}
+	}
+}
+
+func TestConfigApplyJSONOutput(t *testing.T) {
+	job := protocol.Job{
+		ID:          "job-json",
+		NodeID:      "node-a",
+		Type:        protocol.JobTypeConfigApply,
+		Status:      protocol.JobStatusPending,
+		PayloadJSON: signedPlanPayload(t, "plan-json", protocol.ConfigPlanModeDryRun),
+		CreatedAt:   time.Now().UTC(),
+	}
+	server := httptest.NewServer(jsonHandlerWithStatus(t, http.MethodPost, "/api/nodes/node-a/config-apply", http.StatusCreated, job))
+	defer server.Close()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"config", "apply", "node-a", "--server", server.URL, "--json"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("run returned %d, stderr=%q", code, stderr.String())
+	}
+	var got protocol.Job
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode JSON output: %v", err)
+	}
+	if got.ID != "job-json" {
+		t.Fatalf("job ID = %q, want job-json", got.ID)
+	}
+}
+
 func TestConfigGetPrintsDesiredConfigSummary(t *testing.T) {
 	desired := protocol.DesiredConfig{
 		Global: protocol.ProviderModelConfig{Provider: "openai", Model: "gpt-4o"},
@@ -715,6 +866,10 @@ func TestNodeRemovePromptsForConfirmation(t *testing.T) {
 }
 
 func jsonHandler(t *testing.T, method string, path string, response any) http.Handler {
+	return jsonHandlerWithStatus(t, method, path, http.StatusOK, response)
+}
+
+func jsonHandlerWithStatus(t *testing.T, method string, path string, status int, response any) http.Handler {
 	t.Helper()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != method {
@@ -724,8 +879,24 @@ func jsonHandler(t *testing.T, method string, path string, response any) http.Ha
 			t.Fatalf("path = %s, want %s", r.URL.Path, path)
 		}
 		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
 		if err := json.NewEncoder(w).Encode(response); err != nil {
 			t.Fatalf("encode response: %v", err)
 		}
 	})
+}
+
+func signedPlanPayload(t *testing.T, planID string, mode string) string {
+	t.Helper()
+	payload, err := json.Marshal(protocol.SignedConfigPlan{
+		Plan: protocol.ConfigPlan{
+			ID:   planID,
+			Mode: mode,
+		},
+		Signature: "test-signature",
+	})
+	if err != nil {
+		t.Fatalf("marshal signed plan: %v", err)
+	}
+	return string(payload)
 }

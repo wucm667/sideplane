@@ -62,6 +62,9 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 			return runAuditList(args[2:], stdout, stderr)
 		}
 	case "config":
+		if len(args) >= 2 && args[1] == "apply" {
+			return runConfigApply(args[2:], stdout, stderr)
+		}
 		if len(args) >= 2 && args[1] == "preview" {
 			return runConfigPreview(args[2:], stdout, stderr)
 		}
@@ -101,6 +104,7 @@ Commands:
   probe <nodeId>      Run a deep probe on a node
   jobs list <nodeId>  List node jobs
   audit list          List audit events
+  config apply <id>   Create a config apply job
   config preview <id> Preview effective node configuration
   config get          Show desired configuration
   config set          Update global desired configuration
@@ -109,6 +113,75 @@ Commands:
   enrollment create   Create a one-time enrollment token
   version             Print version
 `)
+}
+
+func runConfigApply(args []string, stdout io.Writer, stderr io.Writer) int {
+	flags := flag.NewFlagSet("sideplane config apply", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+
+	serverURL := flags.String("server", "", "Sideplane server URL; can also be set with SIDEPLANE_SERVER_URL")
+	operatorTokenFlag := flags.String("operator-token", "", "operator bearer token; can also be set with SIDEPLANE_OPERATOR_TOKEN")
+	runtimeType := flags.String("runtime-type", "hermes", "runtime type")
+	profile := flags.String("profile", "default", "runtime profile")
+	configPath := flags.String("config-path", "", "operator reference for expected config path; server uses last deep-probe path")
+	live := flags.Bool("live", false, "request live apply instead of dry-run")
+	yes := flags.Bool("yes", false, "confirm live apply")
+	wait := flags.Bool("wait", false, "poll until the config apply job completes or fails")
+	jsonOutput := flags.Bool("json", false, "print JSON output")
+	if err := parseCommandFlags(flags, args, "live", "yes", "wait", "json"); err != nil {
+		return 2
+	}
+	if flags.NArg() != 1 {
+		fmt.Fprintln(stderr, "usage: sideplane config apply <nodeId> [--server URL] [--operator-token TOKEN] [--runtime-type TYPE] [--profile PROFILE] [--config-path PATH] [--live --yes] [--wait] [--json]")
+		return 1
+	}
+	if *live && !*yes {
+		fmt.Fprintln(stderr, "config apply: --live requires --yes")
+		return 1
+	}
+	nodeID := strings.TrimSpace(flags.Arg(0))
+	if nodeID == "" {
+		fmt.Fprintln(stderr, "config apply: nodeId is required")
+		return 1
+	}
+
+	dryRun := !*live
+	server := serverURLValue(*serverURL)
+	operatorToken := operatorTokenValue(*operatorTokenFlag)
+	path := "/api/nodes/" + url.PathEscape(nodeID) + "/config-apply"
+	job, body, err := postJSON[protocol.Job](context.Background(), server, path, protocol.ConfigApplyRequest{
+		RuntimeType: strings.TrimSpace(*runtimeType),
+		Profile:     strings.TrimSpace(*profile),
+		DryRun:      &dryRun,
+	}, operatorToken)
+	if err != nil {
+		fmt.Fprintf(stderr, "config apply: %v\n", err)
+		return 1
+	}
+
+	if !*wait {
+		if *jsonOutput {
+			writeRawJSON(stdout, body)
+			return 0
+		}
+		printConfigApplyJobSummary(stdout, job, strings.TrimSpace(*configPath))
+		return 0
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	finalJob, err := waitForNodeJob(ctx, server, nodeID, job.ID, operatorToken)
+	if err != nil {
+		fmt.Fprintf(stderr, "config apply wait: %v\n", err)
+		return 1
+	}
+	if *jsonOutput {
+		writeJSONValue(stdout, finalJob)
+		return 0
+	}
+	printConfigApplyJobSummary(stdout, finalJob, strings.TrimSpace(*configPath))
+	printConfigApplyResultSummary(stdout, finalJob)
+	return 0
 }
 
 func runConfigPreview(args []string, stdout io.Writer, stderr io.Writer) int {
@@ -735,6 +808,56 @@ func printEffectiveConfigPreview(w io.Writer, effective protocol.EffectiveConfig
 			valueOrDash(entry.Actual),
 			valueOrDash(entry.Desired),
 		)
+	}
+	table.Flush()
+}
+
+func printConfigApplyJobSummary(w io.Writer, job protocol.Job, requestedConfigPath string) {
+	planID, mode := configApplyPlanLabels(job)
+	fmt.Fprintf(w, "Plan: %s\n", valueOrDash(planID))
+	fmt.Fprintf(w, "Job: %s\n", job.ID)
+	fmt.Fprintf(w, "Mode: %s\n", valueOrDash(mode))
+	fmt.Fprintf(w, "Status: %s\n", job.Status)
+	if requestedConfigPath != "" {
+		fmt.Fprintf(w, "Requested config path: %s\n", requestedConfigPath)
+	}
+}
+
+func configApplyPlanLabels(job protocol.Job) (string, string) {
+	if strings.TrimSpace(job.PayloadJSON) == "" {
+		return "", ""
+	}
+	var signed protocol.SignedConfigPlan
+	if err := json.Unmarshal([]byte(job.PayloadJSON), &signed); err != nil {
+		return "", ""
+	}
+	return signed.Plan.ID, signed.Plan.Mode
+}
+
+func printConfigApplyResultSummary(w io.Writer, job protocol.Job) {
+	if strings.TrimSpace(job.Error) != "" {
+		fmt.Fprintf(w, "Error: %s\n", job.Error)
+	}
+	if strings.TrimSpace(job.ResultJSON) == "" {
+		return
+	}
+	var result protocol.ConfigApplyResult
+	if err := json.Unmarshal([]byte(job.ResultJSON), &result); err != nil {
+		fmt.Fprintf(w, "Result: %s\n", strings.TrimSpace(job.ResultJSON))
+		return
+	}
+	if result.PlanID != "" {
+		fmt.Fprintf(w, "Result plan: %s\n", result.PlanID)
+	}
+	fmt.Fprintf(w, "Result mode: %s\n", map[bool]string{true: "dry_run", false: "live"}[result.DryRun])
+	if len(result.Steps) == 0 {
+		return
+	}
+	fmt.Fprintln(w, "Steps:")
+	table := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(table, "  NAME\tSTATUS\tDETAIL")
+	for _, step := range result.Steps {
+		fmt.Fprintf(table, "  %s\t%s\t%s\n", valueOrDash(step.Name), valueOrDash(step.Status), valueOrDash(step.Detail))
 	}
 	table.Flush()
 }
