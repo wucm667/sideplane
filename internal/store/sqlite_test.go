@@ -220,6 +220,26 @@ func TestSQLiteSchemaVersionReportsLatestAfterIdempotentMigration(t *testing.T) 
 	}
 }
 
+func TestSQLitePruningEmptyTablesNoops(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenSQLiteNodeStore(ctx, filepath.Join(t.TempDir(), "sideplane.db"))
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer store.Close()
+
+	cutoff := time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)
+	if deleted, err := store.PruneHeartbeats(ctx, 1); err != nil || deleted != 0 {
+		t.Fatalf("prune empty heartbeats deleted=%d err=%v, want 0 nil", deleted, err)
+	}
+	if deleted, err := store.PruneTerminalJobs(ctx, cutoff); err != nil || deleted != 0 {
+		t.Fatalf("prune empty jobs deleted=%d err=%v, want 0 nil", deleted, err)
+	}
+	if deleted, err := store.PruneAuditEvents(ctx, cutoff); err != nil || deleted != 0 {
+		t.Fatalf("prune empty audit events deleted=%d err=%v, want 0 nil", deleted, err)
+	}
+}
+
 func TestSQLitePruneHeartbeatsKeepsLatestPerNode(t *testing.T) {
 	ctx := context.Background()
 	store, err := OpenSQLiteNodeStore(ctx, filepath.Join(t.TempDir(), "sideplane.db"))
@@ -258,6 +278,31 @@ func TestSQLitePruneHeartbeatsKeepsLatestPerNode(t *testing.T) {
 	if deleted != 0 {
 		t.Fatalf("second deleted = %d, want 0", deleted)
 	}
+}
+
+func TestSQLitePruneHeartbeatsKeepsExactBoundary(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenSQLiteNodeStore(ctx, filepath.Join(t.TempDir(), "sideplane.db"))
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer store.Close()
+
+	now := time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)
+	for i := 0; i < 3; i++ {
+		if _, err := store.RecordHeartbeat(ctx, protocol.HeartbeatRequest{NodeID: "node-boundary"}, now.Add(time.Duration(i)*time.Minute)); err != nil {
+			t.Fatalf("record heartbeat %d: %v", i, err)
+		}
+	}
+
+	deleted, err := store.PruneHeartbeats(ctx, 3)
+	if err != nil {
+		t.Fatalf("prune heartbeats: %v", err)
+	}
+	if deleted != 0 {
+		t.Fatalf("deleted = %d, want 0", deleted)
+	}
+	assertHeartbeatTimes(t, ctx, store, "node-boundary", []time.Time{now.Add(2 * time.Minute), now.Add(time.Minute), now})
 }
 
 func assertHeartbeatTimes(t *testing.T, ctx context.Context, store *SQLiteNodeStore, nodeID string, want []time.Time) {
@@ -697,6 +742,112 @@ func TestSQLitePrunesTerminalJobsAndAuditEvents(t *testing.T) {
 	defer store.Close()
 
 	assertRetentionPruning(t, store)
+}
+
+func TestSQLitePruneTerminalJobsPreservesActiveJobs(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenSQLiteNodeStore(ctx, filepath.Join(t.TempDir(), "sideplane.db"))
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer store.Close()
+
+	now := time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)
+	for _, nodeID := range []string{"node-claimed", "node-pending"} {
+		if _, err := store.RecordHeartbeat(ctx, protocol.HeartbeatRequest{NodeID: nodeID}, now); err != nil {
+			t.Fatalf("record %s heartbeat: %v", nodeID, err)
+		}
+	}
+	pending, err := store.CreateJob(ctx, protocol.CreateJobRequest{Type: protocol.JobTypeRollback}, "node-pending", now.Add(-72*time.Hour))
+	if err != nil {
+		t.Fatalf("create pending job: %v", err)
+	}
+	claimedJob, err := store.CreateJob(ctx, protocol.CreateJobRequest{Type: protocol.JobTypeRestart}, "node-claimed", now.Add(-72*time.Hour))
+	if err != nil {
+		t.Fatalf("create claimed job: %v", err)
+	}
+	claimed, err := store.ClaimNextJob(ctx, "node-claimed", claimedJob.CreatedAt.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("claim job: %v", err)
+	}
+	if claimed == nil {
+		t.Fatal("claimed job is nil")
+	}
+
+	deleted, err := store.PruneTerminalJobs(ctx, now)
+	if err != nil {
+		t.Fatalf("prune terminal jobs: %v", err)
+	}
+	if deleted != 0 {
+		t.Fatalf("deleted = %d, want 0", deleted)
+	}
+	gotClaimed, err := store.GetJob(ctx, claimed.ID)
+	if err != nil {
+		t.Fatalf("get claimed job: %v", err)
+	}
+	if gotClaimed == nil || gotClaimed.Status != protocol.JobStatusClaimed {
+		t.Fatalf("claimed job = %#v, want claimed", gotClaimed)
+	}
+	gotPending, err := store.GetJob(ctx, pending.ID)
+	if err != nil {
+		t.Fatalf("get pending job: %v", err)
+	}
+	if gotPending == nil || gotPending.Status != protocol.JobStatusPending {
+		t.Fatalf("pending job = %#v, want pending", gotPending)
+	}
+}
+
+func TestSQLiteConcurrentHeartbeatInsertAndPrune(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := OpenSQLiteNodeStore(ctx, filepath.Join(t.TempDir(), "sideplane.db"))
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer store.Close()
+
+	now := time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)
+	errCh := make(chan error, 240)
+	var wg sync.WaitGroup
+	for worker := 0; worker < 8; worker++ {
+		worker := worker
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 20; i++ {
+				_, err := store.RecordHeartbeat(ctx, protocol.HeartbeatRequest{NodeID: "node-race"}, now.Add(time.Duration(worker*100+i)*time.Millisecond))
+				errCh <- err
+			}
+		}()
+	}
+	for worker := 0; worker < 4; worker++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 20; i++ {
+				_, err := store.PruneHeartbeats(ctx, 5)
+				errCh <- err
+			}
+		}()
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		if err != nil {
+			t.Fatalf("concurrent prune/insert: %v", err)
+		}
+	}
+	if _, err := store.PruneHeartbeats(ctx, 5); err != nil {
+		t.Fatalf("final prune heartbeats: %v", err)
+	}
+	var heartbeatCount int
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM heartbeats WHERE node_id = ?`, "node-race").Scan(&heartbeatCount); err != nil {
+		t.Fatalf("count node-race heartbeats: %v", err)
+	}
+	if heartbeatCount == 0 || heartbeatCount > 5 {
+		t.Fatalf("heartbeat count = %d, want 1..5", heartbeatCount)
+	}
 }
 
 func TestSQLiteRejectsActiveConfigApplyForSamePath(t *testing.T) {
