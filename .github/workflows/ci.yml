@@ -12,6 +12,7 @@ jobs:
   go:
     name: Go build and test
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - name: Validate OpenAPI
@@ -49,6 +50,7 @@ jobs:
   web:
     name: Web typecheck and build
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     defaults:
       run:
         working-directory: web
