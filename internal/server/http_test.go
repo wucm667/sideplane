@@ -1750,6 +1750,59 @@ func TestRequestLoggingMiddleware(t *testing.T) {
 	}
 }
 
+func TestJobLifecycleLoggingIncludesStructuredContext(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	credential := enrollTestNode(t, nodeStore, "node-logs")
+	var logs bytes.Buffer
+	handler, err := NewHandlerWithConfig(HandlerConfig{
+		Store:                           nodeStore,
+		Freshness:                       DefaultFreshnessPolicy(),
+		AllowUnauthenticatedOperatorAPI: true,
+		Logger:                          slog.New(slog.NewJSONHandler(&logs, nil)),
+	})
+	if err != nil {
+		t.Fatalf("build handler: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/nodes/node-logs/jobs", strings.NewReader(`{"type":"deep_probe","payloadJson":"{\"token\":\"secret-value\"}"}`))
+	handler.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusCreated)
+	var job protocol.Job
+	if err := json.NewDecoder(rec.Body).Decode(&job); err != nil {
+		t.Fatalf("decode job: %v", err)
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/sidecar/jobs/next?nodeId=node-logs", nil)
+	req.Header.Set("Authorization", "Bearer "+credential)
+	handler.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusOK)
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/sidecar/jobs/"+job.ID+"/result", strings.NewReader(`{"status":"completed","resultJson":"{\"token\":\"secret-value\"}"}`))
+	req.Header.Set("Authorization", "Bearer "+credential)
+	handler.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusOK)
+
+	body := logs.String()
+	for _, want := range []string{
+		`"msg":"job created"`,
+		`"msg":"job claimed"`,
+		`"msg":"job result recorded"`,
+		`"job_id":"` + job.ID + `"`,
+		`"node_id":"node-logs"`,
+		`"type":"deep_probe"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("logs missing %q\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "secret-value") || strings.Contains(body, "payloadJson") || strings.Contains(body, "resultJson") {
+		t.Fatalf("job logs exposed payload/result details:\n%s", body)
+	}
+}
+
 func TestReadyz(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)

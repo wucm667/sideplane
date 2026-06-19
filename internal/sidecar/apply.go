@@ -433,18 +433,24 @@ func configExt(path string) string {
 }
 
 func (p *JobPoller) executeConfigApply(ctx context.Context, job *protocol.Job) protocol.JobResultRequest {
+	logger := p.jobLogger()
 	var signedPlan protocol.SignedConfigPlan
 	if err := json.Unmarshal([]byte(job.PayloadJSON), &signedPlan); err != nil {
+		logger.Warn("config_apply payload rejected", "job_id", job.ID, "node_id", p.nodeID, "type", job.Type, "error", err)
 		return protocol.JobResultRequest{Status: protocol.JobStatusFailed, Error: fmt.Sprintf("parse config_apply payload: %v", err)}
 	}
+	logger.Info("config_apply execution started", "job_id", job.ID, "node_id", p.nodeID, "plan_id", signedPlan.Plan.ID, "mode", signedPlan.Plan.Mode, "dry_run", signedPlan.Plan.Body.DryRun)
 	executor := ConfigApplyExecutor{NodeID: p.nodeID, PublicKey: p.publicKey, WorkDir: p.applyWorkDir, AllowLiveApply: p.allowLiveApply, Controller: p.controller}
 	result, err := executor.Execute(ctx, signedPlan)
 	payload, marshalErr := json.Marshal(result)
 	if marshalErr != nil {
+		logger.Warn("config_apply result marshal failed", "job_id", job.ID, "node_id", p.nodeID, "plan_id", signedPlan.Plan.ID, "mode", signedPlan.Plan.Mode, "error", marshalErr)
 		return protocol.JobResultRequest{Status: protocol.JobStatusFailed, Error: fmt.Sprintf("marshal config_apply result: %v", marshalErr)}
 	}
 	if err != nil {
+		logger.Warn("config_apply execution failed", "job_id", job.ID, "node_id", p.nodeID, "plan_id", signedPlan.Plan.ID, "mode", signedPlan.Plan.Mode, "dry_run", signedPlan.Plan.Body.DryRun, "error", err)
 		return protocol.JobResultRequest{Status: protocol.JobStatusFailed, ResultJSON: string(payload), Error: err.Error()}
 	}
+	logger.Info("config_apply execution completed", "job_id", job.ID, "node_id", p.nodeID, "plan_id", signedPlan.Plan.ID, "mode", signedPlan.Plan.Mode, "dry_run", signedPlan.Plan.Body.DryRun)
 	return protocol.JobResultRequest{Status: protocol.JobStatusCompleted, ResultJSON: string(payload)}
 }

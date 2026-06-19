@@ -649,6 +649,7 @@ func (h *handler) createNodeJob(w http.ResponseWriter, r *http.Request, nodeID s
 		return
 	}
 	h.metrics.IncJobCreated(string(req.Type))
+	h.logger.Info("job created", "job_id", job.ID, "node_id", nodeID, "type", job.Type, "status", job.Status)
 	h.audit(r.Context(), protocol.AuditEvent{
 		Actor:      audit.ActorOperator,
 		Action:     audit.ActionJobCreate,
@@ -725,6 +726,7 @@ func (h *handler) createRestartJob(w http.ResponseWriter, r *http.Request, nodeI
 	}
 	target := runtimeTargetSummary(runtimeType, runtimeName, profile)
 	h.metrics.IncJobCreated(string(protocol.JobTypeRestart))
+	h.logger.Info("job created", "job_id", job.ID, "node_id", nodeID, "type", job.Type, "status", job.Status, "mode", mode)
 	h.audit(r.Context(), protocol.AuditEvent{
 		Actor:      audit.ActorOperator,
 		Action:     audit.ActionRestart,
@@ -846,6 +848,7 @@ func (h *handler) createRollbackJob(w http.ResponseWriter, r *http.Request, node
 		mode = "live"
 	}
 	h.metrics.IncJobCreated(string(protocol.JobTypeRollback))
+	h.logger.Info("job created", "job_id", job.ID, "node_id", nodeID, "type", job.Type, "status", job.Status, "mode", mode)
 	h.audit(r.Context(), protocol.AuditEvent{
 		Actor:      audit.ActorOperator,
 		Action:     audit.ActionRollback,
@@ -993,6 +996,7 @@ func (h *handler) createConfigApplyJob(w http.ResponseWriter, r *http.Request, n
 		return
 	}
 	h.metrics.IncJobCreated(string(protocol.JobTypeConfigApply))
+	h.logger.Info("job created", "job_id", job.ID, "node_id", nodeID, "type", job.Type, "status", job.Status, "mode", mode, "plan_id", planID)
 	h.audit(r.Context(), protocol.AuditEvent{
 		Actor:      audit.ActorOperator,
 		Action:     audit.ActionConfigApply,
@@ -1060,6 +1064,7 @@ func (h *handler) claimNextJob(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.metrics.IncSidecarJobClaim(string(job.Type))
+	h.logger.Info("job claimed", "job_id", job.ID, "node_id", nodeID, "type", job.Type, "status", job.Status)
 	writeJSON(w, http.StatusOK, job)
 }
 
@@ -1147,6 +1152,7 @@ func (h *handler) submitJobResult(w http.ResponseWriter, r *http.Request) {
 	}
 	if lateResult {
 		h.metrics.IncLateJobResult(string(job.Type), string(req.Status))
+		h.logger.Warn("late job result recorded", "job_id", job.ID, "node_id", job.NodeID, "type", job.Type, "status", req.Status)
 		h.audit(r.Context(), protocol.AuditEvent{
 			Actor:      audit.ActorSidecar,
 			Action:     audit.ActionJobFail,
@@ -1168,6 +1174,7 @@ func (h *handler) submitJobResult(w http.ResponseWriter, r *http.Request) {
 	if job.Type == protocol.JobTypeConfigApply && configApplyRolledBack(req.ResultJSON) {
 		h.metrics.IncConfigApplyRolledBack()
 	}
+	h.logger.Info("job result recorded", "job_id", job.ID, "node_id", job.NodeID, "type", job.Type, "status", req.Status)
 	h.audit(r.Context(), protocol.AuditEvent{
 		Actor:      audit.ActorSidecar,
 		Action:     action,
@@ -1206,6 +1213,7 @@ func (h *handler) observeTimedOutJobs(ctx context.Context, jobs []protocol.Job) 
 			continue
 		}
 		h.metrics.IncJobFailed(string(job.Type))
+		h.logger.Warn("job timed out", "job_id", job.ID, "node_id", job.NodeID, "type", job.Type, "status", job.Status)
 		createdAt := job.FinishedAt
 		if createdAt.IsZero() {
 			createdAt = time.Now().UTC()

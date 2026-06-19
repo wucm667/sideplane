@@ -1,9 +1,11 @@
 package sidecar
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -86,6 +88,86 @@ func TestRunJobPollerPollsImmediately(t *testing.T) {
 		case <-deadline:
 			t.Fatalf("job status = %q, want completed before first interval", got.Status)
 		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
+
+func TestJobPollerLogsJobLifecycleContext(t *testing.T) {
+	ctx := context.Background()
+	nodeStore := store.NewMemoryNodeStore()
+	credential := enrollTestNode(t, nodeStore, "node-log")
+
+	job, err := nodeStore.CreateJob(ctx, protocol.CreateJobRequest{Type: protocol.JobTypeDeepProbe}, "node-log", time.Now().UTC())
+	if err != nil {
+		t.Fatalf("create job: %v", err)
+	}
+
+	api := httptest.NewServer(server.NewHandlerWithStore(nodeStore))
+	defer api.Close()
+
+	var logs bytes.Buffer
+	poller, err := NewJobPoller(JobPollerConfig{
+		ServerURL:      api.URL,
+		NodeID:         "node-log",
+		NodeCredential: credential,
+		Collector:      fakeRuntimeCollector{},
+		HTTPClient:     api.Client(),
+		Logger:         slog.New(slog.NewJSONHandler(&logs, nil)),
+	})
+	if err != nil {
+		t.Fatalf("new job poller: %v", err)
+	}
+
+	if err := poller.PollAndExecute(ctx); err != nil {
+		t.Fatalf("poll and execute: %v", err)
+	}
+
+	body := logs.String()
+	for _, want := range []string{
+		`"msg":"claimed job"`,
+		`"msg":"executing job"`,
+		`"msg":"job execution completed"`,
+		`"msg":"submitted job result"`,
+		`"job_id":"` + job.ID + `"`,
+		`"node_id":"node-log"`,
+		`"type":"deep_probe"`,
+		`"status":"completed"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("logs missing %q\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "resultJson") || strings.Contains(body, "payloadJson") {
+		t.Fatalf("sidecar logs exposed payload/result JSON:\n%s", body)
+	}
+}
+
+func TestJobPollerLogsConfigApplyPayloadRejection(t *testing.T) {
+	var logs bytes.Buffer
+	poller := &JobPoller{
+		nodeID: "node-log",
+		logger: slog.New(slog.NewJSONHandler(&logs, nil)),
+	}
+
+	result := poller.executeConfigApply(context.Background(), &protocol.Job{
+		ID:          "job_apply",
+		NodeID:      "node-log",
+		Type:        protocol.JobTypeConfigApply,
+		PayloadJSON: `{`,
+	})
+
+	if result.Status != protocol.JobStatusFailed {
+		t.Fatalf("status = %q, want failed", result.Status)
+	}
+	body := logs.String()
+	for _, want := range []string{
+		`"msg":"config_apply payload rejected"`,
+		`"job_id":"job_apply"`,
+		`"node_id":"node-log"`,
+		`"type":"config_apply"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("logs missing %q\n%s", want, body)
 		}
 	}
 }

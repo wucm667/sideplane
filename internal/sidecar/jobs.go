@@ -117,6 +117,13 @@ func normalizeServerURL(rawURL string) (string, error) {
 	return parsed.String(), nil
 }
 
+func (p *JobPoller) jobLogger() *slog.Logger {
+	if p == nil || p.logger == nil {
+		return slog.Default()
+	}
+	return p.logger
+}
+
 // PollAndExecute polls for the next job and executes it if found.
 func (p *JobPoller) PollAndExecute(ctx context.Context) error {
 	job, err := p.claimNextJob(ctx)
@@ -128,17 +135,24 @@ func (p *JobPoller) PollAndExecute(ctx context.Context) error {
 		return nil
 	}
 
-	p.logger.Info("claimed job", "job_id", job.ID, "type", job.Type)
+	logger := p.jobLogger()
+	logger.Info("claimed job", "job_id", job.ID, "node_id", p.nodeID, "type", job.Type, "status", job.Status)
 
 	// Execute the job
+	logger.Info("executing job", "job_id", job.ID, "node_id", p.nodeID, "type", job.Type)
 	result := p.executeJob(ctx, job)
+	if result.Status == protocol.JobStatusFailed {
+		logger.Warn("job execution failed", "job_id", job.ID, "node_id", p.nodeID, "type", job.Type, "status", result.Status, "error", result.Error)
+	} else {
+		logger.Info("job execution completed", "job_id", job.ID, "node_id", p.nodeID, "type", job.Type, "status", result.Status)
+	}
 
 	// Submit the result
 	if err := p.submitJobResult(ctx, job.ID, result); err != nil {
 		return fmt.Errorf("submit job result: %w", err)
 	}
 
-	p.logger.Info("submitted job result", "job_id", job.ID, "status", result.Status)
+	logger.Info("submitted job result", "job_id", job.ID, "node_id", p.nodeID, "type", job.Type, "status", result.Status)
 	return nil
 }
 
