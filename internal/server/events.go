@@ -2,15 +2,20 @@ package server
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/wucm667/sideplane/pkg/protocol"
 )
 
 const eventClientBuffer = 16
+const eventTicketTTL = 30 * time.Second
 
 var defaultEventHub = NewEventHub()
 
@@ -26,6 +31,16 @@ type EventHub struct {
 	clients map[int]chan serverEvent
 }
 
+type eventTicketStore struct {
+	mu      sync.Mutex
+	tickets map[string]time.Time
+}
+
+type eventTicketResponse struct {
+	Ticket    string    `json:"ticket"`
+	ExpiresAt time.Time `json:"expiresAt"`
+}
+
 // NewEventHub creates an empty event hub.
 func NewEventHub() *EventHub {
 	return &EventHub{clients: map[int]chan serverEvent{}}
@@ -36,6 +51,49 @@ func eventHubOrDefault(hub *EventHub) *EventHub {
 		return hub
 	}
 	return defaultEventHub
+}
+
+func newEventTicketStore() *eventTicketStore {
+	return &eventTicketStore{tickets: map[string]time.Time{}}
+}
+
+func (s *eventTicketStore) create(now time.Time) (eventTicketResponse, error) {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		return eventTicketResponse{}, err
+	}
+	ticket := hex.EncodeToString(buf)
+	expiresAt := now.UTC().Add(eventTicketTTL)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pruneLocked(now.UTC())
+	s.tickets[ticket] = expiresAt
+	return eventTicketResponse{Ticket: ticket, ExpiresAt: expiresAt}, nil
+}
+
+func (s *eventTicketStore) verify(ticket string, now time.Time) bool {
+	ticket = strings.TrimSpace(ticket)
+	if ticket == "" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pruneLocked(now.UTC())
+	expiresAt, ok := s.tickets[ticket]
+	if !ok || !now.UTC().Before(expiresAt) {
+		delete(s.tickets, ticket)
+		return false
+	}
+	delete(s.tickets, ticket)
+	return true
+}
+
+func (s *eventTicketStore) pruneLocked(now time.Time) {
+	for ticket, expiresAt := range s.tickets {
+		if !now.Before(expiresAt) {
+			delete(s.tickets, ticket)
+		}
+	}
 }
 
 func (h *EventHub) subscribe(ctx context.Context) <-chan serverEvent {
@@ -101,7 +159,7 @@ func (h *handler) eventsStream(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusMethodNotAllowed, http.StatusText(http.StatusMethodNotAllowed))
 		return
 	}
-	if !h.authorizeOperator(w, r) {
+	if !h.authorizeEventStream(w, r) {
 		return
 	}
 
@@ -134,6 +192,34 @@ func (h *handler) eventsStream(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+}
+
+func (h *handler) createEventTicket(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		writeAPIError(w, http.StatusMethodNotAllowed, http.StatusText(http.StatusMethodNotAllowed))
+		return
+	}
+	if !h.authorizeOperator(w, r) {
+		return
+	}
+	ticket, err := h.eventTickets.create(time.Now().UTC())
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "create event ticket")
+		return
+	}
+	writeJSON(w, http.StatusCreated, ticket)
+}
+
+func (h *handler) authorizeEventStream(w http.ResponseWriter, r *http.Request) bool {
+	if h.operatorAuth.AuthorizeHeader(r.Header.Get("Authorization")) {
+		return true
+	}
+	if h.eventTickets.verify(r.URL.Query().Get("ticket"), time.Now().UTC()) {
+		return true
+	}
+	writeAPIError(w, http.StatusUnauthorized, http.StatusText(http.StatusUnauthorized))
+	return false
 }
 
 func publishNodeEvent(hub *EventHub, node protocol.NodeStatus) {

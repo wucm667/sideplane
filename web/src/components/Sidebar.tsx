@@ -3,6 +3,7 @@ import type { Theme, View } from '../helpers.ts'
 interface SidebarProps {
   currentView: View
   groups: Array<{ name: string; count: number }>
+  liveConnected: boolean
   operatorToken: string
   theme: Theme
   onOperatorTokenChange: (value: string) => void
@@ -13,6 +14,7 @@ interface SidebarProps {
 export function Sidebar({
   currentView,
   groups,
+  liveConnected,
   operatorToken,
   theme,
   onOperatorTokenChange,
@@ -61,6 +63,11 @@ export function Sidebar({
           <span className="flex items-center gap-2">
             <span className={`h-2 w-2 rounded-full ${operatorToken.trim() ? 'bg-emerald-500' : 'bg-amber-500'}`} />
             Operator session
+            {liveConnected && (
+              <span className="ml-auto rounded border border-emerald-500/25 bg-emerald-500/10 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-normal text-emerald-600">
+                live
+              </span>
+            )}
           </span>
           <input
             type="password"

@@ -36,6 +36,7 @@ export default function FleetPage() {
     jobsLoadingByNode,
     jobStatusByNode,
     labelErrorByNode,
+    liveConnected,
     loading,
     loadMoreNodeJobs,
     loadRollouts,
@@ -121,6 +122,7 @@ export default function FleetPage() {
         <Sidebar
           currentView={view}
           groups={groups}
+          liveConnected={liveConnected}
           operatorToken={operatorToken}
           theme={theme}
           onOperatorTokenChange={setOperatorToken}

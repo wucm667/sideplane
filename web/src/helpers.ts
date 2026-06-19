@@ -5,6 +5,7 @@ const NODE_REFRESH_MS = 10_000
 const ACTIVE_JOB_REFRESH_MS = 2_000
 const AUDIT_REFRESH_MS = 10_000
 const ROLLOUT_REFRESH_MS = 5_000
+const LIVE_RECONNECT_MS = 5_000
 const DEFAULT_AUDIT_LIMIT = 100
 const DEFAULT_JOB_LIMIT = 50
 const JOB_LIMIT_STEP = 50
@@ -20,6 +21,19 @@ export interface RollbackCandidate {
   sourceJobId: string
   planId: string
   createdAt?: string
+}
+
+interface EventTicketResponse {
+  ticket: string
+  expiresAt: string
+}
+
+interface ServerEventPayload {
+  jobId?: string
+  nodeId?: string
+  rolloutId?: string
+  state?: string
+  status?: string
 }
 
 function loadStoredOperatorToken(): string {
@@ -146,6 +160,25 @@ function mergeActiveJobs(previous: Job[], next: Job[]): Job[] {
   const seen = new Set(next.map((job) => job.id))
   const active = previous.filter((job) => isActiveJob(job) && !seen.has(job.id))
   return [...active, ...next]
+}
+
+function parseServerEventPayload(event: Event): ServerEventPayload {
+  if (!(event instanceof MessageEvent) || typeof event.data !== 'string') return {}
+
+  try {
+    const parsed = JSON.parse(event.data) as unknown
+    if (!parsed || typeof parsed !== 'object') return {}
+    const record = parsed as Record<string, unknown>
+    const payload: ServerEventPayload = {}
+    for (const key of ['jobId', 'nodeId', 'rolloutId', 'state', 'status'] as const) {
+      if (typeof record[key] === 'string') {
+        payload[key] = record[key]
+      }
+    }
+    return payload
+  } catch {
+    return {}
+  }
 }
 
 export function hasActiveDeepProbe(jobs: Job[]): boolean {
@@ -280,6 +313,7 @@ export function useFleetPageController() {
   const [rolloutActioningId, setRolloutActioningId] = useState<string | null>(null)
   const [effectiveByNode, setEffectiveByNode] = useState<Record<string, EffectiveConfigResponse>>({})
   const [effectiveErrorByNode, setEffectiveErrorByNode] = useState<Record<string, string>>({})
+  const [liveConnected, setLiveConnected] = useState(false)
   const [theme, setTheme] = useState<Theme>(loadStoredTheme)
   const [view, setView] = useState<View>('fleet')
   const [selector, setSelector] = useState('')
@@ -416,6 +450,20 @@ export function useFleetPageController() {
       }
     }
   }, [loadNodeJobs, loadNodes])
+
+  const refreshNodeList = useCallback(async () => {
+    try {
+      await loadNodes()
+    } catch (e) {
+      if (mountedRef.current) {
+        setError(e instanceof Error ? e.message : 'Unknown error')
+      }
+    } finally {
+      if (mountedRef.current) {
+        setLoading(false)
+      }
+    }
+  }, [loadNodes])
 
   const createDeepProbe = useCallback(async (nodeId: string) => {
     if (!mountedRef.current) return
@@ -812,11 +860,97 @@ export function useFleetPageController() {
   }, [loadRollouts])
 
   useEffect(() => {
+    const token = operatorToken.trim()
+    if (!token || typeof window.EventSource === 'undefined') {
+      setLiveConnected(false)
+      return
+    }
+
+    let closed = false
+    let source: EventSource | null = null
+    let ticketRequest: AbortController | null = null
+    let reconnectTimer: number | undefined
+
+    const scheduleReconnect = () => {
+      if (closed || reconnectTimer !== undefined) return
+      reconnectTimer = window.setTimeout(() => {
+        reconnectTimer = undefined
+        void connect()
+      }, LIVE_RECONNECT_MS)
+    }
+
+    const connect = async () => {
+      if (closed) return
+      ticketRequest?.abort()
+      ticketRequest = new AbortController()
+
+      try {
+        const res = await fetch('/api/events/tickets', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}` },
+          signal: ticketRequest.signal,
+        })
+        if (!res.ok) {
+          throw new Error(await apiErrorMessage(res))
+        }
+        const ticket = (await res.json()) as EventTicketResponse
+        if (closed || !ticket.ticket) return
+
+        source?.close()
+        source = new EventSource(`/api/events?ticket=${encodeURIComponent(ticket.ticket)}`)
+        source.onopen = () => {
+          if (closed) return
+          setLiveConnected(true)
+        }
+        source.onerror = () => {
+          if (closed) return
+          setLiveConnected(false)
+          source?.close()
+          source = null
+          scheduleReconnect()
+        }
+        source.addEventListener('node', () => {
+          void refreshNodeList()
+        })
+        source.addEventListener('job', (event) => {
+          const payload = parseServerEventPayload(event)
+          if (!payload.nodeId) return
+          void loadNodeJobs(payload.nodeId, false)
+        })
+        source.addEventListener('rollout', () => {
+          void loadRollouts(false)
+        })
+      } catch (e) {
+        if (closed || e instanceof DOMException && e.name === 'AbortError') return
+        setLiveConnected(false)
+        scheduleReconnect()
+      } finally {
+        ticketRequest = null
+      }
+    }
+
+    void connect()
+
+    return () => {
+      closed = true
+      ticketRequest?.abort()
+      source?.close()
+      if (reconnectTimer !== undefined) {
+        window.clearTimeout(reconnectTimer)
+      }
+      if (mountedRef.current) {
+        setLiveConnected(false)
+      }
+    }
+  }, [loadNodeJobs, loadRollouts, operatorToken, refreshNodeList])
+
+  useEffect(() => {
+    if (liveConnected) return
     const interval = window.setInterval(() => {
       refreshFleet(false)
     }, NODE_REFRESH_MS)
     return () => window.clearInterval(interval)
-  }, [refreshFleet])
+  }, [liveConnected, refreshFleet])
 
   useEffect(() => {
     const interval = window.setInterval(() => {
@@ -826,13 +960,15 @@ export function useFleetPageController() {
   }, [loadAuditEvents])
 
   useEffect(() => {
+    if (liveConnected) return
     const interval = window.setInterval(() => {
       void loadRollouts(false)
     }, ROLLOUT_REFRESH_MS)
     return () => window.clearInterval(interval)
-  }, [loadRollouts])
+  }, [liveConnected, loadRollouts])
 
   useEffect(() => {
+    if (liveConnected) return
     const nodeIdsWithActiveJobs = Object.entries(jobsByNode)
       .filter(([, jobs]) => hasActiveJobs(jobs))
       .map(([nodeId]) => nodeId)
@@ -844,7 +980,7 @@ export function useFleetPageController() {
     }, ACTIVE_JOB_REFRESH_MS)
 
     return () => window.clearInterval(interval)
-  }, [jobsByNode, loadNodeJobs])
+  }, [jobsByNode, liveConnected, loadNodeJobs])
 
   useEffect(() => {
     if (view === 'node' && selectedNodeId) {
@@ -916,6 +1052,7 @@ export function useFleetPageController() {
     jobLimitByNode,
     jobsLoadingByNode,
     jobStatusByNode,
+    liveConnected,
     loading,
     loadMoreNodeJobs,
     loadRollouts,

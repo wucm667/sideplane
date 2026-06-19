@@ -104,6 +104,7 @@ func NewHandlerWithConfig(cfg HandlerConfig) (http.Handler, error) {
 		operatorAuth: auth.NewOperatorToken(cfg.OperatorToken, cfg.AllowUnauthenticatedOperatorAPI),
 		signingKey:   keyPair,
 		events:       cfg.Events,
+		eventTickets: newEventTicketStore(),
 		metrics:      NewMetrics(),
 		timedOutJobs: map[string]struct{}{},
 		logger:       cfg.Logger,
@@ -118,6 +119,7 @@ func NewHandlerWithConfig(cfg HandlerConfig) (http.Handler, error) {
 	mux.HandleFunc("/readyz", handler.readyz)
 	mux.HandleFunc("/metrics", handler.metricsEndpoint)
 	mux.HandleFunc("/api/events", handler.eventsStream)
+	mux.HandleFunc("/api/events/tickets", handler.createEventTicket)
 	mux.HandleFunc("/api/audit", handler.auditEvents)
 	mux.HandleFunc("/api/signing-key", handler.publicSigningKey)
 	mux.HandleFunc("/api/config/desired", handler.desiredConfig)
@@ -141,6 +143,7 @@ type handler struct {
 	operatorAuth auth.OperatorToken
 	signingKey   spcrypto.KeyPair
 	events       *EventHub
+	eventTickets *eventTicketStore
 	metrics      *Metrics
 	timedOutMu   sync.Mutex
 	timedOutJobs map[string]struct{}

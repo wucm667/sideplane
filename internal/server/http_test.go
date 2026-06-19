@@ -2427,6 +2427,46 @@ func TestEventsStreamDisconnectRemovesClient(t *testing.T) {
 	waitForEventHubClients(t, hub, 0)
 }
 
+func TestEventsStreamAcceptsOneTimeTicket(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	handler, err := NewHandlerWithConfig(HandlerConfig{
+		Store:         nodeStore,
+		Freshness:     DefaultFreshnessPolicy(),
+		OperatorToken: "operator-token",
+		Events:        NewEventHub(),
+	})
+	if err != nil {
+		t.Fatalf("build handler: %v", err)
+	}
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	ticketResp := doJSONRequest[eventTicketResponse](t, server.Client(), http.MethodPost, server.URL+"/api/events/tickets", "operator-token", map[string]string{})
+	if ticketResp.Ticket == "" || ticketResp.ExpiresAt.IsZero() {
+		t.Fatalf("ticket response = %+v, want ticket and expiry", ticketResp)
+	}
+
+	res, err := server.Client().Get(server.URL + "/api/events?ticket=" + ticketResp.Ticket)
+	if err != nil {
+		t.Fatalf("open event stream with ticket: %v", err)
+	}
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("ticket stream status = %d, want 200", res.StatusCode)
+	}
+	if err := res.Body.Close(); err != nil {
+		t.Fatalf("close ticket stream: %v", err)
+	}
+
+	second, err := server.Client().Get(server.URL + "/api/events?ticket=" + ticketResp.Ticket)
+	if err != nil {
+		t.Fatalf("open event stream with reused ticket: %v", err)
+	}
+	defer second.Body.Close()
+	if second.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("reused ticket status = %d, want 401", second.StatusCode)
+	}
+}
+
 func TestEventHubDropsSlowClient(t *testing.T) {
 	hub := NewEventHub()
 	ctx, cancel := context.WithCancel(context.Background())
