@@ -19,7 +19,7 @@ Production operators should still treat it as pre-1.0 infrastructure. Run it on 
 - Hermes and OpenClaw adapters for read-only runtime discovery, config hash reporting, and provider/model snapshots.
 - Desired configuration layering with effective config preview and read-only actual-vs-desired diffs.
 - Signed config apply plans, dry-run by default, with live apply gated behind explicit sidecar opt-in and rollback handling.
-- Deep-probe, config-apply, restart/rollback-aware job lifecycle with recent job status in the UI.
+- Deep-probe, config-apply, restart/rollback-aware job lifecycle with paginated recent job status in the UI.
 - Operator audit log with node/action filtering and deletion audit events.
 - Node removal API and UI flow for decommissioned fleet entries.
 - Prometheus-compatible `/metrics`, including job counters and fleet freshness/drift gauges.
@@ -51,7 +51,8 @@ The sidecar container waits for `/data/sidecar.json`, then starts outbound heart
 
 ### Local Development
 
-Run the API server with SQLite:
+Run the server with SQLite. By default the Go binary serves the embedded Web
+assets compiled into `sideplane-server`:
 
 ```bash
 export SIDEPLANE_OPERATOR_TOKEN='replace-with-a-long-random-token'
@@ -68,7 +69,8 @@ npm run dev
 
 The Vite dev server listens on `http://localhost:3000` and proxies API requests to `http://localhost:8080`.
 
-To serve the built UI from the Go server:
+To override the embedded assets during local UI development, serve a built UI
+directory from the Go server:
 
 ```bash
 npm --prefix web run build
@@ -110,12 +112,18 @@ Server flags can be configured with environment variables. Explicit CLI flags ta
 | --- | --- | --- |
 | `SIDEPLANE_ADDR` | `:8080` | HTTP listen address. |
 | `SIDEPLANE_DB_PATH` | `sideplane.db` | SQLite database path. |
-| `SIDEPLANE_WEB_DIR` | empty | Built Web UI directory to serve. Empty means API only. |
+| `SIDEPLANE_WEB_DIR` | empty | Built Web UI directory to serve instead of embedded assets. Empty uses embedded assets. |
 | `SIDEPLANE_OPERATOR_TOKEN` | empty | Bearer token required for mutating operator APIs. |
 | `SIDEPLANE_SIGNING_KEY` | empty | Ed25519 config-plan signing key path. Empty uses ephemeral in-memory key. |
 | `SIDEPLANE_STALE_AFTER` | `2m` | Heartbeat age before a node is stale. |
 | `SIDEPLANE_OFFLINE_AFTER` | `10m` | Heartbeat age before a node is offline. Must exceed stale duration. |
+| `SIDEPLANE_HEARTBEAT_RETENTION` | `100` | Number of recent heartbeat records retained per node. |
 | `SIDEPLANE_ALLOW_UNAUTHENTICATED_OPERATOR_API` | false | Development-only escape hatch for mutating operator APIs. |
+
+Matching flags are available on `sideplane-server`: `--addr`, `--db`,
+`--web-dir`, `--operator-token`, `--signing-key`, `--stale-after`,
+`--offline-after`, `--heartbeat-retention`, and
+`--allow-unauthenticated-operator-api`.
 
 Sidecar runtime flags also support env vars. Explicit CLI flags take precedence over env vars, then values loaded from the sidecar state file.
 
@@ -170,11 +178,39 @@ Core endpoints:
 - `POST /api/heartbeat` records node status with node credential auth.
 - `GET /api/nodes` lists freshness-adjusted nodes with drift state.
 - `DELETE /api/nodes/{nodeId}` removes a node with operator auth and records `node.delete`.
-- `GET /api/nodes/{nodeId}/jobs` lists node jobs.
+- `GET /api/nodes/{nodeId}/jobs?limit=50&status=completed` lists node jobs with optional bounded `limit` and `status` filters.
 - `POST /api/nodes/{nodeId}/jobs` creates a `deep_probe` job with operator auth.
 - `POST /api/nodes/{nodeId}/config-apply` creates a signed config apply job with operator auth.
 - `GET /api/audit?nodeId=...&action=...&limit=...` lists audit events with additive filters.
 - `GET /api/sidecar/jobs/next?nodeId=...` and `POST /api/sidecar/jobs/{jobId}/result` power sidecar polling.
+
+## CLI Reference
+
+The `sideplane` CLI is a compact operator client for the REST API. It uses
+`SIDEPLANE_SERVER_URL` when `--server` is omitted and
+`SIDEPLANE_OPERATOR_TOKEN` when `--operator-token` is omitted.
+
+| Command | Purpose | Key flags |
+| --- | --- | --- |
+| `sideplane fleet status` | Show fleet node status. | `--server`, `--json` |
+| `sideplane probe <nodeId>` | Create a deep-probe job. | `--server`, `--operator-token`, `--wait`, `--json` |
+| `sideplane config get` | Show desired configuration. | `--server`, `--json` |
+| `sideplane config set` | Update global desired provider/model. | `--server`, `--operator-token`, `--provider`, `--model` |
+| `sideplane node remove <nodeId>` | Remove a decommissioned node record. | `--server`, `--operator-token`, `--yes` |
+| `sideplane enrollment create` | Create a one-time sidecar enrollment token. | `--server`, `--operator-token`, `--ttl`, `--json` |
+| `sideplane version` | Print CLI version. | none |
+
+## Web Operator Notes
+
+The Web UI is intentionally a compact infrastructure console. It includes:
+
+- Fleet search and sortable node columns.
+- Node job history with server-side `limit` and `status` query support.
+- Expandable job result rows for deep-probe and config-apply details.
+- Activity history filters by node ID and action.
+- Keyboard shortcuts: `f`/`1` opens Fleet, `a`/`2` opens Activity, `e`/`3`
+  opens Enrollment, `r` refreshes the current view, and `Esc` returns from a
+  node detail view to Fleet.
 
 For systemd deployment files, see `deployments/systemd/`. The root `install.sh` creates the `sideplane` user/group, `/etc/sideplane`, `/var/lib/sideplane`, and copies systemd units/env examples. It does not download binaries yet; build and copy `sideplane-server` and `sideplane-sidecar` manually until release CI exists.
 
