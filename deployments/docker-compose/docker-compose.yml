@@ -10,13 +10,18 @@ services:
     environment:
       SIDEPLANE_ADDR: "${SIDEPLANE_ADDR:-:8080}"
       SIDEPLANE_DB_PATH: ${SIDEPLANE_DB_PATH:-/data/sideplane.db}
-      SIDEPLANE_WEB_DIR: ${SIDEPLANE_WEB_DIR:-/app/web/dist}
       # Set SIDEPLANE_OPERATOR_TOKEN in your shell or .env to a secret value before exposing the server.
       SIDEPLANE_OPERATOR_TOKEN: ${SIDEPLANE_OPERATOR_TOKEN:-}
       SIDEPLANE_SIGNING_KEY: ${SIDEPLANE_SIGNING_KEY:-/data/signing.key}
     volumes:
       - sideplane-data:/data
     command: ["sideplane-server"]
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   sidecar:
     image: ghcr.io/wucm667/sideplane/sidecar:local
@@ -24,7 +29,8 @@ services:
       context: ../..
       dockerfile: Dockerfile.sidecar
     depends_on:
-      - server
+      server:
+        condition: service_healthy
     restart: unless-stopped
     environment:
       SIDEPLANE_SERVER_URL: ${SIDEPLANE_SERVER_URL:-http://server:8080}
@@ -33,6 +39,12 @@ services:
       SIDEPLANE_OPENCLAW_CONFIG_PATHS: ${SIDEPLANE_OPENCLAW_CONFIG_PATHS:-}
     volumes:
       - sideplane-sidecar-state:/data
+    healthcheck:
+      test: ["CMD-SHELL", "test -s \"$${SIDEPLANE_SIDECAR_STATE}\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     # Create an enrollment token in the UI, then run:
     # docker compose exec sidecar sideplane-sidecar enroll --server http://server:8080 --token <TOKEN> --state /data/sidecar.json
     command:

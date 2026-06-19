@@ -48,7 +48,10 @@ docker compose -f deployments/docker-compose/docker-compose.yml exec sidecar \
   sideplane-sidecar enroll --server http://server:8080 --token TOKEN --state /data/sidecar.json
 ```
 
-The sidecar container waits for `/data/sidecar.json`, then starts outbound heartbeat and job polling with env-var configuration.
+The server container serves the embedded Web UI and exposes a `/healthz`
+healthcheck. The sidecar starts after the server is healthy, waits quietly for
+`/data/sidecar.json`, then begins outbound heartbeat and job polling with
+env-var configuration.
 
 ### Local Development
 
