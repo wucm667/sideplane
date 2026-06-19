@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -2011,6 +2012,21 @@ func TestReadyz(t *testing.T) {
 	assertJSONStatus(t, rec, "ready")
 }
 
+func TestReadyzReportsStoreFailure(t *testing.T) {
+	handler, err := NewHandlerWithStoreAndFreshnessPolicy(staticNodeStore{
+		checkErr: errors.New("database unavailable"),
+	}, DefaultFreshnessPolicy())
+	if err != nil {
+		t.Fatalf("build handler: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	handler.ServeHTTP(rec, req)
+
+	assertAPIError(t, rec, http.StatusServiceUnavailable, "service_unavailable", "store is not ready")
+}
+
 func TestMetricsExposesCounters(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
@@ -2838,7 +2854,12 @@ func enrollTestNode(t *testing.T, nodeStore store.Store, nodeID string) string {
 }
 
 type staticNodeStore struct {
-	nodes []protocol.NodeStatus
+	nodes    []protocol.NodeStatus
+	checkErr error
+}
+
+func (s staticNodeStore) Check(context.Context) error {
+	return s.checkErr
 }
 
 func (s staticNodeStore) RecordHeartbeat(context.Context, protocol.HeartbeatRequest, time.Time) (protocol.NodeStatus, error) {

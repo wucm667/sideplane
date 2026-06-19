@@ -43,6 +43,14 @@ func NewMemoryNodeStore() *MemoryNodeStore {
 
 var _ Store = (*MemoryNodeStore)(nil)
 
+// Check reports whether the in-memory store is reachable.
+func (s *MemoryNodeStore) Check(context.Context) error {
+	if s == nil {
+		return errors.New("memory node store is nil")
+	}
+	return nil
+}
+
 // RecordHeartbeat stores the latest heartbeat-derived status for a node.
 func (s *MemoryNodeStore) RecordHeartbeat(_ context.Context, req protocol.HeartbeatRequest, observedAt time.Time) (protocol.NodeStatus, error) {
 	node := protocol.NodeStatus{

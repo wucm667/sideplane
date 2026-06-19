@@ -21,6 +21,21 @@ type SQLiteNodeStore struct {
 
 var _ Store = (*SQLiteNodeStore)(nil)
 
+// Check verifies that the SQLite store can execute a lightweight query.
+func (s *SQLiteNodeStore) Check(ctx context.Context) error {
+	if s == nil || s.db == nil {
+		return errors.New("sqlite node store is closed")
+	}
+	var ok int
+	if err := s.db.QueryRowContext(ctx, `SELECT 1`).Scan(&ok); err != nil {
+		return fmt.Errorf("check sqlite database: %w", err)
+	}
+	if ok != 1 {
+		return fmt.Errorf("check sqlite database returned %d", ok)
+	}
+	return nil
+}
+
 // OpenSQLiteNodeStore opens a SQLite database and applies pending migrations.
 func OpenSQLiteNodeStore(ctx context.Context, path string) (*SQLiteNodeStore, error) {
 	if strings.TrimSpace(path) == "" {

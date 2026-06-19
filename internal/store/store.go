@@ -165,6 +165,11 @@ type DesiredConfigStore interface {
 	SetDesiredConfig(ctx context.Context, desired protocol.DesiredConfig, now time.Time) error
 }
 
+// HealthStore reports whether the persistence layer is reachable.
+type HealthStore interface {
+	Check(ctx context.Context) error
+}
+
 // Store is the complete persistence contract currently required by the server.
 type Store interface {
 	NodeStore
@@ -172,4 +177,5 @@ type Store interface {
 	JobStore
 	AuditStore
 	DesiredConfigStore
+	HealthStore
 }

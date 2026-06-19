@@ -108,7 +108,7 @@ func NewHandlerWithConfig(cfg HandlerConfig) (http.Handler, error) {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", jsonStatusHandler("ok"))
-	mux.HandleFunc("/readyz", jsonStatusHandler("ready"))
+	mux.HandleFunc("/readyz", handler.readyz)
 	mux.HandleFunc("/metrics", handler.metricsEndpoint)
 	mux.HandleFunc("/api/audit", handler.auditEvents)
 	mux.HandleFunc("/api/signing-key", handler.publicSigningKey)
@@ -149,6 +149,19 @@ func jsonStatusHandler(status string) http.HandlerFunc {
 			http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		}
 	}
+}
+
+func (h *handler) readyz(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		writeAPIError(w, http.StatusMethodNotAllowed, http.StatusText(http.StatusMethodNotAllowed))
+		return
+	}
+	if err := h.store.Check(r.Context()); err != nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "store is not ready")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
 }
 
 func (h *handler) metricsEndpoint(w http.ResponseWriter, r *http.Request) {
