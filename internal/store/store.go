@@ -88,6 +88,7 @@ type NodeStore interface {
 type NodeFilter struct {
 	Limit  int
 	Offset int
+	Labels map[string]string
 }
 
 // NodeList is a paginated fleet inventory snapshot.
@@ -151,7 +152,33 @@ func NormalizeNodeFilter(filter NodeFilter) NodeFilter {
 	if filter.Offset < 0 {
 		filter.Offset = 0
 	}
+	filter.Labels, _ = ValidateNodeLabels(filter.Labels)
 	return filter
+}
+
+func nodeMatchesLabels(node protocol.NodeStatus, labels map[string]string) bool {
+	if len(labels) == 0 {
+		return true
+	}
+	for key, value := range labels {
+		if node.Labels[key] != value {
+			return false
+		}
+	}
+	return true
+}
+
+func filterNodesByLabels(nodes []protocol.NodeStatus, labels map[string]string) []protocol.NodeStatus {
+	if len(labels) == 0 {
+		return nodes
+	}
+	filtered := make([]protocol.NodeStatus, 0, len(nodes))
+	for _, node := range nodes {
+		if nodeMatchesLabels(node, labels) {
+			filtered = append(filtered, node)
+		}
+	}
+	return filtered
 }
 
 // EnrollmentStore persists one-time enrollment tokens and node credentials.

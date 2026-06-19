@@ -102,6 +102,7 @@ func (s *MemoryNodeStore) ListNodesFiltered(ctx context.Context, filter NodeFilt
 		return NodeList{}, err
 	}
 	filter = NormalizeNodeFilter(filter)
+	nodes = filterNodesByLabels(nodes, filter.Labels)
 	total := len(nodes)
 	start := filter.Offset
 	if start > total {

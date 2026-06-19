@@ -246,6 +246,28 @@ func (s *SQLiteNodeStore) ListNodesFiltered(ctx context.Context, filter NodeFilt
 		return NodeList{}, errors.New("sqlite node store is closed")
 	}
 	filter = NormalizeNodeFilter(filter)
+	if len(filter.Labels) > 0 {
+		nodes, err := s.ListNodes(ctx)
+		if err != nil {
+			return NodeList{}, err
+		}
+		nodes = filterNodesByLabels(nodes, filter.Labels)
+		total := len(nodes)
+		start := filter.Offset
+		if start > total {
+			start = total
+		}
+		end := start + filter.Limit
+		if end > total {
+			end = total
+		}
+		return NodeList{
+			Nodes:  nodes[start:end],
+			Total:  total,
+			Limit:  filter.Limit,
+			Offset: filter.Offset,
+		}, nil
+	}
 
 	var total int
 	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM nodes`).Scan(&total); err != nil {

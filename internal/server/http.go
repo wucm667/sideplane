@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -439,7 +440,42 @@ func parseNodeFilter(r *http.Request) (store.NodeFilter, error) {
 		}
 		filter.Offset = offset
 	}
+	if selectorValue := strings.TrimSpace(query.Get("selector")); selectorValue != "" {
+		labels, err := parseLabelSelector(selectorValue)
+		if err != nil {
+			return store.NodeFilter{}, err
+		}
+		filter.Labels = labels
+	}
 	return filter, nil
+}
+
+func parseLabelSelector(selector string) (map[string]string, error) {
+	selector = strings.TrimSpace(selector)
+	if selector == "" {
+		return nil, nil
+	}
+	labels := map[string]string{}
+	for _, part := range strings.Split(selector, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			return nil, fmt.Errorf("selector contains an empty label match")
+		}
+		key, value, ok := strings.Cut(part, "=")
+		if !ok {
+			return nil, fmt.Errorf("selector entries must use key=value")
+		}
+		key = strings.TrimSpace(key)
+		if _, exists := labels[key]; exists {
+			return nil, fmt.Errorf("selector contains duplicate key %q", key)
+		}
+		labels[key] = strings.TrimSpace(value)
+	}
+	normalized, err := store.ValidateNodeLabels(labels)
+	if err != nil {
+		return nil, fmt.Errorf("invalid selector: %w", err)
+	}
+	return normalized, nil
 }
 
 func (h *handler) applyFreshness(nodes []protocol.NodeStatus) {
@@ -481,7 +517,7 @@ func hasKnownProviderModel(value protocol.ProviderModelConfig) bool {
 
 // nodeJobsRouter handles node-scoped API routes under /api/nodes/{nodeId}.
 func (h *handler) nodeJobsRouter(w http.ResponseWriter, r *http.Request) {
-	// Parse path: /api/nodes/{nodeId}/{jobs|config-apply|restart|rollback}
+	// Parse path: /api/nodes/{nodeId}/{labels|jobs|config-apply|restart|rollback}
 	path := strings.TrimPrefix(r.URL.Path, "/api/nodes/")
 	parts := strings.Split(path, "/")
 	nodeID := strings.TrimSpace(parts[0])
@@ -505,6 +541,16 @@ func (h *handler) nodeJobsRouter(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch parts[1] {
+	case "labels":
+		switch r.Method {
+		case http.MethodGet:
+			h.getNodeLabels(w, r, nodeID)
+		case http.MethodPut:
+			h.setNodeLabels(w, r, nodeID)
+		default:
+			w.Header().Set("Allow", http.MethodGet+", "+http.MethodPut)
+			writeAPIError(w, http.StatusMethodNotAllowed, http.StatusText(http.StatusMethodNotAllowed))
+		}
 	case "jobs":
 		switch r.Method {
 		case http.MethodGet:
@@ -539,6 +585,79 @@ func (h *handler) nodeJobsRouter(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeAPIError(w, http.StatusNotFound, http.StatusText(http.StatusNotFound))
 	}
+}
+
+func (h *handler) getNodeLabels(w http.ResponseWriter, r *http.Request, nodeID string) {
+	if !h.authorizeOperator(w, r) {
+		return
+	}
+	labels, err := h.store.GetNodeLabels(r.Context(), nodeID)
+	if err != nil {
+		if errors.Is(err, store.ErrNodeNotFound) {
+			writeAPIError(w, http.StatusNotFound, "node not found")
+			return
+		}
+		writeAPIError(w, http.StatusInternalServerError, "get node labels")
+		return
+	}
+	if labels == nil {
+		labels = map[string]string{}
+	}
+	writeJSON(w, http.StatusOK, protocol.NodeLabelsResponse{
+		NodeID: nodeID,
+		Labels: labels,
+	})
+}
+
+func (h *handler) setNodeLabels(w http.ResponseWriter, r *http.Request, nodeID string) {
+	if !h.authorizeOperator(w, r) {
+		return
+	}
+	var req protocol.NodeLabelsRequest
+	if err := decodeOptionalJSONRequest(w, r, defaultJSONBodyLimit, &req); err != nil {
+		writeJSONDecodeError(w, err, "invalid node labels JSON")
+		return
+	}
+	labels, err := store.ValidateNodeLabels(req.Labels)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := h.store.SetNodeLabels(r.Context(), nodeID, labels); err != nil {
+		if errors.Is(err, store.ErrNodeNotFound) {
+			writeAPIError(w, http.StatusNotFound, "node not found")
+			return
+		}
+		writeAPIError(w, http.StatusInternalServerError, "set node labels")
+		return
+	}
+	if labels == nil {
+		labels = map[string]string{}
+	}
+	now := time.Now().UTC()
+	h.audit(r.Context(), protocol.AuditEvent{
+		Actor:      audit.ActorOperator,
+		Action:     audit.ActionNodeLabelsUpdate,
+		TargetNode: nodeID,
+		Detail:     nodeLabelsAuditDetail(labels),
+		CreatedAt:  now,
+	})
+	writeJSON(w, http.StatusOK, protocol.NodeLabelsResponse{
+		NodeID: nodeID,
+		Labels: labels,
+	})
+}
+
+func nodeLabelsAuditDetail(labels map[string]string) string {
+	if len(labels) == 0 {
+		return "labels cleared"
+	}
+	keys := make([]string, 0, len(labels))
+	for key := range labels {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return "labels=" + strings.Join(keys, ",")
 }
 
 func (h *handler) deleteNode(w http.ResponseWriter, r *http.Request, nodeID string) {

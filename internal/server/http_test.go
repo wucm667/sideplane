@@ -2364,6 +2364,118 @@ func TestNodesAPIPaginatesAndValidatesQuery(t *testing.T) {
 	}
 }
 
+func TestNodeLabelsAPISetGetSelectorAndAudit(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	for _, nodeID := range []string{"node-a", "node-b", "node-c"} {
+		enrollTestNode(t, nodeStore, nodeID)
+	}
+	handler, err := NewHandlerWithConfig(HandlerConfig{
+		Store:         nodeStore,
+		Freshness:     DefaultFreshnessPolicy(),
+		OperatorToken: "dev-token",
+	})
+	if err != nil {
+		t.Fatalf("build handler: %v", err)
+	}
+
+	for _, tt := range []struct {
+		nodeID string
+		labels map[string]string
+	}{
+		{nodeID: "node-a", labels: map[string]string{"role": "canary", "zone": "lab"}},
+		{nodeID: "node-b", labels: map[string]string{"role": "stable", "zone": "lab"}},
+		{nodeID: "node-c", labels: map[string]string{"role": "canary", "zone": "vps"}},
+	} {
+		body, _ := json.Marshal(protocol.NodeLabelsRequest{Labels: tt.labels})
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPut, "/api/nodes/"+tt.nodeID+"/labels", bytes.NewReader(body))
+		req.Header.Set("Authorization", "Bearer dev-token")
+		handler.ServeHTTP(rec, req)
+		assertStatus(t, rec, http.StatusOK)
+		var resp protocol.NodeLabelsResponse
+		if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode set labels response: %v", err)
+		}
+		if resp.NodeID != tt.nodeID || resp.Labels["role"] != tt.labels["role"] {
+			t.Fatalf("set labels response = %#v, want node %s role %s", resp, tt.nodeID, tt.labels["role"])
+		}
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/nodes/node-a/labels", nil)
+	req.Header.Set("Authorization", "Bearer dev-token")
+	handler.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusOK)
+	var labelsResp protocol.NodeLabelsResponse
+	if err := json.NewDecoder(rec.Body).Decode(&labelsResp); err != nil {
+		t.Fatalf("decode labels response: %v", err)
+	}
+	if labelsResp.Labels["role"] != "canary" || labelsResp.Labels["zone"] != "lab" {
+		t.Fatalf("labels response = %#v, want node-a canary lab", labelsResp)
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/nodes?selector=role=canary,zone=lab", nil)
+	handler.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusOK)
+	nodesResp := decodeListNodesResponse(t, rec)
+	if nodesResp.Total != 1 || len(nodesResp.Nodes) != 1 || nodesResp.Nodes[0].NodeID != "node-a" {
+		t.Fatalf("selector response = total:%d %#v, want node-a only", nodesResp.Total, nodesResp.Nodes)
+	}
+	if nodesResp.Nodes[0].Labels["role"] != "canary" {
+		t.Fatalf("selected node labels = %#v, want canary label", nodesResp.Nodes[0].Labels)
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/nodes?selector=role=missing", nil)
+	handler.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusOK)
+	nodesResp = decodeListNodesResponse(t, rec)
+	if nodesResp.Total != 0 || len(nodesResp.Nodes) != 0 {
+		t.Fatalf("missing selector response = total:%d %#v, want none", nodesResp.Total, nodesResp.Nodes)
+	}
+
+	events, err := nodeStore.ListAuditEventsFiltered(context.Background(), store.AuditFilter{
+		Action: audit.ActionNodeLabelsUpdate,
+		Limit:  10,
+	})
+	if err != nil {
+		t.Fatalf("list audit events: %v", err)
+	}
+	if len(events) != 3 || events[0].TargetNode == "" {
+		t.Fatalf("label audit events = %#v, want three node-scoped events", events)
+	}
+}
+
+func TestNodeLabelsAPIRequiresAuthAndValidatesSelector(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	enrollTestNode(t, nodeStore, "node-labels")
+	handler, err := NewHandlerWithConfig(HandlerConfig{
+		Store:         nodeStore,
+		Freshness:     DefaultFreshnessPolicy(),
+		OperatorToken: "dev-token",
+	})
+	if err != nil {
+		t.Fatalf("build handler: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/nodes/node-labels/labels", nil)
+	handler.ServeHTTP(rec, req)
+	assertAPIError(t, rec, http.StatusUnauthorized, "unauthorized", http.StatusText(http.StatusUnauthorized))
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPut, "/api/nodes/node-labels/labels", strings.NewReader(`{"labels":{"bad\nkey":"value"}}`))
+	req.Header.Set("Authorization", "Bearer dev-token")
+	handler.ServeHTTP(rec, req)
+	assertAPIError(t, rec, http.StatusBadRequest, "bad_request", "label key and value must not contain control characters")
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/nodes?selector=role", nil)
+	handler.ServeHTTP(rec, req)
+	assertAPIError(t, rec, http.StatusBadRequest, "bad_request", "selector entries must use key=value")
+}
+
 func TestHeartbeatRequiresAuthorization(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/heartbeat", strings.NewReader(`{"nodeId":"node-1"}`))

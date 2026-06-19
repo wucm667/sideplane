@@ -51,6 +51,17 @@ type ListNodesResponse struct {
 	Offset int                   `json:"offset"`
 }
 
+// NodeLabelsRequest replaces operator-managed labels for a node.
+type NodeLabelsRequest struct {
+	Labels map[string]string `json:"labels"`
+}
+
+// NodeLabelsResponse returns operator-managed labels for a node.
+type NodeLabelsResponse struct {
+	NodeID string            `json:"nodeId"`
+	Labels map[string]string `json:"labels"`
+}
+
 // HeartbeatRequest is sent by sidecars to report their current lightweight state.
 type HeartbeatRequest struct {
 	NodeID         string          `json:"nodeId"`

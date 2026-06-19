@@ -15,6 +15,8 @@ const (
 	ActionNodeEnroll = "node.enroll"
 	// ActionNodeDelete records operator removal of a node from inventory.
 	ActionNodeDelete = "node.delete"
+	// ActionNodeLabelsUpdate records operator updates to node labels.
+	ActionNodeLabelsUpdate = "node.labels.update"
 	// ActionJobCreate records operator job creation.
 	ActionJobCreate = "job.create"
 	// ActionJobComplete records sidecar job completion.

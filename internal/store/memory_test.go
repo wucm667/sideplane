@@ -94,6 +94,34 @@ func TestMemoryNodeStoreListNodesFilteredPaginatesAndCounts(t *testing.T) {
 	}
 }
 
+func TestMemoryNodeStoreListNodesFilteredByLabels(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryNodeStore()
+	now := time.Date(2026, 6, 16, 1, 2, 3, 0, time.UTC)
+	for _, nodeID := range []string{"node-a", "node-b", "node-c"} {
+		if _, err := store.RecordHeartbeat(ctx, protocol.HeartbeatRequest{NodeID: nodeID}, now); err != nil {
+			t.Fatalf("record %s heartbeat: %v", nodeID, err)
+		}
+	}
+	if err := store.SetNodeLabels(ctx, "node-a", map[string]string{"role": "canary", "zone": "lab"}); err != nil {
+		t.Fatalf("set node-a labels: %v", err)
+	}
+	if err := store.SetNodeLabels(ctx, "node-b", map[string]string{"role": "stable", "zone": "lab"}); err != nil {
+		t.Fatalf("set node-b labels: %v", err)
+	}
+	if err := store.SetNodeLabels(ctx, "node-c", map[string]string{"role": "canary", "zone": "vps"}); err != nil {
+		t.Fatalf("set node-c labels: %v", err)
+	}
+
+	list, err := store.ListNodesFiltered(ctx, NodeFilter{Labels: map[string]string{"role": "canary", "zone": "lab"}})
+	if err != nil {
+		t.Fatalf("list label-filtered nodes: %v", err)
+	}
+	if list.Total != 1 || len(list.Nodes) != 1 || list.Nodes[0].NodeID != "node-a" {
+		t.Fatalf("label-filtered nodes = total:%d %#v, want node-a only", list.Total, list.Nodes)
+	}
+}
+
 func TestMemoryNodeStoreSetGetOverwriteAndDeleteLabels(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemoryNodeStore()
