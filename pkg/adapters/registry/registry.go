@@ -2,6 +2,7 @@ package registry
 
 import (
 	"context"
+	"strings"
 
 	"github.com/wucm667/sideplane/pkg/adapters"
 	"github.com/wucm667/sideplane/pkg/protocol"
@@ -16,6 +17,28 @@ type Registry struct {
 // New builds a Registry from the provided adapters.
 func New(adapters ...adapters.RuntimeAdapter) *Registry {
 	return &Registry{adapters: adapters}
+}
+
+// ServiceController returns the allowlisted controller for the requested
+// runtime type when that adapter implements the optional capability.
+func (r *Registry) ServiceController(runtimeType string) adapters.ServiceController {
+	if r == nil {
+		return nil
+	}
+	runtimeType = strings.TrimSpace(runtimeType)
+	if runtimeType == "" {
+		return nil
+	}
+	for _, adapter := range r.adapters {
+		if adapter == nil || adapter.Type() != runtimeType {
+			continue
+		}
+		controller, ok := adapter.(adapters.ServiceController)
+		if ok {
+			return controller
+		}
+	}
+	return nil
 }
 
 // CollectStatuses runs Detect+Status on each registered adapter and returns

@@ -27,8 +27,12 @@ const AdapterType = "openclaw"
 // Adapter is a lightweight runtime adapter for OpenClaw.
 type Adapter struct {
 	lookup             func(string) (string, error)
+	runCommand         func(context.Context, string, ...string) ([]byte, error)
 	configPaths        []string
 	defaultConfigPaths []string
+	container          string
+	serviceUnitName    string
+	allowLive          bool
 	getenv             func(string) string
 }
 
@@ -42,11 +46,19 @@ func WithConfigPaths(paths ...string) Option {
 	}
 }
 
+// WithDockerContainer configures an allowlisted OpenClaw Docker restart target.
+func WithDockerContainer(container string) Option {
+	return func(a *Adapter) {
+		a.container = strings.TrimSpace(container)
+	}
+}
+
 // NewAdapter returns an OpenClaw runtime adapter.
 func NewAdapter(opts ...Option) *Adapter {
 	a := &Adapter{
-		lookup: exec.LookPath,
-		getenv: os.Getenv,
+		lookup:     exec.LookPath,
+		runCommand: runCommand,
+		getenv:     os.Getenv,
 	}
 	for _, opt := range opts {
 		opt(a)
@@ -66,7 +78,7 @@ func (a *Adapter) Type() string {
 
 // Detect reports whether OpenClaw appears to be installed on this node.
 // It checks both the openclaw command and safe read-only config locations.
-func (a *Adapter) Detect(_ context.Context) (bool, error) {
+func (a *Adapter) Detect(ctx context.Context) (bool, error) {
 	lookup := a.lookup
 	if lookup == nil {
 		lookup = exec.LookPath
@@ -78,7 +90,14 @@ func (a *Adapter) Detect(_ context.Context) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	return path != "", nil
+	if path != "" {
+		return true, nil
+	}
+	container := a.dockerContainer()
+	if container == "" {
+		return false, nil
+	}
+	return a.detectDockerContainer(ctx, container)
 }
 
 // Status returns a minimal RuntimeStatus for OpenClaw.
@@ -183,6 +202,13 @@ func (a *Adapter) snapshot(_ context.Context) (*protocol.RuntimeConfigSnapshot, 
 	return &snapshot, nil
 }
 
+// ProviderModelFields extracts provider/model values from an OpenClaw config.
+// found is true only when both fields are present.
+func ProviderModelFields(contents []byte) (provider string, model string, found bool) {
+	provider, model = extractProviderModel(extractConfigValues(contents))
+	return provider, model, provider != "" && model != ""
+}
+
 func validateConfigSyntax(path string, contents []byte) error {
 	if strings.ToLower(filepath.Ext(path)) != ".json" {
 		return nil
@@ -196,6 +222,25 @@ func validateConfigSyntax(path string, contents []byte) error {
 		return fmt.Errorf("parse openclaw JSON config: %w", err)
 	}
 	return nil
+}
+
+func (a *Adapter) dockerContainer() string {
+	container := strings.TrimSpace(a.container)
+	if container != "" {
+		return container
+	}
+	getenv := a.getenv
+	if getenv == nil {
+		getenv = os.Getenv
+	}
+	return strings.TrimSpace(getenv("SIDEPLANE_OPENCLAW_DOCKER_CONTAINER"))
+}
+
+func (a *Adapter) detectDockerContainer(ctx context.Context, container string) (bool, error) {
+	if _, err := a.runDocker(ctx, "inspect", "--type", "container", container); err != nil {
+		return false, nil
+	}
+	return true, nil
 }
 
 func (a *Adapter) findConfigPath() (string, error) {

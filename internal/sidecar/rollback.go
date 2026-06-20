@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/wucm667/sideplane/pkg/adapters/hermes"
+	"github.com/wucm667/sideplane/pkg/adapters/openclaw"
 	"github.com/wucm667/sideplane/pkg/protocol"
 )
 
@@ -32,18 +33,19 @@ func (p *JobPoller) executeRollback(ctx context.Context, job *protocol.Job) prot
 	if runtimeType == "" {
 		runtimeType = "hermes"
 	}
-	if runtimeType != "hermes" {
+	if runtimeType != "hermes" && runtimeType != "openclaw" {
 		err := fmt.Sprintf("unsupported rollback runtime type: %s", runtimeType)
 		addStep("validated", "failed", err)
 		return marshalRollbackResult(protocol.JobStatusFailed, result, err)
 	}
+	controller := p.controllerForRuntime(runtimeType)
 	if !payload.DryRun {
 		if !p.allowLiveApply {
 			err := "live rollback is disabled by sidecar policy (--allow-live-apply off)"
 			addStep("validated", "failed", err)
 			return marshalRollbackResult(protocol.JobStatusFailed, result, err)
 		}
-		if p.controller == nil {
+		if controller == nil {
 			err := "live rollback requires a configured service controller"
 			addStep("validated", "failed", err)
 			return marshalRollbackResult(protocol.JobStatusFailed, result, err)
@@ -108,13 +110,13 @@ func (p *JobPoller) executeRollback(ctx context.Context, job *protocol.Job) prot
 	}
 	addStep("restored", "completed", "backup restored")
 
-	if err := p.controller.Restart(ctx); err != nil {
+	if err := controller.Restart(ctx); err != nil {
 		addStep("restarted", "failed", err.Error())
 		return marshalRollbackResult(protocol.JobStatusFailed, result, err.Error())
 	}
 	addStep("restarted", "completed", "")
 
-	if err := p.controller.HealthCheck(ctx); err != nil {
+	if err := controller.HealthCheck(ctx); err != nil {
 		result.HealthStatus = "unhealthy"
 		addStep("health_checked", "failed", err.Error())
 		return marshalRollbackResult(protocol.JobStatusFailed, result, err.Error())
@@ -159,6 +161,11 @@ func validateRollbackBackup(runtimeType string, contents []byte) error {
 	if runtimeType == "hermes" {
 		if _, _, ok := hermes.ModelFields(contents); !ok {
 			return errors.New("hermes backup config is missing model provider/name")
+		}
+	}
+	if runtimeType == "openclaw" {
+		if _, _, ok := openclaw.ProviderModelFields(contents); !ok {
+			return errors.New("openclaw backup config is missing provider/model")
 		}
 	}
 	return nil

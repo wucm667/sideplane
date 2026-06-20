@@ -33,6 +33,36 @@ func (f *fakeAdapter) ConfigSnapshots(_ context.Context) ([]protocol.RuntimeConf
 	return append([]protocol.RuntimeConfigSnapshot(nil), f.snapshots...), f.snapshotErr
 }
 
+type fakeControllerAdapter struct {
+	fakeAdapter
+}
+
+func (f *fakeControllerAdapter) Restart(context.Context) error {
+	return nil
+}
+
+func (f *fakeControllerAdapter) HealthCheck(context.Context) error {
+	return nil
+}
+
+var _ adapters.ServiceController = (*fakeControllerAdapter)(nil)
+
+func TestRegistryReturnsServiceControllerByRuntimeType(t *testing.T) {
+	hermesController := &fakeControllerAdapter{fakeAdapter: fakeAdapter{name: "hermes", typ: "hermes"}}
+	openclawController := &fakeControllerAdapter{fakeAdapter: fakeAdapter{name: "openclaw", typ: "openclaw"}}
+	reg := New(hermesController, openclawController)
+
+	if got := reg.ServiceController("openclaw"); got != openclawController {
+		t.Fatalf("openclaw controller = %#v, want openclaw controller", got)
+	}
+	if got := reg.ServiceController("hermes"); got != hermesController {
+		t.Fatalf("hermes controller = %#v, want hermes controller", got)
+	}
+	if got := reg.ServiceController("missing"); got != nil {
+		t.Fatalf("missing controller = %#v, want nil", got)
+	}
+}
+
 func TestRegistryCollectsMultipleRuntimes(t *testing.T) {
 	reg := New(
 		&fakeAdapter{name: "hermes", typ: "hermes", detected: true, status: protocol.RuntimeStatus{Name: "hermes", Type: "hermes", State: "present"}},

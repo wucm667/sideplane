@@ -14,6 +14,7 @@ import (
 
 	"github.com/wucm667/sideplane/internal/server"
 	"github.com/wucm667/sideplane/internal/store"
+	"github.com/wucm667/sideplane/pkg/adapters"
 	"github.com/wucm667/sideplane/pkg/protocol"
 )
 
@@ -463,6 +464,40 @@ func TestJobPollerRestartLiveCallsControllerOnce(t *testing.T) {
 	}
 }
 
+func TestJobPollerRestartUsesRuntimeSpecificController(t *testing.T) {
+	hermesController := &fakeServiceController{}
+	openclawController := &fakeServiceController{}
+	payload, err := json.Marshal(protocol.RestartJobPayload{
+		RuntimeType: "openclaw",
+		DryRun:      false,
+	})
+	if err != nil {
+		t.Fatalf("marshal restart payload: %v", err)
+	}
+	poller := &JobPoller{
+		allowLiveApply: true,
+		controller:     hermesController,
+		controllerResolver: fakeControllerResolver{
+			"openclaw": openclawController,
+		},
+	}
+
+	result := poller.executeRestart(context.Background(), &protocol.Job{
+		ID:          "job-openclaw-restart",
+		Type:        protocol.JobTypeRestart,
+		PayloadJSON: string(payload),
+	})
+	if result.Status != protocol.JobStatusCompleted {
+		t.Fatalf("restart status = %q, want completed; error=%q", result.Status, result.Error)
+	}
+	if openclawController.restartCalls != 1 || openclawController.healthCalls != 1 {
+		t.Fatalf("openclaw controller calls restart=%d health=%d, want 1/1", openclawController.restartCalls, openclawController.healthCalls)
+	}
+	if hermesController.restartCalls != 0 || hermesController.healthCalls != 0 {
+		t.Fatalf("hermes controller calls restart=%d health=%d, want 0/0", hermesController.restartCalls, hermesController.healthCalls)
+	}
+}
+
 func TestJobPollerRestartHealthFailureReturnsFailedResult(t *testing.T) {
 	ctx := context.Background()
 	nodeStore := store.NewMemoryNodeStore()
@@ -651,6 +686,12 @@ type fakeServiceController struct {
 	healthCalls  int
 	restartErr   error
 	healthErr    error
+}
+
+type fakeControllerResolver map[string]adapters.ServiceController
+
+func (r fakeControllerResolver) ServiceController(runtimeType string) adapters.ServiceController {
+	return r[runtimeType]
 }
 
 func (c *fakeServiceController) Restart(context.Context) error {

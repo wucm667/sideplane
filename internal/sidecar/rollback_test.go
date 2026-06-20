@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -271,6 +272,46 @@ func TestRollbackLiveRestoresBackupAndCallsControllerOnce(t *testing.T) {
 	}
 }
 
+func TestRollbackLiveUsesRuntimeSpecificOpenClawController(t *testing.T) {
+	dir := t.TempDir()
+	configPath, _ := writeOpenClawConfig(t, dir, "openclaw-config.json", "gpt-4o")
+	backupPath, backupContents := writeOpenClawConfig(t, dir, "openclaw-backup.json", "gpt-4o-mini")
+	hermesController := &fakeServiceController{}
+	openclawController := &fakeServiceController{}
+	job := rollbackJobForTest(t, protocol.RollbackJobPayload{
+		RuntimeType: "openclaw",
+		BackupRef:   "config_apply:job_apply:plan_openclaw",
+		ConfigPath:  configPath,
+		BackupPath:  backupPath,
+		DryRun:      false,
+	})
+
+	result := (&JobPoller{
+		applyWorkDir:   dir,
+		allowLiveApply: true,
+		controller:     hermesController,
+		controllerResolver: fakeControllerResolver{
+			"openclaw": openclawController,
+		},
+	}).executeJob(context.Background(), &job)
+	if result.Status != protocol.JobStatusCompleted {
+		t.Fatalf("rollback status = %q, want completed; error=%q", result.Status, result.Error)
+	}
+	if openclawController.restartCalls != 1 || openclawController.healthCalls != 1 {
+		t.Fatalf("openclaw controller calls restart=%d health=%d, want 1/1", openclawController.restartCalls, openclawController.healthCalls)
+	}
+	if hermesController.restartCalls != 0 || hermesController.healthCalls != 0 {
+		t.Fatalf("hermes controller calls restart=%d health=%d, want 0/0", hermesController.restartCalls, hermesController.healthCalls)
+	}
+	gotConfig, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	if string(gotConfig) != string(backupContents) {
+		t.Fatalf("restored config = %q, want backup %q", gotConfig, backupContents)
+	}
+}
+
 func TestRollbackHealthFailureReturnsFailedWithoutRecursiveRollback(t *testing.T) {
 	dir := t.TempDir()
 	configPath, _ := writeHermesConfig(t, dir)
@@ -334,6 +375,16 @@ func writeRollbackBackup(t *testing.T, dir string, name string) string {
 		t.Fatalf("write rollback backup: %v", err)
 	}
 	return path
+}
+
+func writeOpenClawConfig(t *testing.T, dir string, name string, model string) (string, []byte) {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	contents := []byte(fmt.Sprintf(`{"provider":"openai","model":"%s"}`+"\n", model))
+	if err := os.WriteFile(path, contents, 0o600); err != nil {
+		t.Fatalf("write openclaw config: %v", err)
+	}
+	return path, contents
 }
 
 func decodeRollbackResultForTest(t *testing.T, resultJSON string) protocol.RollbackJobResult {

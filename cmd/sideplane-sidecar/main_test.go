@@ -80,26 +80,30 @@ func TestSidecarEnvFallbacksResolveWhenFlagsEmpty(t *testing.T) {
 	t.Setenv("SIDEPLANE_OPENCLAW_CONFIG_PATHS", "/etc/openclaw/env.json")
 	t.Setenv("SIDEPLANE_HERMES_DOCKER_CONTAINER", "hermes-env")
 	t.Setenv("SIDEPLANE_HERMES_SERVICE_UNIT", "hermes-env.service")
+	t.Setenv("SIDEPLANE_OPENCLAW_DOCKER_CONTAINER", "openclaw-env")
+	t.Setenv("SIDEPLANE_OPENCLAW_SERVICE_UNIT", "openclaw-env.service")
 	t.Setenv("SIDEPLANE_SERVER_PUBLIC_KEY", "env-public-key")
 	t.Setenv("SIDEPLANE_APPLY_WORK_DIR", "/var/lib/sideplane/apply")
 
 	var serverURL, nodeID, state string
 	heartbeatInterval := 30 * time.Second
 	jobPollInterval := 30 * time.Second
-	var hermesConfigPaths, openclawConfigPaths, hermesDockerContainer, hermesServiceUnit, serverPublicKey, applyWorkDir string
+	var hermesConfigPaths, openclawConfigPaths, hermesDockerContainer, hermesServiceUnit, openclawDockerContainer, openclawServiceUnit, serverPublicKey, applyWorkDir string
 
 	if err := applySidecarEnvFallbacks(map[string]bool{}, sidecarFlagValues{
-		serverURL:             &serverURL,
-		nodeID:                &nodeID,
-		statePath:             &state,
-		heartbeatInterval:     &heartbeatInterval,
-		jobPollInterval:       &jobPollInterval,
-		hermesConfigPaths:     &hermesConfigPaths,
-		openclawConfigPaths:   &openclawConfigPaths,
-		hermesDockerContainer: &hermesDockerContainer,
-		hermesServiceUnit:     &hermesServiceUnit,
-		serverPublicKey:       &serverPublicKey,
-		applyWorkDir:          &applyWorkDir,
+		serverURL:               &serverURL,
+		nodeID:                  &nodeID,
+		statePath:               &state,
+		heartbeatInterval:       &heartbeatInterval,
+		jobPollInterval:         &jobPollInterval,
+		hermesConfigPaths:       &hermesConfigPaths,
+		openclawConfigPaths:     &openclawConfigPaths,
+		hermesDockerContainer:   &hermesDockerContainer,
+		hermesServiceUnit:       &hermesServiceUnit,
+		openclawDockerContainer: &openclawDockerContainer,
+		openclawServiceUnit:     &openclawServiceUnit,
+		serverPublicKey:         &serverPublicKey,
+		applyWorkDir:            &applyWorkDir,
 	}); err != nil {
 		t.Fatalf("apply env fallbacks: %v", err)
 	}
@@ -131,6 +135,9 @@ func TestSidecarEnvFallbacksResolveWhenFlagsEmpty(t *testing.T) {
 	}
 	if hermesDockerContainer != "hermes-env" || hermesServiceUnit != "hermes-env.service" {
 		t.Fatalf("hermes targets = %q/%q, want env targets", hermesDockerContainer, hermesServiceUnit)
+	}
+	if openclawDockerContainer != "openclaw-env" || openclawServiceUnit != "openclaw-env.service" {
+		t.Fatalf("openclaw targets = %q/%q, want env targets", openclawDockerContainer, openclawServiceUnit)
 	}
 	if serverPublicKey != "env-public-key" || applyWorkDir != "/var/lib/sideplane/apply" {
 		t.Fatalf("apply settings = %q/%q, want env values", serverPublicKey, applyWorkDir)

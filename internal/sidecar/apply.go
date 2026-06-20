@@ -579,7 +579,7 @@ func (p *JobPoller) executeConfigApply(ctx context.Context, job *protocol.Job) p
 		return protocol.JobResultRequest{Status: protocol.JobStatusFailed, Error: fmt.Sprintf("parse config_apply payload: %v", err)}
 	}
 	logger.Info("config_apply execution started", "job_id", job.ID, "node_id", p.nodeID, "plan_id", signedPlan.Plan.ID, "mode", signedPlan.Plan.Mode, "dry_run", signedPlan.Plan.Body.DryRun)
-	executor := ConfigApplyExecutor{NodeID: p.nodeID, PublicKey: p.publicKey, WorkDir: p.applyWorkDir, AllowedConfigDirs: p.allowedConfigDirs, AllowLiveApply: p.allowLiveApply, Controller: p.controller}
+	executor := ConfigApplyExecutor{NodeID: p.nodeID, PublicKey: p.publicKey, WorkDir: p.applyWorkDir, AllowedConfigDirs: p.allowedConfigDirs, AllowLiveApply: p.allowLiveApply, Controller: p.controllerForRuntime(signedPlan.Plan.Body.RuntimeType)}
 	result, err := executor.Execute(ctx, signedPlan)
 	payload, marshalErr := json.Marshal(result)
 	if marshalErr != nil {

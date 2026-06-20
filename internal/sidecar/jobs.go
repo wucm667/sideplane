@@ -18,35 +18,42 @@ import (
 
 // JobPollerConfig configures a sidecar job poller.
 type JobPollerConfig struct {
-	ServerURL         string
-	NodeID            string
-	NodeCredential    string
-	PublicKey         string
-	ApplyWorkDir      string
-	AllowedConfigDirs []string
-	AllowLiveApply    bool
-	Controller        adapters.ServiceController
-	HTTPClient        *http.Client
-	Collector         adapters.RuntimeCollector
-	ConfigCollector   adapters.ConfigSnapshotCollector
-	Logger            *slog.Logger
+	ServerURL          string
+	NodeID             string
+	NodeCredential     string
+	PublicKey          string
+	ApplyWorkDir       string
+	AllowedConfigDirs  []string
+	AllowLiveApply     bool
+	Controller         adapters.ServiceController
+	ControllerResolver ServiceControllerResolver
+	HTTPClient         *http.Client
+	Collector          adapters.RuntimeCollector
+	ConfigCollector    adapters.ConfigSnapshotCollector
+	Logger             *slog.Logger
+}
+
+// ServiceControllerResolver selects a runtime-specific service controller.
+type ServiceControllerResolver interface {
+	ServiceController(runtimeType string) adapters.ServiceController
 }
 
 // JobPoller polls for jobs from the server and executes them.
 type JobPoller struct {
-	serverURL         string
-	endpoint          string
-	nodeID            string
-	nodeCredential    string
-	publicKey         string
-	applyWorkDir      string
-	allowedConfigDirs []string
-	allowLiveApply    bool
-	controller        adapters.ServiceController
-	httpClient        *http.Client
-	collector         adapters.RuntimeCollector
-	configCollector   adapters.ConfigSnapshotCollector
-	logger            *slog.Logger
+	serverURL          string
+	endpoint           string
+	nodeID             string
+	nodeCredential     string
+	publicKey          string
+	applyWorkDir       string
+	allowedConfigDirs  []string
+	allowLiveApply     bool
+	controller         adapters.ServiceController
+	controllerResolver ServiceControllerResolver
+	httpClient         *http.Client
+	collector          adapters.RuntimeCollector
+	configCollector    adapters.ConfigSnapshotCollector
+	logger             *slog.Logger
 }
 
 // NewJobPoller creates a new job poller.
@@ -82,21 +89,28 @@ func NewJobPoller(cfg JobPollerConfig) (*JobPoller, error) {
 			configCollector = collector
 		}
 	}
+	controllerResolver := cfg.ControllerResolver
+	if controllerResolver == nil {
+		if resolver, ok := cfg.Collector.(ServiceControllerResolver); ok {
+			controllerResolver = resolver
+		}
+	}
 
 	return &JobPoller{
-		serverURL:         serverURL,
-		endpoint:          endpoint,
-		nodeID:            cfg.NodeID,
-		nodeCredential:    cfg.NodeCredential,
-		publicKey:         strings.TrimSpace(cfg.PublicKey),
-		applyWorkDir:      strings.TrimSpace(cfg.ApplyWorkDir),
-		allowedConfigDirs: append([]string(nil), cfg.AllowedConfigDirs...),
-		allowLiveApply:    cfg.AllowLiveApply,
-		controller:        cfg.Controller,
-		httpClient:        httpClient,
-		collector:         cfg.Collector,
-		configCollector:   configCollector,
-		logger:            logger,
+		serverURL:          serverURL,
+		endpoint:           endpoint,
+		nodeID:             cfg.NodeID,
+		nodeCredential:     cfg.NodeCredential,
+		publicKey:          strings.TrimSpace(cfg.PublicKey),
+		applyWorkDir:       strings.TrimSpace(cfg.ApplyWorkDir),
+		allowedConfigDirs:  append([]string(nil), cfg.AllowedConfigDirs...),
+		allowLiveApply:     cfg.AllowLiveApply,
+		controller:         cfg.Controller,
+		controllerResolver: controllerResolver,
+		httpClient:         httpClient,
+		collector:          cfg.Collector,
+		configCollector:    configCollector,
+		logger:             logger,
 	}, nil
 }
 
@@ -265,8 +279,10 @@ func (p *JobPoller) executeRestart(ctx context.Context, job *protocol.Job) proto
 		}
 	}
 
+	runtimeType := restartRuntimeType(payload.RuntimeType)
+	controller := p.controllerForRuntime(runtimeType)
 	result := protocol.RestartJobResult{
-		Controller:   restartControllerLabel(p.controller),
+		Controller:   restartControllerLabel(controller),
 		HealthStatus: "not_checked",
 	}
 	addStep := func(name, status, detail string) {
@@ -286,19 +302,19 @@ func (p *JobPoller) executeRestart(ctx context.Context, job *protocol.Job) proto
 		addStep("restarted", "failed", err)
 		return marshalRestartResult(protocol.JobStatusFailed, result, err)
 	}
-	if p.controller == nil {
+	if controller == nil {
 		err := "live restart requires a configured service controller"
 		addStep("restarted", "failed", err)
 		return marshalRestartResult(protocol.JobStatusFailed, result, err)
 	}
 
-	if err := p.controller.Restart(ctx); err != nil {
+	if err := controller.Restart(ctx); err != nil {
 		addStep("restarted", "failed", err.Error())
 		return marshalRestartResult(protocol.JobStatusFailed, result, err.Error())
 	}
 	addStep("restarted", "completed", "")
 
-	if err := p.controller.HealthCheck(ctx); err != nil {
+	if err := controller.HealthCheck(ctx); err != nil {
 		result.HealthStatus = "unhealthy"
 		addStep("health_checked", "failed", err.Error())
 		return marshalRestartResult(protocol.JobStatusFailed, result, err.Error())
@@ -306,6 +322,30 @@ func (p *JobPoller) executeRestart(ctx context.Context, job *protocol.Job) proto
 	result.HealthStatus = "healthy"
 	addStep("health_checked", "completed", "")
 	return marshalRestartResult(protocol.JobStatusCompleted, result, "")
+}
+
+func (p *JobPoller) controllerForRuntime(runtimeType string) adapters.ServiceController {
+	if p == nil {
+		return nil
+	}
+	runtimeType = restartRuntimeType(runtimeType)
+	if p.controllerResolver != nil {
+		if controller := p.controllerResolver.ServiceController(runtimeType); controller != nil {
+			return controller
+		}
+		if runtimeType != "hermes" {
+			return nil
+		}
+	}
+	return p.controller
+}
+
+func restartRuntimeType(runtimeType string) string {
+	runtimeType = strings.TrimSpace(runtimeType)
+	if runtimeType == "" {
+		return "hermes"
+	}
+	return runtimeType
 }
 
 func marshalRestartResult(status protocol.JobStatus, result protocol.RestartJobResult, errText string) protocol.JobResultRequest {

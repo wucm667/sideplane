@@ -48,6 +48,8 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	openclawConfigPaths := flags.String("openclaw-config-paths", "", "path-list of read-only OpenClaw config files to inspect; can also be set with SIDEPLANE_OPENCLAW_CONFIG_PATHS")
 	hermesDockerContainer := flags.String("hermes-docker-container", "", "optional read-only Docker container name for Hermes status/log inspection; can also be set with SIDEPLANE_HERMES_DOCKER_CONTAINER")
 	hermesServiceUnit := flags.String("hermes-service-unit", "", "optional systemd unit used as the Hermes restart target when no docker container is set; can also be set with SIDEPLANE_HERMES_SERVICE_UNIT")
+	openclawDockerContainer := flags.String("openclaw-docker-container", "", "optional Docker container name used as the OpenClaw restart target; can also be set with SIDEPLANE_OPENCLAW_DOCKER_CONTAINER")
+	openclawServiceUnit := flags.String("openclaw-service-unit", "", "optional systemd unit used as the OpenClaw restart target when no docker container is set; can also be set with SIDEPLANE_OPENCLAW_SERVICE_UNIT")
 	serverPublicKey := flags.String("server-public-key", "", "base64 ed25519 server public key for signed config plans")
 	applyWorkDir := flags.String("apply-work-dir", "", "sidecar-controlled work directory for config apply dry runs")
 	allowLiveApply := flags.Bool("allow-live-apply", false, "DANGEROUS: allow live config replace and restart; off by default (dry-run only)")
@@ -63,17 +65,19 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 
 	setFlags := visitedFlags(flags)
 	if err := applySidecarEnvFallbacks(setFlags, sidecarFlagValues{
-		serverURL:             serverURL,
-		nodeID:                nodeID,
-		statePath:             statePath,
-		heartbeatInterval:     heartbeatInterval,
-		jobPollInterval:       jobPollInterval,
-		hermesConfigPaths:     hermesConfigPaths,
-		openclawConfigPaths:   openclawConfigPaths,
-		hermesDockerContainer: hermesDockerContainer,
-		hermesServiceUnit:     hermesServiceUnit,
-		serverPublicKey:       serverPublicKey,
-		applyWorkDir:          applyWorkDir,
+		serverURL:               serverURL,
+		nodeID:                  nodeID,
+		statePath:               statePath,
+		heartbeatInterval:       heartbeatInterval,
+		jobPollInterval:         jobPollInterval,
+		hermesConfigPaths:       hermesConfigPaths,
+		openclawConfigPaths:     openclawConfigPaths,
+		hermesDockerContainer:   hermesDockerContainer,
+		hermesServiceUnit:       hermesServiceUnit,
+		openclawDockerContainer: openclawDockerContainer,
+		openclawServiceUnit:     openclawServiceUnit,
+		serverPublicKey:         serverPublicKey,
+		applyWorkDir:            applyWorkDir,
 	}); err != nil {
 		fmt.Fprintf(stderr, "invalid environment configuration: %v\n", err)
 		return 1
@@ -111,7 +115,15 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	if value := strings.TrimSpace(*openclawConfigPaths); value != "" {
 		openclawOptions = append(openclawOptions, openclaw.WithConfigPaths(splitPathList(value)...))
 	}
-	reg := registry.New(hermesAdapter, openclaw.NewAdapter(openclawOptions...))
+	if value := strings.TrimSpace(*openclawDockerContainer); value != "" {
+		openclawOptions = append(openclawOptions, openclaw.WithDockerContainer(value))
+	}
+	if value := strings.TrimSpace(*openclawServiceUnit); value != "" {
+		openclawOptions = append(openclawOptions, openclaw.WithServiceUnit(value))
+	}
+	openclawOptions = append(openclawOptions, openclaw.WithAllowLiveApply(*allowLiveApply))
+	openclawAdapter := openclaw.NewAdapter(openclawOptions...)
+	reg := registry.New(hermesAdapter, openclawAdapter)
 
 	client, err := sidecar.NewHeartbeatClient(sidecar.HeartbeatClientConfig{
 		ServerURL:      runtimeConfig.ServerURL,
@@ -175,17 +187,19 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 }
 
 type doctorReport struct {
-	ServerURL             string               `json:"serverUrl,omitempty"`
-	StatePath             string               `json:"statePath"`
-	StateFound            bool                 `json:"stateFound"`
-	NodeID                string               `json:"nodeId,omitempty"`
-	HermesConfigPaths     []sidecar.PathStatus `json:"hermesConfigPaths"`
-	OpenClawConfigPaths   []sidecar.PathStatus `json:"openclawConfigPaths"`
-	ApplyWorkDir          string               `json:"applyWorkDir"`
-	LiveApplyEnabled      bool                 `json:"liveApplyEnabled"`
-	PublicKeyStatus       string               `json:"publicKeyStatus"`
-	HermesDockerContainer string               `json:"hermesDockerContainer,omitempty"`
-	HermesServiceUnit     string               `json:"hermesServiceUnit,omitempty"`
+	ServerURL               string               `json:"serverUrl,omitempty"`
+	StatePath               string               `json:"statePath"`
+	StateFound              bool                 `json:"stateFound"`
+	NodeID                  string               `json:"nodeId,omitempty"`
+	HermesConfigPaths       []sidecar.PathStatus `json:"hermesConfigPaths"`
+	OpenClawConfigPaths     []sidecar.PathStatus `json:"openclawConfigPaths"`
+	ApplyWorkDir            string               `json:"applyWorkDir"`
+	LiveApplyEnabled        bool                 `json:"liveApplyEnabled"`
+	PublicKeyStatus         string               `json:"publicKeyStatus"`
+	HermesDockerContainer   string               `json:"hermesDockerContainer,omitempty"`
+	HermesServiceUnit       string               `json:"hermesServiceUnit,omitempty"`
+	OpenClawDockerContainer string               `json:"openclawDockerContainer,omitempty"`
+	OpenClawServiceUnit     string               `json:"openclawServiceUnit,omitempty"`
 }
 
 func runDoctor(args []string, stdout io.Writer, stderr io.Writer) int {
@@ -201,6 +215,8 @@ func runDoctor(args []string, stdout io.Writer, stderr io.Writer) int {
 	openclawConfigPaths := flags.String("openclaw-config-paths", "", "path-list of read-only OpenClaw config files to inspect; can also be set with SIDEPLANE_OPENCLAW_CONFIG_PATHS")
 	hermesDockerContainer := flags.String("hermes-docker-container", "", "optional read-only Docker container name for Hermes status/log inspection; can also be set with SIDEPLANE_HERMES_DOCKER_CONTAINER")
 	hermesServiceUnit := flags.String("hermes-service-unit", "", "optional systemd unit used as the Hermes restart target when no docker container is set; can also be set with SIDEPLANE_HERMES_SERVICE_UNIT")
+	openclawDockerContainer := flags.String("openclaw-docker-container", "", "optional Docker container name used as the OpenClaw restart target; can also be set with SIDEPLANE_OPENCLAW_DOCKER_CONTAINER")
+	openclawServiceUnit := flags.String("openclaw-service-unit", "", "optional systemd unit used as the OpenClaw restart target when no docker container is set; can also be set with SIDEPLANE_OPENCLAW_SERVICE_UNIT")
 	serverPublicKey := flags.String("server-public-key", "", "base64 ed25519 server public key for signed config plans")
 	applyWorkDir := flags.String("apply-work-dir", "", "sidecar-controlled work directory for config apply dry runs")
 	allowLiveApply := flags.Bool("allow-live-apply", false, "report live config apply as enabled")
@@ -215,17 +231,19 @@ func runDoctor(args []string, stdout io.Writer, stderr io.Writer) int {
 
 	setFlags := visitedFlags(flags)
 	if err := applySidecarEnvFallbacks(setFlags, sidecarFlagValues{
-		serverURL:             serverURL,
-		nodeID:                nodeID,
-		statePath:             statePath,
-		heartbeatInterval:     heartbeatInterval,
-		jobPollInterval:       jobPollInterval,
-		hermesConfigPaths:     hermesConfigPaths,
-		openclawConfigPaths:   openclawConfigPaths,
-		hermesDockerContainer: hermesDockerContainer,
-		hermesServiceUnit:     hermesServiceUnit,
-		serverPublicKey:       serverPublicKey,
-		applyWorkDir:          applyWorkDir,
+		serverURL:               serverURL,
+		nodeID:                  nodeID,
+		statePath:               statePath,
+		heartbeatInterval:       heartbeatInterval,
+		jobPollInterval:         jobPollInterval,
+		hermesConfigPaths:       hermesConfigPaths,
+		openclawConfigPaths:     openclawConfigPaths,
+		hermesDockerContainer:   hermesDockerContainer,
+		hermesServiceUnit:       hermesServiceUnit,
+		openclawDockerContainer: openclawDockerContainer,
+		openclawServiceUnit:     openclawServiceUnit,
+		serverPublicKey:         serverPublicKey,
+		applyWorkDir:            applyWorkDir,
 	}); err != nil {
 		fmt.Fprintf(stderr, "invalid environment configuration: %v\n", err)
 		return 1
@@ -249,17 +267,19 @@ func runDoctor(args []string, stdout io.Writer, stderr io.Writer) int {
 		workDir = filepath.Join(os.TempDir(), "sideplane-apply")
 	}
 	report := doctorReport{
-		ServerURL:             cfg.ServerURL,
-		StatePath:             cfg.StatePath,
-		StateFound:            stateFound,
-		NodeID:                cfg.NodeID,
-		HermesConfigPaths:     sidecar.CheckReadablePaths(splitPathList(*hermesConfigPaths)),
-		OpenClawConfigPaths:   sidecar.CheckReadablePaths(splitPathList(*openclawConfigPaths)),
-		ApplyWorkDir:          workDir,
-		LiveApplyEnabled:      *allowLiveApply,
-		PublicKeyStatus:       publicKeyStatus(*serverPublicKey),
-		HermesDockerContainer: strings.TrimSpace(*hermesDockerContainer),
-		HermesServiceUnit:     strings.TrimSpace(*hermesServiceUnit),
+		ServerURL:               cfg.ServerURL,
+		StatePath:               cfg.StatePath,
+		StateFound:              stateFound,
+		NodeID:                  cfg.NodeID,
+		HermesConfigPaths:       sidecar.CheckReadablePaths(splitPathList(*hermesConfigPaths)),
+		OpenClawConfigPaths:     sidecar.CheckReadablePaths(splitPathList(*openclawConfigPaths)),
+		ApplyWorkDir:            workDir,
+		LiveApplyEnabled:        *allowLiveApply,
+		PublicKeyStatus:         publicKeyStatus(*serverPublicKey),
+		HermesDockerContainer:   strings.TrimSpace(*hermesDockerContainer),
+		HermesServiceUnit:       strings.TrimSpace(*hermesServiceUnit),
+		OpenClawDockerContainer: strings.TrimSpace(*openclawDockerContainer),
+		OpenClawServiceUnit:     strings.TrimSpace(*openclawServiceUnit),
 	}
 
 	if *jsonOutput {
@@ -296,6 +316,8 @@ func printDoctorReport(w io.Writer, report doctorReport) {
 	fmt.Fprintf(w, "Public key: %s\n", report.PublicKeyStatus)
 	fmt.Fprintf(w, "Hermes docker container: %s\n", valueOrDash(report.HermesDockerContainer))
 	fmt.Fprintf(w, "Hermes service unit: %s\n", valueOrDash(report.HermesServiceUnit))
+	fmt.Fprintf(w, "OpenClaw docker container: %s\n", valueOrDash(report.OpenClawDockerContainer))
+	fmt.Fprintf(w, "OpenClaw service unit: %s\n", valueOrDash(report.OpenClawServiceUnit))
 	printPathStatuses(w, "Hermes config paths", report.HermesConfigPaths)
 	printPathStatuses(w, "OpenClaw config paths", report.OpenClawConfigPaths)
 }
@@ -334,17 +356,19 @@ func yesNo(value bool) string {
 }
 
 type sidecarFlagValues struct {
-	serverURL             *string
-	nodeID                *string
-	statePath             *string
-	heartbeatInterval     *time.Duration
-	jobPollInterval       *time.Duration
-	hermesConfigPaths     *string
-	openclawConfigPaths   *string
-	hermesDockerContainer *string
-	hermesServiceUnit     *string
-	serverPublicKey       *string
-	applyWorkDir          *string
+	serverURL               *string
+	nodeID                  *string
+	statePath               *string
+	heartbeatInterval       *time.Duration
+	jobPollInterval         *time.Duration
+	hermesConfigPaths       *string
+	openclawConfigPaths     *string
+	hermesDockerContainer   *string
+	hermesServiceUnit       *string
+	openclawDockerContainer *string
+	openclawServiceUnit     *string
+	serverPublicKey         *string
+	applyWorkDir            *string
 }
 
 func visitedFlags(flags *flag.FlagSet) map[string]bool {
@@ -363,6 +387,8 @@ func applySidecarEnvFallbacks(setFlags map[string]bool, values sidecarFlagValues
 	applyStringEnvFallback(setFlags, "openclaw-config-paths", "SIDEPLANE_OPENCLAW_CONFIG_PATHS", values.openclawConfigPaths)
 	applyStringEnvFallback(setFlags, "hermes-docker-container", "SIDEPLANE_HERMES_DOCKER_CONTAINER", values.hermesDockerContainer)
 	applyStringEnvFallback(setFlags, "hermes-service-unit", "SIDEPLANE_HERMES_SERVICE_UNIT", values.hermesServiceUnit)
+	applyStringEnvFallback(setFlags, "openclaw-docker-container", "SIDEPLANE_OPENCLAW_DOCKER_CONTAINER", values.openclawDockerContainer)
+	applyStringEnvFallback(setFlags, "openclaw-service-unit", "SIDEPLANE_OPENCLAW_SERVICE_UNIT", values.openclawServiceUnit)
 	applyStringEnvFallback(setFlags, "server-public-key", "SIDEPLANE_SERVER_PUBLIC_KEY", values.serverPublicKey)
 	applyStringEnvFallback(setFlags, "apply-work-dir", "SIDEPLANE_APPLY_WORK_DIR", values.applyWorkDir)
 	if err := applyDurationEnvFallback(setFlags, "heartbeat-interval", "SIDEPLANE_HEARTBEAT_INTERVAL", values.heartbeatInterval); err != nil {
