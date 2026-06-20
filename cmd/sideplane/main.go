@@ -1204,8 +1204,9 @@ func runTokenCreate(args []string, stdout io.Writer, stderr io.Writer) int {
 	serverURL := flags.String("server", "", "Sideplane server URL; can also be set with SIDEPLANE_SERVER_URL")
 	operatorTokenFlag := flags.String("operator-token", "", "operator bearer token; can also be set with SIDEPLANE_OPERATOR_TOKEN")
 	name := flags.String("name", "", "operator-visible token name")
+	scope := flags.String("scope", "admin", "token scope: admin (full) or readonly (GET/list only)")
 	jsonOutput := flags.Bool("json", false, "print raw JSON response")
-	usage := "sideplane token create --name NAME [--server URL] [--operator-token TOKEN] [--json]"
+	usage := "sideplane token create --name NAME [--scope admin|readonly] [--server URL] [--operator-token TOKEN] [--json]"
 	if commandHelpRequested(args) {
 		printCommandHelp(stdout, usage, flags)
 		return 0
@@ -1221,8 +1222,13 @@ func runTokenCreate(args []string, stdout io.Writer, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "token create: --name is required")
 		return 1
 	}
+	tokenScope, ok := protocol.NormalizeOperatorTokenScope(protocol.OperatorTokenScope(strings.TrimSpace(*scope)))
+	if !ok {
+		fmt.Fprintln(stderr, "token create: --scope must be admin or readonly")
+		return 1
+	}
 
-	resp, body, err := postJSON[protocol.CreateOperatorTokenResponse](context.Background(), serverURLValue(*serverURL), "/api/operator-tokens", protocol.CreateOperatorTokenRequest{Name: strings.TrimSpace(*name)}, operatorTokenValue(*operatorTokenFlag))
+	resp, body, err := postJSON[protocol.CreateOperatorTokenResponse](context.Background(), serverURLValue(*serverURL), "/api/operator-tokens", protocol.CreateOperatorTokenRequest{Name: strings.TrimSpace(*name), Scope: tokenScope}, operatorTokenValue(*operatorTokenFlag))
 	if err != nil {
 		fmt.Fprintf(stderr, "token create: %v\n", err)
 		return 1
@@ -2019,18 +2025,20 @@ func printOperatorTokenCreated(w io.Writer, resp protocol.CreateOperatorTokenRes
 	fmt.Fprintf(w, "operator token: %s\n", resp.Token)
 	fmt.Fprintf(w, "id: %s\n", resp.OperatorToken.ID)
 	fmt.Fprintf(w, "name: %s\n", resp.OperatorToken.Name)
+	fmt.Fprintf(w, "scope: %s\n", valueOrDash(string(resp.OperatorToken.Scope)))
 	fmt.Fprintln(w, "shown once: yes")
 }
 
 func printOperatorTokensTable(w io.Writer, tokens []protocol.OperatorToken) {
 	table := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(table, "ID\tNAME\tCREATED\tLAST USED\tREVOKED")
+	fmt.Fprintln(table, "ID\tNAME\tSCOPE\tCREATED\tLAST USED\tREVOKED")
 	for _, token := range tokens {
 		fmt.Fprintf(
 			table,
-			"%s\t%s\t%s\t%s\t%s\n",
+			"%s\t%s\t%s\t%s\t%s\t%s\n",
 			token.ID,
 			token.Name,
+			valueOrDash(string(token.Scope)),
 			timeLabel(token.CreatedAt),
 			timePtrLabel(token.LastUsedAt),
 			timePtrLabel(token.RevokedAt),

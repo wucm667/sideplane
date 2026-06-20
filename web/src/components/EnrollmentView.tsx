@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { apiErrorMessage, formatDate } from '../helpers.ts'
-import type { CreateEnrollmentTokenResponse, CreateOperatorTokenResponse, ListOperatorTokensResponse, OperatorToken, RevokeOperatorTokenResponse } from '../types.ts'
+import type { CreateEnrollmentTokenResponse, CreateOperatorTokenResponse, ListOperatorTokensResponse, OperatorToken, OperatorTokenScope, RevokeOperatorTokenResponse } from '../types.ts'
 
 export function EnrollmentView({ operatorToken }: { operatorToken: string }) {
   const [creating, setCreating] = useState(false)
@@ -11,6 +11,7 @@ export function EnrollmentView({ operatorToken }: { operatorToken: string }) {
   const [operatorTokensLoading, setOperatorTokensLoading] = useState(false)
   const [operatorTokensError, setOperatorTokensError] = useState<string | null>(null)
   const [operatorTokenName, setOperatorTokenName] = useState('')
+  const [operatorTokenScope, setOperatorTokenScope] = useState<OperatorTokenScope>('admin')
   const [creatingOperatorToken, setCreatingOperatorToken] = useState(false)
   const [createdOperatorToken, setCreatedOperatorToken] = useState<CreateOperatorTokenResponse | null>(null)
   const [revokingTokenId, setRevokingTokenId] = useState<string | null>(null)
@@ -113,7 +114,7 @@ export function EnrollmentView({ operatorToken }: { operatorToken: string }) {
           Authorization: `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ name }),
+        body: JSON.stringify({ name, scope: operatorTokenScope }),
       })
       if (!res.ok) {
         if (res.status === 401) throw new Error('Operator token required or invalid')
@@ -122,6 +123,7 @@ export function EnrollmentView({ operatorToken }: { operatorToken: string }) {
       const data = (await res.json()) as CreateOperatorTokenResponse
       setCreatedOperatorToken(data)
       setOperatorTokenName('')
+      setOperatorTokenScope('admin')
       setOperatorTokens((current) => [data.operatorToken, ...current.filter((item) => item.id !== data.operatorToken.id)])
     } catch (e) {
       setOperatorTokensError(e instanceof Error ? e.message : 'Unknown error')
@@ -282,13 +284,22 @@ export function EnrollmentView({ operatorToken }: { operatorToken: string }) {
             </div>
           )}
 
-          <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
+          <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto_auto]">
             <input
               className="h-10 rounded-lg border border-[var(--sp-border)] bg-[var(--sp-surface-2)] px-3 text-sm text-[var(--sp-text)] outline-none focus:border-[var(--sp-accent)]"
               value={operatorTokenName}
               placeholder="token name"
               onChange={(event) => setOperatorTokenName(event.target.value)}
             />
+            <select
+              className="h-10 rounded-lg border border-[var(--sp-border)] bg-[var(--sp-surface-2)] px-3 text-sm text-[var(--sp-text)] outline-none focus:border-[var(--sp-accent)]"
+              value={operatorTokenScope}
+              aria-label="token scope"
+              onChange={(event) => setOperatorTokenScope(event.target.value as OperatorTokenScope)}
+            >
+              <option value="admin">admin</option>
+              <option value="readonly">readonly</option>
+            </select>
             <button
               type="button"
               className="h-10 rounded-lg bg-[var(--sp-accent)] px-3 text-sm font-medium text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-55"
@@ -305,6 +316,7 @@ export function EnrollmentView({ operatorToken }: { operatorToken: string }) {
                 <tr>
                   <th className="px-3 py-2 font-semibold">Name</th>
                   <th className="px-3 py-2 font-semibold">ID</th>
+                  <th className="px-3 py-2 font-semibold">Scope</th>
                   <th className="px-3 py-2 font-semibold">Last used</th>
                   <th className="px-3 py-2 font-semibold">State</th>
                   <th className="px-3 py-2 text-right font-semibold">Action</th>
@@ -313,7 +325,7 @@ export function EnrollmentView({ operatorToken }: { operatorToken: string }) {
               <tbody className="divide-y divide-[var(--sp-border)]">
                 {operatorTokens.length === 0 && (
                   <tr>
-                    <td colSpan={5} className="px-3 py-5 text-center text-sm text-[var(--sp-muted)]">
+                    <td colSpan={6} className="px-3 py-5 text-center text-sm text-[var(--sp-muted)]">
                       {operatorTokensLoading ? 'Loading tokens...' : 'No named tokens'}
                     </td>
                   </tr>
@@ -324,6 +336,11 @@ export function EnrollmentView({ operatorToken }: { operatorToken: string }) {
                     <tr key={token.id}>
                       <td className="px-3 py-2 font-medium text-[var(--sp-text)]">{token.name}</td>
                       <td className="px-3 py-2 font-mono text-xs text-[var(--sp-muted)]">{token.id}</td>
+                      <td className="px-3 py-2">
+                        <span className={`rounded border px-2 py-0.5 text-xs ${token.scope === 'readonly' ? 'border-[var(--sp-border)] bg-[var(--sp-surface-2)] text-[var(--sp-muted)]' : 'border-amber-500/30 bg-amber-500/10 text-amber-700'}`}>
+                          {token.scope || 'admin'}
+                        </span>
+                      </td>
                       <td className="px-3 py-2 font-mono text-xs text-[var(--sp-muted)]">{formatDate(token.lastUsedAt)}</td>
                       <td className="px-3 py-2">
                         <span className={`rounded border px-2 py-0.5 text-xs ${revoked ? 'border-rose-500/30 bg-rose-500/10 text-rose-600' : 'border-emerald-500/25 bg-emerald-500/10 text-emerald-600'}`}>

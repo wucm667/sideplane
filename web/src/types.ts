@@ -129,9 +129,12 @@ export interface RolloutActionResponse {
   rollout: Rollout
 }
 
+export type OperatorTokenScope = 'admin' | 'readonly'
+
 export interface OperatorToken {
   id: string
   name: string
+  scope: OperatorTokenScope
   createdAt: string
   lastUsedAt?: string
   revokedAt?: string
@@ -139,6 +142,7 @@ export interface OperatorToken {
 
 export interface CreateOperatorTokenRequest {
   name: string
+  scope?: OperatorTokenScope
 }
 
 export interface CreateOperatorTokenResponse {
