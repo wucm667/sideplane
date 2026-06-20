@@ -133,18 +133,52 @@ go run ./cmd/sideplane-sidecar --state ./sidecar-state.json
 
 ## Configuration
 
-Server flags can be configured with environment variables. Explicit CLI flags take precedence over env vars.
+Server flags can be configured with a flat YAML file and environment variables.
+The default config file path is `~/.config/sideplane/server.yaml`; override it
+with `SIDEPLANE_SERVER_CONFIG` or `sideplane-server --config PATH`. To inspect
+the resolved path:
+
+```bash
+sideplane-server config-file path
+```
+
+Precedence is explicit CLI flags, then environment variables, then the config
+file, then built-in defaults. Config-file keys use the same names as server
+flags, for example:
+
+```yaml
+addr: ":8080"
+db: /var/lib/sideplane/sideplane.db
+base-path: /sideplane
+stale-after: 2m
+offline-after: 10m
+rollout-interval: 5s
+backup-dir: /var/lib/sideplane/backups
+backup-interval: 6h
+backup-retention: 7
+tls-cert: /etc/sideplane/tls/server.crt
+tls-key: /etc/sideplane/tls/server.key
+```
+
+Keep raw secrets out of the config file. Use `SIDEPLANE_OPERATOR_TOKEN` for the
+operator bearer token and `SIDEPLANE_SIGNING_KEY` or `--signing-key` for the
+config-plan signing key file path.
 
 | Env var | Default | Purpose |
 | --- | --- | --- |
+| `SIDEPLANE_SERVER_CONFIG` | `~/.config/sideplane/server.yaml` | Server config file path. |
 | `SIDEPLANE_ADDR` | `:8080` | HTTP listen address. |
 | `SIDEPLANE_DB_PATH` | `sideplane.db` | SQLite database path. |
 | `SIDEPLANE_TLS_CERT` | empty | TLS certificate file. Set together with `SIDEPLANE_TLS_KEY` to serve HTTPS directly. |
 | `SIDEPLANE_TLS_KEY` | empty | TLS private key file. Set together with `SIDEPLANE_TLS_CERT`. |
 | `SIDEPLANE_TLS_REDIRECT_ADDR` | empty | Optional plain-HTTP listener that sends 301 redirects to the HTTPS address. Requires cert/key. |
+| `SIDEPLANE_BASE_PATH` | empty | Optional URL path prefix to serve Sideplane under. |
 | `SIDEPLANE_WEB_DIR` | empty | Built Web UI directory to serve instead of embedded assets. Empty uses embedded assets. |
 | `SIDEPLANE_OPERATOR_TOKEN` | empty | Bearer token required for mutating operator APIs. |
 | `SIDEPLANE_SIGNING_KEY` | empty | Ed25519 config-plan signing key path. Empty uses ephemeral in-memory key. |
+| `SIDEPLANE_BACKUP_DIR` | empty | Directory for periodic online SQLite backups. |
+| `SIDEPLANE_BACKUP_INTERVAL` | `0` | Interval between periodic online SQLite backups. Set with backup dir to enable. |
+| `SIDEPLANE_BACKUP_RETENTION` | `7` | Number of recent periodic DB backups to retain. |
 | `SIDEPLANE_STALE_AFTER` | `2m` | Heartbeat age before a node is stale. |
 | `SIDEPLANE_OFFLINE_AFTER` | `10m` | Heartbeat age before a node is offline. Must exceed stale duration. |
 | `SIDEPLANE_HEARTBEAT_RETENTION` | `100` | Number of recent heartbeat records retained per node. |
@@ -157,8 +191,8 @@ Server flags can be configured with environment variables. Explicit CLI flags ta
 | `SIDEPLANE_ALLOW_UNAUTHENTICATED_OPERATOR_API` | false | Development-only escape hatch for mutating operator APIs. |
 
 Matching flags are available on `sideplane-server`: `--addr`, `--db`,
-`--tls-cert`, `--tls-key`, `--tls-redirect-addr`, `--web-dir`,
-`--operator-token`, `--signing-key`, `--stale-after`,
+`--config`, `--tls-cert`, `--tls-key`, `--tls-redirect-addr`, `--base-path`,
+`--web-dir`, `--operator-token`, `--signing-key`, `--stale-after`,
 `--offline-after`, `--heartbeat-retention`, `--job-retention`,
 `--audit-retention`, `--rollout-interval`, `--backup-dir`,
 `--backup-interval`, `--backup-retention`, `--enrollment-rate-limit`,

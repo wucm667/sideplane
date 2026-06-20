@@ -35,12 +35,39 @@ const defaultRolloutInterval = 5 * time.Second
 const defaultBackupRetention = 7
 const backupFilePrefix = "sideplane-backup-"
 const backupFileTimeLayout = "20060102T150405.000000000"
+const serverConfigEnv = "SIDEPLANE_SERVER_CONFIG"
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
 
+func isHelpArg(arg string) bool {
+	return arg == "-h" || arg == "--help" || arg == "help"
+}
+
+func commandHelpRequested(args []string) bool {
+	for _, arg := range args {
+		if isHelpArg(arg) {
+			return true
+		}
+	}
+	return false
+}
+
+func printCommandHelp(w io.Writer, usage string, flags *flag.FlagSet) {
+	fmt.Fprintf(w, "usage: %s\n\n", usage)
+	flags.SetOutput(w)
+	flags.PrintDefaults()
+}
+
 func run(args []string, stdout io.Writer, stderr io.Writer) int {
+	if len(args) > 0 && args[0] == "config-file" {
+		if len(args) >= 2 && args[1] == "path" {
+			return runServerConfigFilePath(args[2:], stdout, stderr)
+		}
+		fmt.Fprintln(stderr, "usage: sideplane-server config-file path [--config PATH]")
+		return 1
+	}
 	if len(args) > 0 && args[0] == "backup" {
 		return runServerBackup(args[1:], stdout, stderr)
 	}
@@ -48,15 +75,16 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	flags := flag.NewFlagSet("sideplane-server", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 
+	configPathFlag := flags.String("config", "", "server config file path; can also be set with SIDEPLANE_SERVER_CONFIG")
 	addr := flags.String("addr", ":8080", "HTTP listen address")
 	dbPath := flags.String("db", "sideplane.db", "SQLite database path")
 	tlsCert := flags.String("tls-cert", "", "path to TLS certificate file; can also be set with SIDEPLANE_TLS_CERT")
 	tlsKey := flags.String("tls-key", "", "path to TLS private key file; can also be set with SIDEPLANE_TLS_KEY")
 	tlsRedirectAddr := flags.String("tls-redirect-addr", "", "optional HTTP listen address that redirects requests to HTTPS; can also be set with SIDEPLANE_TLS_REDIRECT_ADDR")
 	basePath := flags.String("base-path", "", "optional URL path prefix to serve the app under; can also be set with SIDEPLANE_BASE_PATH")
-	backupDir := flags.String("backup-dir", "", "directory for periodic online DB backups; periodic backups are off unless set with a positive --backup-interval")
-	backupInterval := flags.Duration("backup-interval", 0, "interval between periodic online DB backups; set 0 to disable")
-	backupRetention := flags.Int("backup-retention", defaultBackupRetention, "number of recent periodic DB backups to retain")
+	backupDir := flags.String("backup-dir", "", "directory for periodic online DB backups; periodic backups are off unless set with a positive --backup-interval; can also be set with SIDEPLANE_BACKUP_DIR")
+	backupInterval := flags.Duration("backup-interval", 0, "interval between periodic online DB backups; set 0 to disable; can also be set with SIDEPLANE_BACKUP_INTERVAL")
+	backupRetention := flags.Int("backup-retention", defaultBackupRetention, "number of recent periodic DB backups to retain; can also be set with SIDEPLANE_BACKUP_RETENTION")
 	webDir := flags.String("web-dir", "", "directory of built Web UI static assets to serve; overrides embedded assets when set")
 	staleAfter := flags.Duration("stale-after", server.DefaultStaleAfter, "duration after last heartbeat before a node is stale")
 	offlineAfter := flags.Duration("offline-after", server.DefaultOfflineAfter, "duration after last heartbeat before a node is offline")
@@ -81,13 +109,16 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 
 	setFlags := visitedFlags(flags)
-	if err := applyServerEnvFallbacks(setFlags, serverFlagValues{
+	values := serverFlagValues{
 		addr:                  addr,
 		dbPath:                dbPath,
 		tlsCert:               tlsCert,
 		tlsKey:                tlsKey,
 		tlsRedirectAddr:       tlsRedirectAddr,
 		basePath:              basePath,
+		backupDir:             backupDir,
+		backupInterval:        backupInterval,
+		backupRetention:       backupRetention,
 		webDir:                webDir,
 		staleAfter:            staleAfter,
 		offlineAfter:          offlineAfter,
@@ -98,7 +129,19 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		enrollmentRateLimit:   enrollmentRateLimit,
 		operatorAuthRateLimit: operatorAuthRateLimit,
 		rateLimitWindow:       rateLimitWindow,
-	}); err != nil {
+		allowUnauthenticated:  allowUnauthenticatedOperatorAPIFlag,
+	}
+	configPath, configRequired := resolvedServerConfigPath(*configPathFlag)
+	fileConfig, err := loadServerConfigFile(configPath, configRequired)
+	if err != nil {
+		fmt.Fprintf(stderr, "invalid server config file: %v\n", err)
+		return 1
+	}
+	if err := applyServerConfigFallbacks(setFlags, fileConfig, values); err != nil {
+		fmt.Fprintf(stderr, "invalid server config file: %v\n", err)
+		return 1
+	}
+	if err := applyServerEnvFallbacks(setFlags, values); err != nil {
 		fmt.Fprintf(stderr, "invalid environment configuration: %v\n", err)
 		return 1
 	}
@@ -172,7 +215,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	if operatorToken == "" {
 		operatorToken = strings.TrimSpace(os.Getenv(auth.OperatorTokenEnv))
 	}
-	allowUnauthenticatedOperatorAPI := *allowUnauthenticatedOperatorAPIFlag || truthyEnv(os.Getenv(auth.AllowUnauthenticatedOperatorAPIEnv))
+	allowUnauthenticatedOperatorAPI := *allowUnauthenticatedOperatorAPIFlag
 	if operatorToken == "" {
 		if allowUnauthenticatedOperatorAPI {
 			logger.Warn("operator token not configured; explicit development mode allows unauthenticated mutating operator endpoints")
@@ -332,6 +375,9 @@ type serverFlagValues struct {
 	tlsKey                *string
 	tlsRedirectAddr       *string
 	basePath              *string
+	backupDir             *string
+	backupInterval        *time.Duration
+	backupRetention       *int
 	webDir                *string
 	staleAfter            *time.Duration
 	offlineAfter          *time.Duration
@@ -342,6 +388,30 @@ type serverFlagValues struct {
 	enrollmentRateLimit   *int
 	operatorAuthRateLimit *int
 	rateLimitWindow       *time.Duration
+	allowUnauthenticated  *bool
+}
+
+type serverFileConfig map[string]string
+
+func runServerConfigFilePath(args []string, stdout io.Writer, stderr io.Writer) int {
+	flags := flag.NewFlagSet("sideplane-server config-file path", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	configPathFlag := flags.String("config", "", "server config file path; can also be set with SIDEPLANE_SERVER_CONFIG")
+	usage := "sideplane-server config-file path [--config PATH]"
+	if commandHelpRequested(args) {
+		printCommandHelp(stdout, usage, flags)
+		return 0
+	}
+	if err := flags.Parse(args); err != nil {
+		return 2
+	}
+	if flags.NArg() != 0 {
+		fmt.Fprintln(stderr, "usage: "+usage)
+		return 1
+	}
+	path, _ := resolvedServerConfigPath(*configPathFlag)
+	fmt.Fprintln(stdout, path)
+	return 0
 }
 
 // runServerBackup writes a one-shot online backup of the database and exits
@@ -520,6 +590,240 @@ func visitedFlags(flags *flag.FlagSet) map[string]bool {
 	return visited
 }
 
+func resolvedServerConfigPath(flagValue string) (string, bool) {
+	if value := strings.TrimSpace(flagValue); value != "" {
+		return expandHomePath(value), true
+	}
+	if value := strings.TrimSpace(os.Getenv(serverConfigEnv)); value != "" {
+		return expandHomePath(value), true
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return filepath.Join(".config", "sideplane", "server.yaml"), false
+	}
+	return filepath.Join(home, ".config", "sideplane", "server.yaml"), false
+}
+
+func expandHomePath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "~" {
+		if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
+			return home
+		}
+	}
+	if strings.HasPrefix(path, "~/") {
+		if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
+			return filepath.Join(home, strings.TrimPrefix(path, "~/"))
+		}
+	}
+	return path
+}
+
+func loadServerConfigFile(path string, required bool) (serverFileConfig, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil, nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) && !required {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read %s: %w", path, err)
+	}
+	cfg, err := parseServerConfig(data)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	return cfg, nil
+}
+
+func parseServerConfig(data []byte) (serverFileConfig, error) {
+	cfg := serverFileConfig{}
+	for lineNo, rawLine := range strings.Split(string(data), "\n") {
+		line := strings.TrimSpace(rawLine)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, value, ok := strings.Cut(line, ":")
+		if !ok {
+			return nil, fmt.Errorf("line %d: expected key: value", lineNo+1)
+		}
+		canonical, ok := canonicalServerConfigKey(key)
+		if !ok {
+			return nil, fmt.Errorf("line %d: unsupported key %q", lineNo+1, strings.TrimSpace(key))
+		}
+		cfg[canonical] = trimServerConfigValue(value)
+	}
+	return cfg, nil
+}
+
+func canonicalServerConfigKey(key string) (string, bool) {
+	switch normalizeServerConfigKey(key) {
+	case "addr":
+		return "addr", true
+	case "db", "dbpath":
+		return "db", true
+	case "tlscert":
+		return "tls-cert", true
+	case "tlskey":
+		return "tls-key", true
+	case "tlsredirectaddr":
+		return "tls-redirect-addr", true
+	case "basepath":
+		return "base-path", true
+	case "backupdir":
+		return "backup-dir", true
+	case "backupinterval":
+		return "backup-interval", true
+	case "backupretention":
+		return "backup-retention", true
+	case "webdir":
+		return "web-dir", true
+	case "stale", "staleafter":
+		return "stale-after", true
+	case "offline", "offlineafter":
+		return "offline-after", true
+	case "heartbeatretention":
+		return "heartbeat-retention", true
+	case "jobretention":
+		return "job-retention", true
+	case "auditretention":
+		return "audit-retention", true
+	case "rolloutinterval":
+		return "rollout-interval", true
+	case "enrollmentratelimit":
+		return "enrollment-rate-limit", true
+	case "operatorauthratelimit":
+		return "operator-auth-rate-limit", true
+	case "ratelimitwindow":
+		return "rate-limit-window", true
+	case "allowunauthenticatedoperatorapi":
+		return "allow-unauthenticated-operator-api", true
+	default:
+		return "", false
+	}
+}
+
+func normalizeServerConfigKey(key string) string {
+	key = strings.ToLower(strings.TrimSpace(key))
+	key = strings.ReplaceAll(key, "_", "")
+	key = strings.ReplaceAll(key, "-", "")
+	return key
+}
+
+func trimServerConfigValue(value string) string {
+	value = strings.TrimSpace(value)
+	if comment := strings.Index(value, " #"); comment >= 0 {
+		value = strings.TrimSpace(value[:comment])
+	}
+	if len(value) >= 2 {
+		if (value[0] == '"' && value[len(value)-1] == '"') || (value[0] == '\'' && value[len(value)-1] == '\'') {
+			value = value[1 : len(value)-1]
+		}
+	}
+	return strings.TrimSpace(value)
+}
+
+func applyServerConfigFallbacks(setFlags map[string]bool, cfg serverFileConfig, values serverFlagValues) error {
+	for key, value := range cfg {
+		if setFlags[key] {
+			continue
+		}
+		switch key {
+		case "addr":
+			*values.addr = value
+		case "db":
+			*values.dbPath = value
+		case "tls-cert":
+			*values.tlsCert = value
+		case "tls-key":
+			*values.tlsKey = value
+		case "tls-redirect-addr":
+			*values.tlsRedirectAddr = value
+		case "base-path":
+			*values.basePath = value
+		case "backup-dir":
+			*values.backupDir = value
+		case "backup-interval":
+			parsed, err := parseServerConfigDuration(key, value)
+			if err != nil {
+				return err
+			}
+			*values.backupInterval = parsed
+		case "backup-retention":
+			parsed, err := parseServerConfigInt(key, value)
+			if err != nil {
+				return err
+			}
+			*values.backupRetention = parsed
+		case "web-dir":
+			*values.webDir = value
+		case "stale-after":
+			parsed, err := parseServerConfigDuration(key, value)
+			if err != nil {
+				return err
+			}
+			*values.staleAfter = parsed
+		case "offline-after":
+			parsed, err := parseServerConfigDuration(key, value)
+			if err != nil {
+				return err
+			}
+			*values.offlineAfter = parsed
+		case "heartbeat-retention":
+			parsed, err := parseServerConfigInt(key, value)
+			if err != nil {
+				return err
+			}
+			*values.heartbeatRetention = parsed
+		case "job-retention":
+			parsed, err := parseServerConfigDuration(key, value)
+			if err != nil {
+				return err
+			}
+			*values.jobRetention = parsed
+		case "audit-retention":
+			parsed, err := parseServerConfigDuration(key, value)
+			if err != nil {
+				return err
+			}
+			*values.auditRetention = parsed
+		case "rollout-interval":
+			parsed, err := parseServerConfigDuration(key, value)
+			if err != nil {
+				return err
+			}
+			*values.rolloutInterval = parsed
+		case "enrollment-rate-limit":
+			parsed, err := parseServerConfigInt(key, value)
+			if err != nil {
+				return err
+			}
+			*values.enrollmentRateLimit = parsed
+		case "operator-auth-rate-limit":
+			parsed, err := parseServerConfigInt(key, value)
+			if err != nil {
+				return err
+			}
+			*values.operatorAuthRateLimit = parsed
+		case "rate-limit-window":
+			parsed, err := parseServerConfigDuration(key, value)
+			if err != nil {
+				return err
+			}
+			*values.rateLimitWindow = parsed
+		case "allow-unauthenticated-operator-api":
+			parsed, err := parseServerConfigBool(key, value)
+			if err != nil {
+				return err
+			}
+			*values.allowUnauthenticated = parsed
+		}
+	}
+	return nil
+}
+
 func applyServerEnvFallbacks(setFlags map[string]bool, values serverFlagValues) error {
 	applyStringEnvFallback(setFlags, "addr", "SIDEPLANE_ADDR", values.addr)
 	applyStringEnvFallback(setFlags, "db", "SIDEPLANE_DB_PATH", values.dbPath)
@@ -527,6 +831,13 @@ func applyServerEnvFallbacks(setFlags map[string]bool, values serverFlagValues) 
 	applyStringEnvFallback(setFlags, "tls-key", "SIDEPLANE_TLS_KEY", values.tlsKey)
 	applyStringEnvFallback(setFlags, "tls-redirect-addr", "SIDEPLANE_TLS_REDIRECT_ADDR", values.tlsRedirectAddr)
 	applyStringEnvFallback(setFlags, "base-path", "SIDEPLANE_BASE_PATH", values.basePath)
+	applyStringEnvFallback(setFlags, "backup-dir", "SIDEPLANE_BACKUP_DIR", values.backupDir)
+	if err := applyDurationEnvFallback(setFlags, "backup-interval", "SIDEPLANE_BACKUP_INTERVAL", values.backupInterval); err != nil {
+		return err
+	}
+	if err := applyIntEnvFallback(setFlags, "backup-retention", "SIDEPLANE_BACKUP_RETENTION", values.backupRetention); err != nil {
+		return err
+	}
 	applyStringEnvFallback(setFlags, "web-dir", "SIDEPLANE_WEB_DIR", values.webDir)
 	if err := applyDurationEnvFallback(setFlags, "stale-after", "SIDEPLANE_STALE_AFTER", values.staleAfter); err != nil {
 		return err
@@ -553,6 +864,9 @@ func applyServerEnvFallbacks(setFlags map[string]bool, values serverFlagValues) 
 		return err
 	}
 	if err := applyDurationEnvFallback(setFlags, "rate-limit-window", "SIDEPLANE_RATE_LIMIT_WINDOW", values.rateLimitWindow); err != nil {
+		return err
+	}
+	if err := applyBoolEnvFallback(setFlags, "allow-unauthenticated-operator-api", auth.AllowUnauthenticatedOperatorAPIEnv, values.allowUnauthenticated); err != nil {
 		return err
 	}
 	return nil
@@ -719,11 +1033,45 @@ func applyIntEnvFallback(setFlags map[string]bool, flagName string, envName stri
 	return nil
 }
 
-func truthyEnv(value string) bool {
+func applyBoolEnvFallback(setFlags map[string]bool, flagName string, envName string, value *bool) error {
+	if value == nil || setFlags[flagName] {
+		return nil
+	}
+	envValue, ok := os.LookupEnv(envName)
+	if !ok || strings.TrimSpace(envValue) == "" {
+		return nil
+	}
+	parsed, err := parseServerConfigBool(envName, envValue)
+	if err != nil {
+		return err
+	}
+	*value = parsed
+	return nil
+}
+
+func parseServerConfigDuration(name string, value string) (time.Duration, error) {
+	parsed, err := time.ParseDuration(strings.TrimSpace(value))
+	if err != nil {
+		return 0, fmt.Errorf("%s: %w", name, err)
+	}
+	return parsed, nil
+}
+
+func parseServerConfigInt(name string, value string) (int, error) {
+	parsed, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil {
+		return 0, fmt.Errorf("%s: %w", name, err)
+	}
+	return parsed, nil
+}
+
+func parseServerConfigBool(name string, value string) (bool, error) {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "1", "t", "true", "y", "yes", "on":
-		return true
+		return true, nil
+	case "0", "f", "false", "n", "no", "off":
+		return false, nil
 	default:
-		return false
+		return false, fmt.Errorf("%s: expected boolean value", name)
 	}
 }

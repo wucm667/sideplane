@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wucm667/sideplane/internal/server"
 	"github.com/wucm667/sideplane/internal/store"
 	"github.com/wucm667/sideplane/pkg/protocol"
 )
@@ -72,6 +73,9 @@ func TestServerEnvFallbacksApplyWhenFlagsUnset(t *testing.T) {
 	t.Setenv("SIDEPLANE_TLS_KEY", "/etc/sideplane/tls.key")
 	t.Setenv("SIDEPLANE_TLS_REDIRECT_ADDR", ":8081")
 	t.Setenv("SIDEPLANE_BASE_PATH", "/sideplane/")
+	t.Setenv("SIDEPLANE_BACKUP_DIR", "/var/lib/sideplane/backups")
+	t.Setenv("SIDEPLANE_BACKUP_INTERVAL", "6h")
+	t.Setenv("SIDEPLANE_BACKUP_RETENTION", "5")
 	t.Setenv("SIDEPLANE_WEB_DIR", "/usr/share/sideplane/web")
 	t.Setenv("SIDEPLANE_STALE_AFTER", "90s")
 	t.Setenv("SIDEPLANE_OFFLINE_AFTER", "6m")
@@ -82,6 +86,7 @@ func TestServerEnvFallbacksApplyWhenFlagsUnset(t *testing.T) {
 	t.Setenv("SIDEPLANE_ENROLLMENT_RATE_LIMIT", "7")
 	t.Setenv("SIDEPLANE_OPERATOR_AUTH_RATE_LIMIT", "11")
 	t.Setenv("SIDEPLANE_RATE_LIMIT_WINDOW", "45s")
+	t.Setenv("SIDEPLANE_ALLOW_UNAUTHENTICATED_OPERATOR_API", "true")
 
 	addr := ":8080"
 	dbPath := "sideplane.db"
@@ -89,6 +94,9 @@ func TestServerEnvFallbacksApplyWhenFlagsUnset(t *testing.T) {
 	tlsKey := ""
 	tlsRedirectAddr := ""
 	basePath := ""
+	backupDir := ""
+	backupInterval := time.Duration(0)
+	backupRetention := defaultBackupRetention
 	webDir := ""
 	staleAfter := 2 * time.Minute
 	offlineAfter := 10 * time.Minute
@@ -99,6 +107,7 @@ func TestServerEnvFallbacksApplyWhenFlagsUnset(t *testing.T) {
 	enrollmentRateLimit := 20
 	operatorAuthRateLimit := 60
 	rateLimitWindow := time.Minute
+	allowUnauthenticated := false
 
 	if err := applyServerEnvFallbacks(map[string]bool{}, serverFlagValues{
 		addr:                  &addr,
@@ -107,6 +116,9 @@ func TestServerEnvFallbacksApplyWhenFlagsUnset(t *testing.T) {
 		tlsKey:                &tlsKey,
 		tlsRedirectAddr:       &tlsRedirectAddr,
 		basePath:              &basePath,
+		backupDir:             &backupDir,
+		backupInterval:        &backupInterval,
+		backupRetention:       &backupRetention,
 		webDir:                &webDir,
 		staleAfter:            &staleAfter,
 		offlineAfter:          &offlineAfter,
@@ -117,6 +129,7 @@ func TestServerEnvFallbacksApplyWhenFlagsUnset(t *testing.T) {
 		enrollmentRateLimit:   &enrollmentRateLimit,
 		operatorAuthRateLimit: &operatorAuthRateLimit,
 		rateLimitWindow:       &rateLimitWindow,
+		allowUnauthenticated:  &allowUnauthenticated,
 	}); err != nil {
 		t.Fatalf("apply env fallbacks: %v", err)
 	}
@@ -138,6 +151,15 @@ func TestServerEnvFallbacksApplyWhenFlagsUnset(t *testing.T) {
 	}
 	if basePath != "/sideplane/" {
 		t.Fatalf("base path = %q, want env base path", basePath)
+	}
+	if backupDir != "/var/lib/sideplane/backups" {
+		t.Fatalf("backup dir = %q, want env backup dir", backupDir)
+	}
+	if backupInterval != 6*time.Hour {
+		t.Fatalf("backup interval = %s, want 6h", backupInterval)
+	}
+	if backupRetention != 5 {
+		t.Fatalf("backup retention = %d, want 5", backupRetention)
 	}
 	if webDir != "/usr/share/sideplane/web" {
 		t.Fatalf("web dir = %q, want env web dir", webDir)
@@ -168,6 +190,168 @@ func TestServerEnvFallbacksApplyWhenFlagsUnset(t *testing.T) {
 	}
 	if rateLimitWindow != 45*time.Second {
 		t.Fatalf("rate limit window = %s, want 45s", rateLimitWindow)
+	}
+	if !allowUnauthenticated {
+		t.Fatal("allow unauthenticated = false, want env true")
+	}
+}
+
+func TestServerConfigFilePathUsesOverride(t *testing.T) {
+	envPath := filepath.Join(t.TempDir(), "env-server.yaml")
+	flagPath := filepath.Join(t.TempDir(), "flag-server.yaml")
+	t.Setenv(serverConfigEnv, envPath)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"config-file", "path"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("run returned %d, stderr=%q", code, stderr.String())
+	}
+	if strings.TrimSpace(stdout.String()) != envPath {
+		t.Fatalf("config path = %q, want env path", strings.TrimSpace(stdout.String()))
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"config-file", "path", "--config", flagPath}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("run returned %d, stderr=%q", code, stderr.String())
+	}
+	if strings.TrimSpace(stdout.String()) != flagPath {
+		t.Fatalf("config path = %q, want flag path", strings.TrimSpace(stdout.String()))
+	}
+}
+
+func TestServerConfigFilePrecedence(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "server.yaml")
+	if err := os.WriteFile(path, []byte(`
+addr: 127.0.0.1:18080
+db: /config/sideplane.db
+base-path: /from-config
+backup-dir: /config/backups
+backup-interval: 2h
+backup-retention: 3
+web-dir: /config/web
+stale-after: 45s
+offline-after: 4m
+heartbeat-retention: 50
+job-retention: 24h
+audit-retention: 48h
+rollout-interval: 3s
+enrollment-rate-limit: 8
+operator-auth-rate-limit: 12
+rate-limit-window: 30s
+allow-unauthenticated-operator-api: true
+`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := loadServerConfigFile(path, true)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+
+	t.Setenv("SIDEPLANE_ADDR", "127.0.0.1:19090")
+	t.Setenv("SIDEPLANE_BACKUP_RETENTION", "9")
+	t.Setenv("SIDEPLANE_ALLOW_UNAUTHENTICATED_OPERATOR_API", "false")
+
+	addr := ":8080"
+	dbPath := "/flag/sideplane.db"
+	tlsCert := ""
+	tlsKey := ""
+	tlsRedirectAddr := ""
+	basePath := ""
+	backupDir := ""
+	backupInterval := time.Duration(0)
+	backupRetention := defaultBackupRetention
+	webDir := ""
+	staleAfter := server.DefaultStaleAfter
+	offlineAfter := server.DefaultOfflineAfter
+	heartbeatRetention := store.DefaultHeartbeatRetention
+	jobRetention := store.DefaultJobRetention
+	auditRetention := store.DefaultAuditRetention
+	rolloutInterval := defaultRolloutInterval
+	enrollmentRateLimit := server.DefaultEnrollmentRateLimit
+	operatorAuthRateLimit := server.DefaultOperatorAuthRateLimit
+	rateLimitWindow := server.DefaultRateLimitWindow
+	allowUnauthenticated := false
+	values := serverFlagValues{
+		addr:                  &addr,
+		dbPath:                &dbPath,
+		tlsCert:               &tlsCert,
+		tlsKey:                &tlsKey,
+		tlsRedirectAddr:       &tlsRedirectAddr,
+		basePath:              &basePath,
+		backupDir:             &backupDir,
+		backupInterval:        &backupInterval,
+		backupRetention:       &backupRetention,
+		webDir:                &webDir,
+		staleAfter:            &staleAfter,
+		offlineAfter:          &offlineAfter,
+		heartbeatRetention:    &heartbeatRetention,
+		jobRetention:          &jobRetention,
+		auditRetention:        &auditRetention,
+		rolloutInterval:       &rolloutInterval,
+		enrollmentRateLimit:   &enrollmentRateLimit,
+		operatorAuthRateLimit: &operatorAuthRateLimit,
+		rateLimitWindow:       &rateLimitWindow,
+		allowUnauthenticated:  &allowUnauthenticated,
+	}
+	setFlags := map[string]bool{"db": true}
+	if err := applyServerConfigFallbacks(setFlags, cfg, values); err != nil {
+		t.Fatalf("apply config fallback: %v", err)
+	}
+	if err := applyServerEnvFallbacks(setFlags, values); err != nil {
+		t.Fatalf("apply env fallback: %v", err)
+	}
+
+	if addr != "127.0.0.1:19090" {
+		t.Fatalf("addr = %q, want env override", addr)
+	}
+	if dbPath != "/flag/sideplane.db" {
+		t.Fatalf("db path = %q, want flag value", dbPath)
+	}
+	if basePath != "/from-config" || webDir != "/config/web" {
+		t.Fatalf("config strings basePath=%q webDir=%q", basePath, webDir)
+	}
+	if backupDir != "/config/backups" || backupInterval != 2*time.Hour || backupRetention != 9 {
+		t.Fatalf("backup config dir=%q interval=%s retention=%d", backupDir, backupInterval, backupRetention)
+	}
+	if staleAfter != 45*time.Second || offlineAfter != 4*time.Minute || rolloutInterval != 3*time.Second {
+		t.Fatalf("duration config stale=%s offline=%s rollout=%s", staleAfter, offlineAfter, rolloutInterval)
+	}
+	if heartbeatRetention != 50 || enrollmentRateLimit != 8 || operatorAuthRateLimit != 12 {
+		t.Fatalf("int config heartbeat=%d enrollment=%d operator=%d", heartbeatRetention, enrollmentRateLimit, operatorAuthRateLimit)
+	}
+	if jobRetention != 24*time.Hour || auditRetention != 48*time.Hour || rateLimitWindow != 30*time.Second {
+		t.Fatalf("retention/window config job=%s audit=%s rate=%s", jobRetention, auditRetention, rateLimitWindow)
+	}
+	if allowUnauthenticated {
+		t.Fatal("allow unauthenticated = true, want env false override")
+	}
+}
+
+func TestServerConfigFileRejectsUnknownAndSecretKeys(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{name: "unknown", body: "unknown-key: value\n", want: "unsupported key"},
+		{name: "operator token", body: "operator-token: secret-token\n", want: "unsupported key"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := parseServerConfig([]byte(tt.body))
+			if err == nil {
+				t.Fatal("parseServerConfig succeeded, want error")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %q, want %q", err.Error(), tt.want)
+			}
+			if strings.Contains(err.Error(), "secret-token") {
+				t.Fatalf("error leaked secret-bearing value: %q", err.Error())
+			}
+		})
 	}
 }
 

@@ -1,0 +1,25 @@
+# Example Sideplane server config file.
+#
+# Install as /etc/sideplane/server.yaml and set
+# SIDEPLANE_SERVER_CONFIG=/etc/sideplane/server.yaml in sideplane-server.env.
+# Keep raw secrets out of this file; use SIDEPLANE_OPERATOR_TOKEN and
+# SIDEPLANE_SIGNING_KEY in the environment file or systemd credentials.
+
+addr: ":8080"
+db: /var/lib/sideplane/sideplane.db
+base-path: ""
+stale-after: 2m
+offline-after: 10m
+heartbeat-retention: 100
+job-retention: 720h
+audit-retention: 4320h
+rollout-interval: 5s
+backup-dir: /var/lib/sideplane/backups
+backup-interval: 6h
+backup-retention: 7
+
+# Direct TLS is optional. If TLS is terminated by a reverse proxy, leave these
+# unset and remove tls-redirect-addr.
+# tls-cert: /etc/sideplane/tls/server.crt
+# tls-key: /etc/sideplane/tls/server.key
+# tls-redirect-addr: ":8080"
