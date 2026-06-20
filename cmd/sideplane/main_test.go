@@ -5,11 +5,14 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/wucm667/sideplane/internal/auth"
 	"github.com/wucm667/sideplane/pkg/protocol"
 )
 
@@ -332,6 +335,7 @@ func TestHelpListsCommands(t *testing.T) {
 		"node label <id>",
 		"node remove <id>",
 		"enrollment create",
+		"config-file path",
 		"version",
 	} {
 		if !strings.Contains(output, want) {
@@ -341,37 +345,120 @@ func TestHelpListsCommands(t *testing.T) {
 }
 
 func TestPerCommandHelpPrintsFlags(t *testing.T) {
-	tests := [][]string{
-		{"config", "apply", "--help"},
-		{"config", "history", "--help"},
-		{"config", "revert", "--help"},
-		{"restart", "--help"},
-		{"rollback", "--help"},
-		{"backups", "list", "--help"},
-		{"rollout", "create", "--help"},
-		{"rollout", "list", "--help"},
-		{"rollout", "status", "--help"},
-		{"rollout", "pause", "--help"},
-		{"jobs", "list", "--help"},
-		{"token", "create", "--help"},
-		{"token", "list", "--help"},
-		{"token", "revoke", "--help"},
-		{"node", "label", "--help"},
-		{"enrollment", "create", "--help"},
+	tests := []struct {
+		args       []string
+		wantServer bool
+	}{
+		{args: []string{"config", "apply", "--help"}, wantServer: true},
+		{args: []string{"config", "history", "--help"}, wantServer: true},
+		{args: []string{"config", "revert", "--help"}, wantServer: true},
+		{args: []string{"restart", "--help"}, wantServer: true},
+		{args: []string{"rollback", "--help"}, wantServer: true},
+		{args: []string{"backups", "list", "--help"}, wantServer: true},
+		{args: []string{"rollout", "create", "--help"}, wantServer: true},
+		{args: []string{"rollout", "list", "--help"}, wantServer: true},
+		{args: []string{"rollout", "status", "--help"}, wantServer: true},
+		{args: []string{"rollout", "pause", "--help"}, wantServer: true},
+		{args: []string{"jobs", "list", "--help"}, wantServer: true},
+		{args: []string{"token", "create", "--help"}, wantServer: true},
+		{args: []string{"token", "list", "--help"}, wantServer: true},
+		{args: []string{"token", "revoke", "--help"}, wantServer: true},
+		{args: []string{"node", "label", "--help"}, wantServer: true},
+		{args: []string{"enrollment", "create", "--help"}, wantServer: true},
+		{args: []string{"config-file", "path", "--help"}},
 	}
-	for _, args := range tests {
-		t.Run(strings.Join(args, " "), func(t *testing.T) {
+	for _, tt := range tests {
+		t.Run(strings.Join(tt.args, " "), func(t *testing.T) {
 			var stdout bytes.Buffer
 			var stderr bytes.Buffer
-			code := run(args, &stdout, &stderr)
+			code := run(tt.args, &stdout, &stderr)
 			if code != 0 {
 				t.Fatalf("run returned %d, stderr=%q", code, stderr.String())
 			}
 			output := stdout.String()
-			if !strings.Contains(output, "usage: sideplane") || !strings.Contains(output, "--server") {
-				t.Fatalf("help output missing usage/server flag:\n%s", output)
+			if !strings.Contains(output, "usage: sideplane") {
+				t.Fatalf("help output missing usage:\n%s", output)
+			}
+			if tt.wantServer && !strings.Contains(output, "--server") {
+				t.Fatalf("help output missing server flag:\n%s", output)
 			}
 		})
+	}
+}
+
+func TestCLIConfigFilePathUsesOverride(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	t.Setenv(cliConfigEnv, configPath)
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"config-file", "path"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("run returned %d, stderr=%q", code, stderr.String())
+	}
+	if strings.TrimSpace(stdout.String()) != configPath {
+		t.Fatalf("config path = %q, want %q", strings.TrimSpace(stdout.String()), configPath)
+	}
+}
+
+func TestCLIConfigFilePrecedence(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(configPath, []byte(`
+server: http://config-server
+operatorToken: config-token
+runtimeType: openclaw
+profile: lab
+`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Setenv(cliConfigEnv, configPath)
+	t.Setenv(serverURLEnv, "")
+	t.Setenv(auth.OperatorTokenEnv, "")
+	t.Setenv(runtimeTypeEnv, "")
+	t.Setenv(profileEnv, "")
+
+	cfg := loadCLIConfig()
+	if got := serverURLValueWithConfig("", cfg); got != "http://config-server" {
+		t.Fatalf("server from config = %q, want config server", got)
+	}
+	if got := operatorTokenValueWithConfig("", cfg); got != "config-token" {
+		t.Fatalf("operator token from config = %q, want config-token", got)
+	}
+	if got := runtimeTypeValueWithConfig("", cfg); got != "openclaw" {
+		t.Fatalf("runtime type from config = %q, want openclaw", got)
+	}
+	if got := profileValueWithConfig("", cfg); got != "lab" {
+		t.Fatalf("profile from config = %q, want lab", got)
+	}
+
+	t.Setenv(serverURLEnv, "http://env-server")
+	t.Setenv(auth.OperatorTokenEnv, "env-token")
+	t.Setenv(runtimeTypeEnv, "hermes")
+	t.Setenv(profileEnv, "env-profile")
+	if got := serverURLValueWithConfig("", cfg); got != "http://env-server" {
+		t.Fatalf("server from env = %q, want env server", got)
+	}
+	if got := operatorTokenValueWithConfig("", cfg); got != "env-token" {
+		t.Fatalf("operator token from env = %q, want env-token", got)
+	}
+	if got := runtimeTypeValueWithConfig("", cfg); got != "hermes" {
+		t.Fatalf("runtime type from env = %q, want hermes", got)
+	}
+	if got := profileValueWithConfig("", cfg); got != "env-profile" {
+		t.Fatalf("profile from env = %q, want env-profile", got)
+	}
+
+	if got := serverURLValueWithConfig("http://flag-server", cfg); got != "http://flag-server" {
+		t.Fatalf("server from flag = %q, want flag server", got)
+	}
+	if got := operatorTokenValueWithConfig("flag-token", cfg); got != "flag-token" {
+		t.Fatalf("operator token from flag = %q, want flag-token", got)
+	}
+	if got := runtimeTypeValueWithConfig("flag-runtime", cfg); got != "flag-runtime" {
+		t.Fatalf("runtime type from flag = %q, want flag runtime", got)
+	}
+	if got := profileValueWithConfig("flag-profile", cfg); got != "flag-profile" {
+		t.Fatalf("profile from flag = %q, want flag profile", got)
 	}
 }
 

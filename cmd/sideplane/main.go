@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -23,7 +24,19 @@ import (
 	"github.com/wucm667/sideplane/pkg/protocol"
 )
 
-const serverURLEnv = "SIDEPLANE_SERVER_URL"
+const (
+	serverURLEnv   = "SIDEPLANE_SERVER_URL"
+	cliConfigEnv   = "SIDEPLANE_CONFIG"
+	runtimeTypeEnv = "SIDEPLANE_RUNTIME_TYPE"
+	profileEnv     = "SIDEPLANE_PROFILE"
+)
+
+type cliConfig struct {
+	Server        string
+	OperatorToken string
+	RuntimeType   string
+	Profile       string
+}
 
 var cliStdin io.Reader = os.Stdin
 
@@ -51,6 +64,9 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	if len(args) == 1 && (args[0] == "version" || args[0] == "--version") {
 		fmt.Fprintln(stdout, buildinfo.Format("sideplane"))
 		return 0
+	}
+	if args[0] == "config-file" && len(args) >= 2 && args[1] == "path" {
+		return runConfigFilePath(args[2:], stdout, stderr)
 	}
 
 	switch args[0] {
@@ -175,6 +191,7 @@ Commands:
   node label <id>     Set or remove node labels
   node remove <id>    Remove a node from the fleet
   enrollment create   Create a one-time enrollment token
+  config-file path    Print resolved CLI config path
   version             Print version
 `)
 }
@@ -194,7 +211,27 @@ func printCommandHelp(w io.Writer, usage string, flags *flag.FlagSet) {
 	flags.PrintDefaults()
 }
 
+func runConfigFilePath(args []string, stdout io.Writer, stderr io.Writer) int {
+	flags := flag.NewFlagSet("sideplane config-file path", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	usage := "sideplane config-file path"
+	if commandHelpRequested(args) {
+		printCommandHelp(stdout, usage, flags)
+		return 0
+	}
+	if err := flags.Parse(args); err != nil {
+		return 2
+	}
+	if flags.NArg() != 0 {
+		fmt.Fprintln(stderr, "usage: "+usage)
+		return 1
+	}
+	fmt.Fprintln(stdout, resolvedCLIConfigPath())
+	return 0
+}
+
 func runRolloutCreate(args []string, stdout io.Writer, stderr io.Writer) int {
+	cfg := loadCLIConfig()
 	flags := flag.NewFlagSet("sideplane rollout create", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 
@@ -205,8 +242,8 @@ func runRolloutCreate(args []string, stdout io.Writer, stderr io.Writer) int {
 	flags.Var(&nodeIDs, "node", "target node ID; may be repeated")
 	provider := flags.String("provider", "", "target provider")
 	model := flags.String("model", "", "target model")
-	runtimeType := flags.String("runtime-type", "hermes", "runtime type")
-	profile := flags.String("profile", "default", "runtime profile")
+	runtimeType := flags.String("runtime-type", runtimeTypeDefault(cfg), "runtime type")
+	profile := flags.String("profile", profileDefault(cfg), "runtime profile")
 	batchSize := flags.Int("batch-size", 1, "sequential rollout batch size")
 	live := flags.Bool("live", false, "request live config apply instead of dry-run")
 	yes := flags.Bool("yes", false, "confirm live rollout")
@@ -414,13 +451,14 @@ func runRolloutAction(args []string, stdout io.Writer, stderr io.Writer, action 
 }
 
 func runRollback(args []string, stdout io.Writer, stderr io.Writer) int {
+	cfg := loadCLIConfig()
 	flags := flag.NewFlagSet("sideplane rollback", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 
 	serverURL := flags.String("server", "", "Sideplane server URL; can also be set with SIDEPLANE_SERVER_URL")
 	operatorTokenFlag := flags.String("operator-token", "", "operator bearer token; can also be set with SIDEPLANE_OPERATOR_TOKEN")
-	runtimeType := flags.String("runtime-type", "hermes", "runtime type")
-	profile := flags.String("profile", "default", "runtime profile")
+	runtimeType := flags.String("runtime-type", runtimeTypeDefault(cfg), "runtime type")
+	profile := flags.String("profile", profileDefault(cfg), "runtime profile")
 	backupRef := flags.String("backup-ref", "", "rollback backup reference")
 	live := flags.Bool("live", false, "request live rollback instead of dry-run")
 	yes := flags.Bool("yes", false, "confirm live rollback")
@@ -541,13 +579,14 @@ func runBackupsList(args []string, stdout io.Writer, stderr io.Writer) int {
 }
 
 func runRestart(args []string, stdout io.Writer, stderr io.Writer) int {
+	cfg := loadCLIConfig()
 	flags := flag.NewFlagSet("sideplane restart", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 
 	serverURL := flags.String("server", "", "Sideplane server URL; can also be set with SIDEPLANE_SERVER_URL")
 	operatorTokenFlag := flags.String("operator-token", "", "operator bearer token; can also be set with SIDEPLANE_OPERATOR_TOKEN")
-	runtimeType := flags.String("runtime-type", "hermes", "runtime type")
-	profile := flags.String("profile", "default", "runtime profile")
+	runtimeType := flags.String("runtime-type", runtimeTypeDefault(cfg), "runtime type")
+	profile := flags.String("profile", profileDefault(cfg), "runtime profile")
 	live := flags.Bool("live", false, "request live restart instead of dry-run")
 	yes := flags.Bool("yes", false, "confirm live restart")
 	wait := flags.Bool("wait", false, "poll until the restart job completes or fails")
@@ -613,13 +652,14 @@ func runRestart(args []string, stdout io.Writer, stderr io.Writer) int {
 }
 
 func runConfigApply(args []string, stdout io.Writer, stderr io.Writer) int {
+	cfg := loadCLIConfig()
 	flags := flag.NewFlagSet("sideplane config apply", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 
 	serverURL := flags.String("server", "", "Sideplane server URL; can also be set with SIDEPLANE_SERVER_URL")
 	operatorTokenFlag := flags.String("operator-token", "", "operator bearer token; can also be set with SIDEPLANE_OPERATOR_TOKEN")
-	runtimeType := flags.String("runtime-type", "hermes", "runtime type")
-	profile := flags.String("profile", "default", "runtime profile")
+	runtimeType := flags.String("runtime-type", runtimeTypeDefault(cfg), "runtime type")
+	profile := flags.String("profile", profileDefault(cfg), "runtime profile")
 	configPath := flags.String("config-path", "", "operator reference for expected config path; server uses last deep-probe path")
 	live := flags.Bool("live", false, "request live apply instead of dry-run")
 	yes := flags.Bool("yes", false, "confirm live apply")
@@ -687,12 +727,13 @@ func runConfigApply(args []string, stdout io.Writer, stderr io.Writer) int {
 }
 
 func runConfigPreview(args []string, stdout io.Writer, stderr io.Writer) int {
+	cfg := loadCLIConfig()
 	flags := flag.NewFlagSet("sideplane config preview", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 
 	serverURL := flags.String("server", "", "Sideplane server URL; can also be set with SIDEPLANE_SERVER_URL")
-	runtimeType := flags.String("runtime-type", "hermes", "runtime type")
-	profile := flags.String("profile", "default", "runtime profile")
+	runtimeType := flags.String("runtime-type", runtimeTypeDefault(cfg), "runtime type")
+	profile := flags.String("profile", profileDefault(cfg), "runtime profile")
 	actualHash := flags.String("actual-hash", "", "optional actual config hash to display")
 	jsonOutput := flags.Bool("json", false, "print JSON output")
 	usage := "sideplane config preview <nodeId> [--server URL] [--runtime-type TYPE] [--profile PROFILE] [--actual-hash HASH] [--json]"
@@ -1444,17 +1485,134 @@ func decodeNodeList(body []byte) ([]cliNodeStatus, error) {
 }
 
 func serverURLValue(flagValue string) string {
-	if strings.TrimSpace(flagValue) != "" {
-		return strings.TrimSpace(flagValue)
-	}
-	return strings.TrimSpace(os.Getenv(serverURLEnv))
+	return serverURLValueWithConfig(flagValue, loadCLIConfig())
 }
 
 func operatorTokenValue(flagValue string) string {
+	return operatorTokenValueWithConfig(flagValue, loadCLIConfig())
+}
+
+func runtimeTypeDefault(cfg cliConfig) string {
+	return runtimeTypeValueWithConfig("", cfg)
+}
+
+func profileDefault(cfg cliConfig) string {
+	return profileValueWithConfig("", cfg)
+}
+
+func serverURLValueWithConfig(flagValue string, cfg cliConfig) string {
 	if strings.TrimSpace(flagValue) != "" {
 		return strings.TrimSpace(flagValue)
 	}
-	return strings.TrimSpace(os.Getenv(auth.OperatorTokenEnv))
+	if value := strings.TrimSpace(os.Getenv(serverURLEnv)); value != "" {
+		return value
+	}
+	return strings.TrimSpace(cfg.Server)
+}
+
+func operatorTokenValueWithConfig(flagValue string, cfg cliConfig) string {
+	if strings.TrimSpace(flagValue) != "" {
+		return strings.TrimSpace(flagValue)
+	}
+	if value := strings.TrimSpace(os.Getenv(auth.OperatorTokenEnv)); value != "" {
+		return value
+	}
+	return strings.TrimSpace(cfg.OperatorToken)
+}
+
+func runtimeTypeValueWithConfig(flagValue string, cfg cliConfig) string {
+	if strings.TrimSpace(flagValue) != "" {
+		return strings.TrimSpace(flagValue)
+	}
+	if value := strings.TrimSpace(os.Getenv(runtimeTypeEnv)); value != "" {
+		return value
+	}
+	if value := strings.TrimSpace(cfg.RuntimeType); value != "" {
+		return value
+	}
+	return "hermes"
+}
+
+func profileValueWithConfig(flagValue string, cfg cliConfig) string {
+	if strings.TrimSpace(flagValue) != "" {
+		return strings.TrimSpace(flagValue)
+	}
+	if value := strings.TrimSpace(os.Getenv(profileEnv)); value != "" {
+		return value
+	}
+	if value := strings.TrimSpace(cfg.Profile); value != "" {
+		return value
+	}
+	return "default"
+}
+
+func loadCLIConfig() cliConfig {
+	path := resolvedCLIConfigPath()
+	if strings.TrimSpace(path) == "" {
+		return cliConfig{}
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return cliConfig{}
+	}
+	return parseCLIConfig(data)
+}
+
+func resolvedCLIConfigPath() string {
+	if value := strings.TrimSpace(os.Getenv(cliConfigEnv)); value != "" {
+		return value
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return filepath.Join(".config", "sideplane", "config.yaml")
+	}
+	return filepath.Join(home, ".config", "sideplane", "config.yaml")
+}
+
+func parseCLIConfig(data []byte) cliConfig {
+	var cfg cliConfig
+	for _, rawLine := range strings.Split(string(data), "\n") {
+		line := strings.TrimSpace(rawLine)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, value, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		value = trimConfigValue(value)
+		switch normalizeConfigKey(key) {
+		case "server":
+			cfg.Server = value
+		case "operatortoken":
+			cfg.OperatorToken = value
+		case "runtimetype":
+			cfg.RuntimeType = value
+		case "profile":
+			cfg.Profile = value
+		}
+	}
+	return cfg
+}
+
+func normalizeConfigKey(key string) string {
+	key = strings.ToLower(strings.TrimSpace(key))
+	key = strings.ReplaceAll(key, "_", "")
+	key = strings.ReplaceAll(key, "-", "")
+	return key
+}
+
+func trimConfigValue(value string) string {
+	value = strings.TrimSpace(value)
+	if comment := strings.Index(value, " #"); comment >= 0 {
+		value = strings.TrimSpace(value[:comment])
+	}
+	if len(value) >= 2 {
+		if (value[0] == '"' && value[len(value)-1] == '"') || (value[0] == '\'' && value[len(value)-1] == '\'') {
+			value = value[1 : len(value)-1]
+		}
+	}
+	return strings.TrimSpace(value)
 }
 
 func parseCommandFlags(flags *flag.FlagSet, args []string, boolFlagNames ...string) error {

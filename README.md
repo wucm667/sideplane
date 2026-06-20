@@ -195,9 +195,20 @@ Core endpoints:
 
 ## CLI Reference
 
-The `sideplane` CLI is a compact operator client for the REST API. It uses
-`SIDEPLANE_SERVER_URL` when `--server` is omitted and
-`SIDEPLANE_OPERATOR_TOKEN` when `--operator-token` is omitted.
+The `sideplane` CLI is a compact operator client for the REST API. Defaults
+resolve in this order: explicit flag, environment variable, CLI config file,
+then built-in default. The default config file is
+`~/.config/sideplane/config.yaml`; set `SIDEPLANE_CONFIG` to use another path.
+
+```yaml
+server: http://localhost:8080
+operatorToken: replace-with-a-long-random-token
+runtimeType: hermes
+profile: default
+```
+
+The CLI also reads `SIDEPLANE_SERVER_URL`, `SIDEPLANE_OPERATOR_TOKEN`,
+`SIDEPLANE_RUNTIME_TYPE`, and `SIDEPLANE_PROFILE`.
 
 | Command | Purpose | Key flags |
 | --- | --- | --- |
@@ -213,6 +224,7 @@ The `sideplane` CLI is a compact operator client for the REST API. It uses
 | `sideplane config apply <nodeId>` | Create a dry-run or live config apply job. | `--server`, `--operator-token`, `--runtime-type`, `--profile`, `--config-path`, `--live`, `--yes`, `--wait`, `--json` |
 | `sideplane config get` | Show desired configuration. | `--server`, `--json` |
 | `sideplane config set` | Update global desired provider/model. | `--server`, `--operator-token`, `--provider`, `--model` |
+| `sideplane config-file path` | Print the resolved CLI config path. | none |
 | `sideplane node inspect <nodeId>` | Show detailed node state and runtime status. | `--server`, `--json` |
 | `sideplane node label <nodeId>` | Set or remove operator-managed labels. | `--server`, `--operator-token`, `--remove`, `--json` |
 | `sideplane node remove <nodeId>` | Remove a decommissioned node record. | `--server`, `--operator-token`, `--yes` |
