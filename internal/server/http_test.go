@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -829,6 +830,133 @@ func TestCreateEnrollmentTokenAcceptsNamedOperatorToken(t *testing.T) {
 	}
 	if len(tokens) != 1 || tokens[0].LastUsedAt == nil {
 		t.Fatalf("operator token lastUsedAt not recorded: %+v", tokens)
+	}
+}
+
+func TestOperatorTokenManagementEndpointsRequireAuth(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	handler, err := NewHandlerWithStoreAndFreshnessPolicyAndOperatorToken(nodeStore, DefaultFreshnessPolicy(), "bootstrap-token")
+	if err != nil {
+		t.Fatalf("build handler: %v", err)
+	}
+
+	tests := []struct {
+		name string
+		req  *http.Request
+	}{
+		{
+			name: "create",
+			req:  httptest.NewRequest(http.MethodPost, "/api/operator-tokens", strings.NewReader(`{"name":"ops"}`)),
+		},
+		{
+			name: "list",
+			req:  httptest.NewRequest(http.MethodGet, "/api/operator-tokens", nil),
+		},
+		{
+			name: "revoke",
+			req:  httptest.NewRequest(http.MethodDelete, "/api/operator-tokens/optok_missing", nil),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, tt.req)
+			assertStatus(t, rec, http.StatusUnauthorized)
+		})
+	}
+}
+
+func TestOperatorTokenManagementEndpointsCreateListRevokeAndAudit(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	handler, err := NewHandlerWithConfig(HandlerConfig{
+		Store:         nodeStore,
+		Freshness:     DefaultFreshnessPolicy(),
+		OperatorToken: "bootstrap-token",
+	})
+	if err != nil {
+		t.Fatalf("build handler: %v", err)
+	}
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	created := doJSONRequest[protocol.CreateOperatorTokenResponse](t, server.Client(), http.MethodPost, server.URL+"/api/operator-tokens", "bootstrap-token", protocol.CreateOperatorTokenRequest{Name: "ops laptop"})
+	if created.Token == "" || created.OperatorToken.ID == "" || created.OperatorToken.Name != "ops laptop" {
+		t.Fatalf("created operator token = %+v, want plaintext and metadata", created)
+	}
+
+	doJSONRequest[protocol.CreateEnrollmentTokenResponse](t, server.Client(), http.MethodPost, server.URL+"/api/enrollment-tokens", created.Token, protocol.CreateEnrollmentTokenRequest{})
+
+	req, err := http.NewRequest(http.MethodGet, server.URL+"/api/operator-tokens", nil)
+	if err != nil {
+		t.Fatalf("build list request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer bootstrap-token")
+	res, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatalf("list operator tokens: %v", err)
+	}
+	listBody, err := io.ReadAll(res.Body)
+	if closeErr := res.Body.Close(); closeErr != nil {
+		t.Fatalf("close list response: %v", closeErr)
+	}
+	if err != nil {
+		t.Fatalf("read list response: %v", err)
+	}
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("list status = %d, body=%s", res.StatusCode, listBody)
+	}
+	if bytes.Contains(listBody, []byte(created.Token)) {
+		t.Fatalf("operator token list exposed plaintext token")
+	}
+	var listResp protocol.ListOperatorTokensResponse
+	if err := json.Unmarshal(listBody, &listResp); err != nil {
+		t.Fatalf("decode list response: %v", err)
+	}
+	if len(listResp.Tokens) != 1 || listResp.Tokens[0].ID != created.OperatorToken.ID || listResp.Tokens[0].LastUsedAt == nil {
+		t.Fatalf("operator token list = %+v, want created token with lastUsedAt", listResp.Tokens)
+	}
+
+	revoked := doJSONRequest[protocol.RevokeOperatorTokenResponse](t, server.Client(), http.MethodDelete, server.URL+"/api/operator-tokens/"+created.OperatorToken.ID, "bootstrap-token", nil)
+	if revoked.OperatorToken.ID != created.OperatorToken.ID || revoked.OperatorToken.RevokedAt == nil {
+		t.Fatalf("revoked operator token = %+v, want revoked metadata", revoked.OperatorToken)
+	}
+
+	req, err = http.NewRequest(http.MethodPost, server.URL+"/api/enrollment-tokens", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatalf("build revoked-token request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+created.Token)
+	req.Header.Set("Content-Type", "application/json")
+	res, err = server.Client().Do(req)
+	if err != nil {
+		t.Fatalf("use revoked operator token: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("revoked operator token status = %d, want 401", res.StatusCode)
+	}
+
+	events, err := nodeStore.ListAuditEventsFiltered(context.Background(), store.AuditFilter{Limit: 20})
+	if err != nil {
+		t.Fatalf("list audit events: %v", err)
+	}
+	var sawCreate, sawList, sawRevoke bool
+	for _, event := range events {
+		if strings.Contains(event.Detail, created.Token) {
+			t.Fatalf("audit event leaked plaintext token: %#v", event)
+		}
+		switch event.Action {
+		case audit.ActionOperatorTokenCreate:
+			sawCreate = true
+		case audit.ActionOperatorTokenList:
+			sawList = true
+		case audit.ActionOperatorTokenRevoke:
+			sawRevoke = true
+		}
+	}
+	if !sawCreate || !sawList || !sawRevoke {
+		t.Fatalf("operator token audit actions create=%t list=%t revoke=%t events=%#v", sawCreate, sawList, sawRevoke, events)
 	}
 }
 

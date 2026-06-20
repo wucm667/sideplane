@@ -11,6 +11,12 @@ const (
 
 	// ActionEnrollmentTokenCreate records one-time enrollment token creation.
 	ActionEnrollmentTokenCreate = "enrollment.token.create"
+	// ActionOperatorTokenCreate records named operator token creation.
+	ActionOperatorTokenCreate = "operator.token.create"
+	// ActionOperatorTokenList records named operator token metadata listing.
+	ActionOperatorTokenList = "operator.token.list"
+	// ActionOperatorTokenRevoke records named operator token revocation.
+	ActionOperatorTokenRevoke = "operator.token.revoke"
 	// ActionNodeEnroll records successful node enrollment.
 	ActionNodeEnroll = "node.enroll"
 	// ActionNodeDelete records operator removal of a node from inventory.

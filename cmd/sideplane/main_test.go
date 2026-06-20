@@ -319,6 +319,9 @@ func TestHelpListsCommands(t *testing.T) {
 		"rollout status <id>",
 		"jobs list <nodeId>",
 		"audit list",
+		"token create",
+		"token list",
+		"token revoke <id>",
 		"config apply <id>",
 		"config preview <id>",
 		"config get",
@@ -346,6 +349,9 @@ func TestPerCommandHelpPrintsFlags(t *testing.T) {
 		{"rollout", "status", "--help"},
 		{"rollout", "pause", "--help"},
 		{"jobs", "list", "--help"},
+		{"token", "create", "--help"},
+		{"token", "list", "--help"},
+		{"token", "revoke", "--help"},
 		{"node", "label", "--help"},
 		{"enrollment", "create", "--help"},
 	}
@@ -1117,6 +1123,108 @@ func TestAuditListJSONOutput(t *testing.T) {
 	}
 	if len(got.Events) != 1 || got.Events[0].ID != "audit-2" {
 		t.Fatalf("events = %#v, want audit-2", got.Events)
+	}
+}
+
+func TestTokenCreatePrintsPlaintextOnce(t *testing.T) {
+	createdAt := time.Date(2026, 6, 20, 9, 0, 0, 0, time.UTC)
+	resp := protocol.CreateOperatorTokenResponse{
+		OperatorToken: protocol.OperatorToken{ID: "optok_123", Name: "ops laptop", CreatedAt: createdAt},
+		Token:         "plain-token-value",
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/operator-tokens" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer bootstrap-token" {
+			t.Fatalf("Authorization = %q, want bootstrap token", got)
+		}
+		var req protocol.CreateOperatorTokenRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if req.Name != "ops laptop" {
+			t.Fatalf("request name = %q, want ops laptop", req.Name)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		if err := json.NewEncoder(w).Encode(resp); err != nil {
+			t.Fatalf("encode response: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"token", "create", "--name", "ops laptop", "--server", server.URL, "--operator-token", "bootstrap-token"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("run returned %d, stderr=%q", code, stderr.String())
+	}
+	for _, want := range []string{"operator token: plain-token-value", "id: optok_123", "name: ops laptop", "shown once: yes"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("output missing %q:\n%s", want, stdout.String())
+		}
+	}
+}
+
+func TestTokenListPrintsMetadataOnly(t *testing.T) {
+	createdAt := time.Date(2026, 6, 20, 9, 0, 0, 0, time.UTC)
+	lastUsedAt := createdAt.Add(time.Minute)
+	resp := protocol.ListOperatorTokensResponse{Tokens: []protocol.OperatorToken{{
+		ID:         "optok_123",
+		Name:       "ops laptop",
+		CreatedAt:  createdAt,
+		LastUsedAt: &lastUsedAt,
+	}}}
+	server := httptest.NewServer(jsonHandler(t, http.MethodGet, "/api/operator-tokens", resp))
+	defer server.Close()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"token", "list", "--server", server.URL, "--operator-token", "bootstrap-token"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("run returned %d, stderr=%q", code, stderr.String())
+	}
+	output := stdout.String()
+	for _, want := range []string{"ID", "NAME", "CREATED", "LAST USED", "REVOKED", "optok_123", "ops laptop"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output missing %q:\n%s", want, output)
+		}
+	}
+	if strings.Contains(output, "plain-token-value") {
+		t.Fatalf("token list output leaked plaintext token")
+	}
+}
+
+func TestTokenRevokeDeletesByID(t *testing.T) {
+	var sawDelete bool
+	resp := protocol.RevokeOperatorTokenResponse{OperatorToken: protocol.OperatorToken{ID: "optok_123", Name: "ops laptop", CreatedAt: time.Now().UTC()}}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete || r.URL.Path != "/api/operator-tokens/optok_123" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer bootstrap-token" {
+			t.Fatalf("Authorization = %q, want bootstrap token", got)
+		}
+		sawDelete = true
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(resp); err != nil {
+			t.Fatalf("encode response: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"token", "revoke", "optok_123", "--server", server.URL, "--operator-token", "bootstrap-token"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("run returned %d, stderr=%q", code, stderr.String())
+	}
+	if !sawDelete {
+		t.Fatal("server did not receive DELETE")
+	}
+	if !strings.Contains(stdout.String(), "Operator token optok_123 revoked.") {
+		t.Fatalf("stdout = %q, want revoke confirmation", stdout.String())
 	}
 }
 

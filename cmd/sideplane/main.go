@@ -93,6 +93,17 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		if len(args) >= 2 && args[1] == "list" {
 			return runAuditList(args[2:], stdout, stderr)
 		}
+	case "token":
+		if len(args) >= 2 {
+			switch args[1] {
+			case "create":
+				return runTokenCreate(args[2:], stdout, stderr)
+			case "list":
+				return runTokenList(args[2:], stdout, stderr)
+			case "revoke":
+				return runTokenRevoke(args[2:], stdout, stderr)
+			}
+		}
 	case "config":
 		if len(args) >= 2 && args[1] == "apply" {
 			return runConfigApply(args[2:], stdout, stderr)
@@ -145,6 +156,9 @@ Commands:
   rollout status <id> Show rollout batch and node progress
   jobs list <nodeId>  List node jobs
   audit list          List audit events
+  token create        Create a named operator token
+  token list          List named operator token metadata
+  token revoke <id>   Revoke a named operator token
   config apply <id>   Create a config apply job
   config preview <id> Preview effective node configuration
   config get          Show desired configuration
@@ -996,6 +1010,120 @@ func runNodeRemove(args []string, stdout io.Writer, stderr io.Writer) int {
 	return 0
 }
 
+func runTokenCreate(args []string, stdout io.Writer, stderr io.Writer) int {
+	flags := flag.NewFlagSet("sideplane token create", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+
+	serverURL := flags.String("server", "", "Sideplane server URL; can also be set with SIDEPLANE_SERVER_URL")
+	operatorTokenFlag := flags.String("operator-token", "", "operator bearer token; can also be set with SIDEPLANE_OPERATOR_TOKEN")
+	name := flags.String("name", "", "operator-visible token name")
+	jsonOutput := flags.Bool("json", false, "print raw JSON response")
+	usage := "sideplane token create --name NAME [--server URL] [--operator-token TOKEN] [--json]"
+	if commandHelpRequested(args) {
+		printCommandHelp(stdout, usage, flags)
+		return 0
+	}
+	if err := parseCommandFlags(flags, args, "json"); err != nil {
+		return 2
+	}
+	if flags.NArg() != 0 {
+		fmt.Fprintln(stderr, "usage: "+usage)
+		return 1
+	}
+	if strings.TrimSpace(*name) == "" {
+		fmt.Fprintln(stderr, "token create: --name is required")
+		return 1
+	}
+
+	resp, body, err := postJSON[protocol.CreateOperatorTokenResponse](context.Background(), serverURLValue(*serverURL), "/api/operator-tokens", protocol.CreateOperatorTokenRequest{Name: strings.TrimSpace(*name)}, operatorTokenValue(*operatorTokenFlag))
+	if err != nil {
+		fmt.Fprintf(stderr, "token create: %v\n", err)
+		return 1
+	}
+	if *jsonOutput {
+		writeRawJSON(stdout, body)
+		return 0
+	}
+	printOperatorTokenCreated(stdout, resp)
+	return 0
+}
+
+func runTokenList(args []string, stdout io.Writer, stderr io.Writer) int {
+	flags := flag.NewFlagSet("sideplane token list", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+
+	serverURL := flags.String("server", "", "Sideplane server URL; can also be set with SIDEPLANE_SERVER_URL")
+	operatorTokenFlag := flags.String("operator-token", "", "operator bearer token; can also be set with SIDEPLANE_OPERATOR_TOKEN")
+	jsonOutput := flags.Bool("json", false, "print raw JSON response")
+	usage := "sideplane token list [--server URL] [--operator-token TOKEN] [--json]"
+	if commandHelpRequested(args) {
+		printCommandHelp(stdout, usage, flags)
+		return 0
+	}
+	if err := parseCommandFlags(flags, args, "json"); err != nil {
+		return 2
+	}
+	if flags.NArg() != 0 {
+		fmt.Fprintln(stderr, "usage: "+usage)
+		return 1
+	}
+
+	resp, body, err := getJSON[protocol.ListOperatorTokensResponse](context.Background(), serverURLValue(*serverURL), "/api/operator-tokens", operatorTokenValue(*operatorTokenFlag))
+	if err != nil {
+		fmt.Fprintf(stderr, "token list: %v\n", err)
+		return 1
+	}
+	if *jsonOutput {
+		writeRawJSON(stdout, body)
+		return 0
+	}
+	printOperatorTokensTable(stdout, resp.Tokens)
+	return 0
+}
+
+func runTokenRevoke(args []string, stdout io.Writer, stderr io.Writer) int {
+	flags := flag.NewFlagSet("sideplane token revoke", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+
+	serverURL := flags.String("server", "", "Sideplane server URL; can also be set with SIDEPLANE_SERVER_URL")
+	operatorTokenFlag := flags.String("operator-token", "", "operator bearer token; can also be set with SIDEPLANE_OPERATOR_TOKEN")
+	jsonOutput := flags.Bool("json", false, "print raw JSON response")
+	usage := "sideplane token revoke <id> [--server URL] [--operator-token TOKEN] [--json]"
+	if commandHelpRequested(args) {
+		printCommandHelp(stdout, usage, flags)
+		return 0
+	}
+	if err := parseCommandFlags(flags, args, "json"); err != nil {
+		return 2
+	}
+	if flags.NArg() != 1 {
+		fmt.Fprintln(stderr, "usage: "+usage)
+		return 1
+	}
+	tokenID := strings.TrimSpace(flags.Arg(0))
+	if tokenID == "" {
+		fmt.Fprintln(stderr, "token revoke: id is required")
+		return 1
+	}
+
+	body, err := apiJSONRequest(context.Background(), http.MethodDelete, serverURLValue(*serverURL), "/api/operator-tokens/"+url.PathEscape(tokenID), nil, operatorTokenValue(*operatorTokenFlag))
+	if err != nil {
+		fmt.Fprintf(stderr, "token revoke: %v\n", err)
+		return 1
+	}
+	if *jsonOutput {
+		writeRawJSON(stdout, body)
+		return 0
+	}
+	var resp protocol.RevokeOperatorTokenResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		fmt.Fprintf(stderr, "token revoke: decode response JSON: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "Operator token %s revoked.\n", resp.OperatorToken.ID)
+	return 0
+}
+
 func confirmNodeRemoval(stdout io.Writer, stdin io.Reader, nodeID string) (bool, error) {
 	fmt.Fprintf(stdout, "Remove node %q? [y/N] ", nodeID)
 	line, err := bufio.NewReader(stdin).ReadString('\n')
@@ -1497,6 +1625,30 @@ func writeJSONValue(w io.Writer, value any) {
 	encoder := json.NewEncoder(w)
 	encoder.SetIndent("", "  ")
 	encoder.Encode(value)
+}
+
+func printOperatorTokenCreated(w io.Writer, resp protocol.CreateOperatorTokenResponse) {
+	fmt.Fprintf(w, "operator token: %s\n", resp.Token)
+	fmt.Fprintf(w, "id: %s\n", resp.OperatorToken.ID)
+	fmt.Fprintf(w, "name: %s\n", resp.OperatorToken.Name)
+	fmt.Fprintln(w, "shown once: yes")
+}
+
+func printOperatorTokensTable(w io.Writer, tokens []protocol.OperatorToken) {
+	table := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(table, "ID\tNAME\tCREATED\tLAST USED\tREVOKED")
+	for _, token := range tokens {
+		fmt.Fprintf(
+			table,
+			"%s\t%s\t%s\t%s\t%s\n",
+			token.ID,
+			token.Name,
+			timeLabel(token.CreatedAt),
+			timePtrLabel(token.LastUsedAt),
+			timePtrLabel(token.RevokedAt),
+		)
+	}
+	table.Flush()
 }
 
 func printDesiredConfigSummary(w io.Writer, desired protocol.DesiredConfig) {
@@ -2021,6 +2173,13 @@ func timeLabel(ts time.Time) string {
 		return "-"
 	}
 	return ts.Format(time.RFC3339)
+}
+
+func timePtrLabel(ts *time.Time) string {
+	if ts == nil {
+		return "-"
+	}
+	return timeLabel(*ts)
 }
 
 func runtimeSummary(runtimes []protocol.RuntimeStatus) string {

@@ -27,3 +27,8 @@ type CreateOperatorTokenResponse struct {
 type ListOperatorTokensResponse struct {
 	Tokens []OperatorToken `json:"tokens"`
 }
+
+// RevokeOperatorTokenResponse returns metadata for the revoked operator token.
+type RevokeOperatorTokenResponse struct {
+	OperatorToken OperatorToken `json:"operatorToken"`
+}

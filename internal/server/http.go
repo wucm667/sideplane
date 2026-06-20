@@ -121,6 +121,8 @@ func NewHandlerWithConfig(cfg HandlerConfig) (http.Handler, error) {
 	mux.HandleFunc("/api/events", handler.eventsStream)
 	mux.HandleFunc("/api/events/tickets", handler.createEventTicket)
 	mux.HandleFunc("/api/audit", handler.auditEvents)
+	mux.HandleFunc("/api/operator-tokens", handler.operatorTokens)
+	mux.HandleFunc("/api/operator-tokens/", handler.operatorTokenRouter)
 	mux.HandleFunc("/api/signing-key", handler.publicSigningKey)
 	mux.HandleFunc("/api/config/desired", handler.desiredConfig)
 	mux.HandleFunc("/api/config/effective", handler.effectiveConfig)
@@ -283,6 +285,100 @@ func (h *handler) createEnrollmentToken(w http.ResponseWriter, r *http.Request) 
 	})
 
 	writeJSON(w, http.StatusCreated, resp)
+}
+
+func (h *handler) operatorTokens(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodPost:
+		h.createOperatorToken(w, r)
+	case http.MethodGet:
+		h.listOperatorTokens(w, r)
+	default:
+		w.Header().Set("Allow", "GET, POST")
+		writeAPIError(w, http.StatusMethodNotAllowed, http.StatusText(http.StatusMethodNotAllowed))
+	}
+}
+
+func (h *handler) createOperatorToken(w http.ResponseWriter, r *http.Request) {
+	if !h.authorizeOperator(w, r) {
+		return
+	}
+	var req protocol.CreateOperatorTokenRequest
+	if err := decodeJSONRequest(w, r, defaultJSONBodyLimit, &req); err != nil {
+		writeJSONDecodeError(w, err, "invalid operator token JSON")
+		return
+	}
+	name, err := store.ValidateOperatorTokenName(req.Name)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	now := time.Now().UTC()
+	resp, err := h.store.CreateOperatorToken(r.Context(), name, now)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "create operator token")
+		return
+	}
+	h.audit(r.Context(), protocol.AuditEvent{
+		Actor:     audit.ActorOperator,
+		Action:    audit.ActionOperatorTokenCreate,
+		Detail:    fmt.Sprintf("operator token created id=%s name=%q", resp.OperatorToken.ID, resp.OperatorToken.Name),
+		CreatedAt: now,
+	})
+	writeJSON(w, http.StatusCreated, resp)
+}
+
+func (h *handler) listOperatorTokens(w http.ResponseWriter, r *http.Request) {
+	if !h.authorizeOperator(w, r) {
+		return
+	}
+	tokens, err := h.store.ListOperatorTokens(r.Context())
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "list operator tokens")
+		return
+	}
+	h.audit(r.Context(), protocol.AuditEvent{
+		Actor:     audit.ActorOperator,
+		Action:    audit.ActionOperatorTokenList,
+		Detail:    fmt.Sprintf("operator token metadata listed count=%d", len(tokens)),
+		CreatedAt: time.Now().UTC(),
+	})
+	writeJSON(w, http.StatusOK, protocol.ListOperatorTokensResponse{Tokens: tokens})
+}
+
+func (h *handler) operatorTokenRouter(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		w.Header().Set("Allow", http.MethodDelete)
+		writeAPIError(w, http.StatusMethodNotAllowed, http.StatusText(http.StatusMethodNotAllowed))
+		return
+	}
+	if !h.authorizeOperator(w, r) {
+		return
+	}
+	tokenID := strings.TrimSpace(strings.TrimPrefix(r.URL.Path, "/api/operator-tokens/"))
+	if tokenID == "" || strings.Contains(tokenID, "/") {
+		writeAPIError(w, http.StatusNotFound, "operator token not found")
+		return
+	}
+
+	now := time.Now().UTC()
+	token, err := h.store.RevokeOperatorToken(r.Context(), tokenID, now)
+	if errors.Is(err, store.ErrOperatorTokenNotFound) {
+		writeAPIError(w, http.StatusNotFound, "operator token not found")
+		return
+	}
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "revoke operator token")
+		return
+	}
+	h.audit(r.Context(), protocol.AuditEvent{
+		Actor:     audit.ActorOperator,
+		Action:    audit.ActionOperatorTokenRevoke,
+		Detail:    fmt.Sprintf("operator token revoked id=%s name=%q", token.ID, token.Name),
+		CreatedAt: now,
+	})
+	writeJSON(w, http.StatusOK, protocol.RevokeOperatorTokenResponse{OperatorToken: token})
 }
 
 func (h *handler) enrollNode(w http.ResponseWriter, r *http.Request) {

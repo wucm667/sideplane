@@ -126,8 +126,36 @@ export interface RolloutActionResponse {
   rollout: Rollout
 }
 
+export interface OperatorToken {
+  id: string
+  name: string
+  createdAt: string
+  lastUsedAt?: string
+  revokedAt?: string
+}
+
+export interface CreateOperatorTokenRequest {
+  name: string
+}
+
+export interface CreateOperatorTokenResponse {
+  operatorToken: OperatorToken
+  token: string
+}
+
+export interface ListOperatorTokensResponse {
+  tokens: OperatorToken[]
+}
+
+export interface RevokeOperatorTokenResponse {
+  operatorToken: OperatorToken
+}
+
 export type AuditAction =
   | 'enrollment.token.create'
+  | 'operator.token.create'
+  | 'operator.token.list'
+  | 'operator.token.revoke'
   | 'node.enroll'
   | 'node.delete'
   | 'node.labels.update'
