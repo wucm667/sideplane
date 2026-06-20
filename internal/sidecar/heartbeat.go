@@ -120,8 +120,12 @@ func (c *HeartbeatClient) BuildHeartbeat(ctx context.Context) protocol.Heartbeat
 
 // SendHeartbeat POSTs a heartbeat to the configured server.
 func (c *HeartbeatClient) SendHeartbeat(ctx context.Context) (*protocol.HeartbeatResponse, error) {
+	return c.sendHeartbeatRequest(ctx, c.BuildHeartbeat(ctx))
+}
+
+func (c *HeartbeatClient) sendHeartbeatRequest(ctx context.Context, heartbeat protocol.HeartbeatRequest) (*protocol.HeartbeatResponse, error) {
 	var body bytes.Buffer
-	if err := json.NewEncoder(&body).Encode(c.BuildHeartbeat(ctx)); err != nil {
+	if err := json.NewEncoder(&body).Encode(heartbeat); err != nil {
 		return nil, fmt.Errorf("encode heartbeat: %w", err)
 	}
 
@@ -164,8 +168,16 @@ func RunHeartbeatLoop(ctx context.Context, client *HeartbeatClient, interval tim
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
+	var pending *protocol.HeartbeatRequest
 	for {
-		resp, err := client.SendHeartbeat(ctx)
+		// Latest-wins: failed heartbeats are retained only until the next
+		// cycle, when a fresh sample replaces any older unsent payload.
+		heartbeat := client.BuildHeartbeat(ctx)
+		pending = &heartbeat
+		resp, err := client.sendHeartbeatRequest(ctx, *pending)
+		if err == nil {
+			pending = nil
+		}
 		if report != nil {
 			report(resp, err)
 		}

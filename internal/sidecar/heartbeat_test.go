@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -140,6 +141,124 @@ func TestRunHeartbeatLoopSendsPeriodically(t *testing.T) {
 	}
 	if count.Load() < 2 {
 		t.Fatalf("heartbeats sent = %d, want at least 2", count.Load())
+	}
+}
+
+func TestRunHeartbeatLoopRetriesHeartbeatAfterFailure(t *testing.T) {
+	base := time.Date(2026, 6, 21, 10, 0, 0, 0, time.UTC)
+	var nowCalls atomic.Int32
+	var attempts atomic.Int32
+	var mu sync.Mutex
+	received := []protocol.HeartbeatRequest{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var got protocol.HeartbeatRequest
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Errorf("decode heartbeat request: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		mu.Lock()
+		received = append(received, got)
+		mu.Unlock()
+		if attempts.Add(1) == 1 {
+			http.Error(w, "temporary outage", http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(protocol.HeartbeatResponse{Accepted: true})
+	}))
+	defer server.Close()
+
+	client, err := NewHeartbeatClient(HeartbeatClientConfig{
+		ServerURL:      server.URL,
+		NodeID:         "node-retry",
+		NodeCredential: "test-credential",
+		Now: func() time.Time {
+			offset := nowCalls.Add(1) - 1
+			return base.Add(time.Duration(offset) * time.Minute)
+		},
+	})
+	if err != nil {
+		t.Fatalf("new heartbeat client: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	err = RunHeartbeatLoop(ctx, client, time.Millisecond, func(resp *protocol.HeartbeatResponse, err error) {
+		if resp != nil && resp.Accepted {
+			cancel()
+		}
+	})
+	if err != nil {
+		t.Fatalf("run heartbeat loop: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(received) != 2 {
+		t.Fatalf("received heartbeats = %d, want failed attempt plus retry", len(received))
+	}
+	if !received[1].SentAt.After(received[0].SentAt) {
+		t.Fatalf("retry heartbeat sentAt = %s, want newer than %s", received[1].SentAt, received[0].SentAt)
+	}
+}
+
+func TestRunHeartbeatLoopRetainsOnlyLatestUnsentHeartbeat(t *testing.T) {
+	base := time.Date(2026, 6, 21, 11, 0, 0, 0, time.UTC)
+	var nowCalls atomic.Int32
+	var attempts atomic.Int32
+	var mu sync.Mutex
+	received := []protocol.HeartbeatRequest{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var got protocol.HeartbeatRequest
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Errorf("decode heartbeat request: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		mu.Lock()
+		received = append(received, got)
+		mu.Unlock()
+		if attempts.Add(1) < 3 {
+			http.Error(w, "temporary outage", http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(protocol.HeartbeatResponse{Accepted: true})
+	}))
+	defer server.Close()
+
+	client, err := NewHeartbeatClient(HeartbeatClientConfig{
+		ServerURL:      server.URL,
+		NodeID:         "node-latest",
+		NodeCredential: "test-credential",
+		Now: func() time.Time {
+			offset := nowCalls.Add(1) - 1
+			return base.Add(time.Duration(offset) * time.Minute)
+		},
+	})
+	if err != nil {
+		t.Fatalf("new heartbeat client: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	err = RunHeartbeatLoop(ctx, client, time.Millisecond, func(resp *protocol.HeartbeatResponse, err error) {
+		if resp != nil && resp.Accepted {
+			cancel()
+		}
+	})
+	if err != nil {
+		t.Fatalf("run heartbeat loop: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(received) != 3 {
+		t.Fatalf("received heartbeats = %d, want two failures and latest recovery", len(received))
+	}
+	wantLatest := base.Add(2 * time.Minute)
+	if !received[2].SentAt.Equal(wantLatest) {
+		t.Fatalf("recovered heartbeat sentAt = %s, want latest %s", received[2].SentAt, wantLatest)
+	}
+	if !received[0].SentAt.Equal(base) || !received[1].SentAt.Equal(base.Add(time.Minute)) {
+		t.Fatalf("heartbeat attempts = %s, %s, %s; want one payload per cycle", received[0].SentAt, received[1].SentAt, received[2].SentAt)
 	}
 }
 
