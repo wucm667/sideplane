@@ -638,7 +638,7 @@ func (h *handler) createRollout(w http.ResponseWriter, r *http.Request) {
 	h.audit(r.Context(), protocol.AuditEvent{
 		Actor:     audit.ActorOperator,
 		Action:    audit.ActionRolloutCreate,
-		Detail:    fmt.Sprintf("rollout=%s nodes=%d runtime=%s live=%t", created.ID, len(nodeIDs), spec.RuntimeType, spec.Live),
+		Detail:    fmt.Sprintf("rollout=%s nodes=%d runtime=%s live=%t autoRollback=%t", created.ID, len(nodeIDs), spec.RuntimeType, spec.Live, spec.AutoRollbackOnFailure),
 		CreatedAt: now,
 	})
 	publishRolloutEvent(h.events, created)

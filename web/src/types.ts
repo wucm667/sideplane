@@ -68,6 +68,7 @@ export interface RolloutSpec {
   target: ProviderModelConfig
   batchSize?: number
   live: boolean
+  autoRollbackOnFailure?: boolean
   healthTimeout?: number
 }
 
@@ -78,6 +79,8 @@ export interface RolloutNodeProgress {
   lastError?: string
   startedAt?: string
   finishedAt?: string
+  rollbackJobId?: string
+  rolledBack?: boolean
 }
 
 export interface RolloutBatch {

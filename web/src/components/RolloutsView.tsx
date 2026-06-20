@@ -150,6 +150,7 @@ function RolloutCreateForm({
   const [batchSize, setBatchSize] = useState(1)
   const [live, setLive] = useState(false)
   const [confirmedLive, setConfirmedLive] = useState(false)
+  const [autoRollback, setAutoRollback] = useState(false)
   const [formError, setFormError] = useState<string | null>(null)
 
   const submit = async (event: FormEvent) => {
@@ -191,10 +192,12 @@ function RolloutCreateForm({
         target: { provider: provider.trim(), model: model.trim() },
         batchSize,
         live,
+        autoRollbackOnFailure: live ? autoRollback : undefined,
       },
     })
     if (rollout) {
       setConfirmedLive(false)
+      setAutoRollback(false)
     }
   }
 
@@ -247,6 +250,12 @@ function RolloutCreateForm({
               confirm
             </label>
           )}
+          {live && (
+            <label className="flex h-9 items-center gap-2 rounded-lg border border-[var(--sp-border)] bg-[var(--sp-surface-2)] px-3 text-xs text-[var(--sp-muted)]">
+              <input type="checkbox" checked={autoRollback} onChange={(event) => setAutoRollback(event.target.checked)} />
+              auto-rollback
+            </label>
+          )}
         </div>
       </div>
       {formError && <div className="mt-3 text-xs text-rose-600">{formError}</div>}
@@ -284,6 +293,11 @@ function RolloutDetail({
               <span className="rounded border border-[var(--sp-border)] bg-[var(--sp-surface-2)] px-2 py-0.5 text-[11px] font-semibold text-[var(--sp-muted)]">
                 {rollout.spec.live ? 'live' : 'dry-run'}
               </span>
+              {rollout.spec.autoRollbackOnFailure && (
+                <span className="rounded border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[11px] font-semibold text-amber-700">
+                  auto-rollback
+                </span>
+              )}
             </div>
             <div className="mt-2 text-xs text-[var(--sp-muted)]">{rolloutTargetLabel(rollout)} · {rolloutRuntimeLabel(rollout)} · batch {rollout.spec.batchSize || 1}</div>
             {rollout.pauseReason && <div className="mt-2 text-xs text-amber-700">{rollout.pauseReason}</div>}
@@ -366,6 +380,19 @@ function NodeProgressRow({ nodeId, node, progress, onOpenNode }: { nodeId: strin
           <span className="font-mono text-[var(--sp-faint)]">-</span>
         )}
         {progress?.lastError && <div className="mt-1 truncate text-rose-600" title={progress.lastError}>{progress.lastError}</div>}
+        {progress?.rollbackJobId ? (
+          <button
+            type="button"
+            className="mt-1 flex max-w-full items-center gap-1 truncate font-mono text-amber-700 hover:underline"
+            title={`rolled back via ${progress.rollbackJobId}`}
+            onClick={() => onOpenNode(nodeId)}
+          >
+            <span className="text-[10px] font-semibold uppercase tracking-wide">rollback</span>
+            {progress.rollbackJobId}
+          </button>
+        ) : (
+          progress?.rolledBack && <div className="mt-1 text-[10px] font-semibold uppercase tracking-wide text-amber-700">rollback attempted</div>
+        )}
       </div>
       <div className="flex justify-start sm:justify-end">
         {node?.drift ? (

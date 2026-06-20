@@ -379,14 +379,15 @@ func runRolloutCreate(args []string, stdout io.Writer, stderr io.Writer) int {
 	batchSize := flags.Int("batch-size", 1, "sequential rollout batch size")
 	live := flags.Bool("live", false, "request live config apply instead of dry-run")
 	yes := flags.Bool("yes", false, "confirm live rollout")
+	autoRollback := flags.Bool("auto-rollback", false, "on a live batch failure, roll back already-applied nodes before pausing")
 	healthTimeout := flags.Duration("health-timeout", 0, "batch health timeout; server default is used when omitted")
 	jsonOutput := flags.Bool("json", false, "print raw JSON response")
-	usage := "sideplane rollout create (--selector key=value[,key2=value2] | --node NODE [--node NODE...]) --provider PROVIDER --model MODEL [--runtime-type TYPE] [--profile PROFILE] [--batch-size N] [--live --yes] [--health-timeout DURATION] [--server URL] [--operator-token TOKEN] [--json]"
+	usage := "sideplane rollout create (--selector key=value[,key2=value2] | --node NODE [--node NODE...]) --provider PROVIDER --model MODEL [--runtime-type TYPE] [--profile PROFILE] [--batch-size N] [--live --yes] [--auto-rollback] [--health-timeout DURATION] [--server URL] [--operator-token TOKEN] [--json]"
 	if commandHelpRequested(args) {
 		printCommandHelp(stdout, usage, flags)
 		return 0
 	}
-	if err := parseCommandFlags(flags, args, "live", "yes", "json"); err != nil {
+	if err := parseCommandFlags(flags, args, "live", "yes", "auto-rollback", "json"); err != nil {
 		return 2
 	}
 	if flags.NArg() != 0 {
@@ -395,6 +396,10 @@ func runRolloutCreate(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 	if *live && !*yes {
 		fmt.Fprintln(stderr, "rollout create: --live requires --yes")
+		return 1
+	}
+	if *autoRollback && !*live {
+		fmt.Fprintln(stderr, "rollout create: --auto-rollback requires --live")
 		return 1
 	}
 	if strings.TrimSpace(*provider) == "" || strings.TrimSpace(*model) == "" {
@@ -425,14 +430,15 @@ func runRolloutCreate(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 
 	req := protocol.CreateRolloutRequest{Spec: protocol.RolloutSpec{
-		Selector:      selectorMap,
-		NodeIDs:       trimmedNodes,
-		RuntimeType:   strings.TrimSpace(*runtimeType),
-		Profile:       strings.TrimSpace(*profile),
-		Target:        protocol.ProviderModelConfig{Provider: strings.TrimSpace(*provider), Model: strings.TrimSpace(*model)},
-		BatchSize:     *batchSize,
-		Live:          *live,
-		HealthTimeout: *healthTimeout,
+		Selector:              selectorMap,
+		NodeIDs:               trimmedNodes,
+		RuntimeType:           strings.TrimSpace(*runtimeType),
+		Profile:               strings.TrimSpace(*profile),
+		Target:                protocol.ProviderModelConfig{Provider: strings.TrimSpace(*provider), Model: strings.TrimSpace(*model)},
+		BatchSize:             *batchSize,
+		Live:                  *live,
+		AutoRollbackOnFailure: *autoRollback,
+		HealthTimeout:         *healthTimeout,
 	}}
 	resp, body, err := postJSON[protocol.CreateRolloutResponse](context.Background(), serverURLValue(*serverURL), "/api/rollouts", req, operatorTokenValue(*operatorTokenFlag))
 	if err != nil {
@@ -2277,6 +2283,9 @@ func printRolloutSummary(w io.Writer, rollout protocol.Rollout) {
 	fmt.Fprintf(w, "Runtime: %s\n", rolloutRuntimeLabel(rollout))
 	fmt.Fprintf(w, "Target: %s\n", providerModelLabel(rollout.Spec.Target))
 	fmt.Fprintf(w, "Batch size: %d\n", rollout.Spec.BatchSize)
+	if rollout.Spec.AutoRollbackOnFailure {
+		fmt.Fprintln(w, "Auto-rollback: on")
+	}
 	fmt.Fprintf(w, "Nodes: %s\n", rolloutNodeIDsLabel(rollout.Spec.NodeIDs))
 	if strings.TrimSpace(rollout.PauseReason) != "" {
 		fmt.Fprintf(w, "Pause reason: %s\n", rollout.PauseReason)
@@ -2321,22 +2330,33 @@ func printRolloutDetail(w io.Writer, rollout protocol.Rollout) {
 
 	fmt.Fprintln(w, "Nodes:")
 	nodeTable := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(nodeTable, "  BATCH\tNODE\tSTATE\tJOB\tERROR")
+	fmt.Fprintln(nodeTable, "  BATCH\tNODE\tSTATE\tJOB\tROLLBACK\tERROR")
 	for _, batch := range rollout.Batches {
 		for _, nodeID := range batch.NodeIDs {
 			progress := batch.Nodes[nodeID]
 			fmt.Fprintf(
 				nodeTable,
-				"  %d\t%s\t%s\t%s\t%s\n",
+				"  %d\t%s\t%s\t%s\t%s\t%s\n",
 				batch.Index,
 				valueOrDash(nodeID),
 				valueOrDash(string(progress.State)),
 				valueOrDash(progress.JobID),
+				valueOrDash(rolloutRollbackLabel(progress)),
 				valueOrDash(progress.LastError),
 			)
 		}
 	}
 	nodeTable.Flush()
+}
+
+func rolloutRollbackLabel(progress protocol.RolloutNodeProgress) string {
+	if strings.TrimSpace(progress.RollbackJobID) != "" {
+		return progress.RollbackJobID
+	}
+	if progress.RolledBack {
+		return "attempted"
+	}
+	return ""
 }
 
 func rolloutMode(rollout protocol.Rollout) string {
