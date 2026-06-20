@@ -2509,11 +2509,34 @@ func TestAuditAPIRecordsFleetOperations(t *testing.T) {
 }
 
 func TestOperatorWorkflowEndToEnd(t *testing.T) {
-	nodeStore := store.NewMemoryNodeStore()
+	ctx := context.Background()
+	nodeStore, err := store.OpenSQLiteNodeStore(ctx, filepath.Join(t.TempDir(), "sideplane.db"))
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := nodeStore.Close(); err != nil {
+			t.Fatalf("close sqlite store: %v", err)
+		}
+	})
+	keyPair, err := spcrypto.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("generate signing key: %v", err)
+	}
+	schemaVersion, err := nodeStore.SchemaVersion(ctx)
+	if err != nil {
+		t.Fatalf("read schema version: %v", err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	clock := newRolloutTestClock(now)
 	handler, err := NewHandlerWithConfig(HandlerConfig{
-		Store:         nodeStore,
-		Freshness:     DefaultFreshnessPolicy(),
-		OperatorToken: "operator-token",
+		Store:          nodeStore,
+		Freshness:      FreshnessPolicy{StaleAfter: time.Minute, OfflineAfter: 5 * time.Minute, Now: clock.Now},
+		OperatorToken:  "operator-token",
+		SigningKeyPair: keyPair,
+		SchemaVersion:  schemaVersion,
+		StartedAt:      now.Add(-time.Minute),
+		Now:            clock.Now,
 	})
 	if err != nil {
 		t.Fatalf("build handler: %v", err)
@@ -2554,6 +2577,17 @@ func TestOperatorWorkflowEndToEnd(t *testing.T) {
 		t.Fatalf("nodes = %#v, want fresh node-e2e", nodesResp.Nodes)
 	}
 
+	labelsResp := doJSONRequest[protocol.NodeLabelsResponse](t, client, http.MethodPut, server.URL+"/api/nodes/node-e2e/labels", "operator-token", protocol.NodeLabelsRequest{
+		Labels: map[string]string{"role": "canary"},
+	})
+	if labelsResp.Labels["role"] != "canary" {
+		t.Fatalf("labels = %#v, want role=canary", labelsResp.Labels)
+	}
+	nodesResp = doJSONRequest[protocol.ListNodesResponse](t, client, http.MethodGet, server.URL+"/api/nodes?selector=role=canary", "", nil)
+	if len(nodesResp.Nodes) != 1 || nodesResp.Nodes[0].Labels["role"] != "canary" {
+		t.Fatalf("selector nodes = %#v, want labeled node-e2e", nodesResp.Nodes)
+	}
+
 	probeJob := doJSONRequest[protocol.Job](t, client, http.MethodPost, server.URL+"/api/nodes/node-e2e/jobs", "operator-token", protocol.CreateJobRequest{Type: protocol.JobTypeDeepProbe})
 	if probeJob.Type != protocol.JobTypeDeepProbe || probeJob.Status != protocol.JobStatusPending {
 		t.Fatalf("probe job = %#v, want pending deep_probe", probeJob)
@@ -2575,7 +2609,7 @@ func TestOperatorWorkflowEndToEnd(t *testing.T) {
 		ConfigSnapshots: []protocol.RuntimeConfigSnapshot{{
 			RuntimeName: "hermes",
 			RuntimeType: "hermes",
-			ConfigPath:  "/tmp/sideplane-test/hermes/config.yaml",
+			ConfigPath:  "/sideplane-test/hermes/config.yaml",
 			Source:      "file",
 			Provider:    "anthropic",
 			Model:       "claude-3.7-sonnet",
@@ -2593,6 +2627,14 @@ func TestOperatorWorkflowEndToEnd(t *testing.T) {
 	doJSONRequest[protocol.DesiredConfig](t, client, http.MethodPut, server.URL+"/api/config/desired", "operator-token", protocol.DesiredConfig{
 		Global: protocol.ProviderModelConfig{Provider: "openai", Model: "gpt-4o"},
 	})
+	preview := doJSONRequest[protocol.EffectiveConfigResponse](t, client, http.MethodPost, server.URL+"/api/config/effective/preview", "operator-token", protocol.EffectiveConfigPreviewRequest{
+		NodeID:      "node-e2e",
+		RuntimeType: "hermes",
+		Desired:     protocol.ProviderModelConfig{Provider: "openai", Model: "gpt-4o-mini"},
+	})
+	if preview.Effective.Model != "gpt-4o-mini" || preview.Actual == nil || len(preview.Diff) == 0 {
+		t.Fatalf("preview = %#v, want proposed model, actual snapshot, and diff", preview)
+	}
 	applyJob := doJSONRequest[protocol.Job](t, client, http.MethodPost, server.URL+"/api/nodes/node-e2e/config-apply", "operator-token", protocol.ConfigApplyRequest{})
 	if applyJob.Type != protocol.JobTypeConfigApply || applyJob.Status != protocol.JobStatusPending {
 		t.Fatalf("apply job = %#v, want pending config_apply", applyJob)
@@ -2608,7 +2650,7 @@ func TestOperatorWorkflowEndToEnd(t *testing.T) {
 	if signed.Plan.Mode != protocol.ConfigPlanModeDryRun || !signed.Plan.Body.DryRun {
 		t.Fatalf("signed plan mode=%q dryRun=%t, want dry-run", signed.Plan.Mode, signed.Plan.Body.DryRun)
 	}
-	if signed.Plan.Body.Profile != "/tmp/sideplane-test/hermes/config.yaml" {
+	if signed.Plan.Body.Profile != "/sideplane-test/hermes/config.yaml" {
 		t.Fatalf("signed plan profile = %q, want fake config path", signed.Plan.Body.Profile)
 	}
 
@@ -2628,6 +2670,57 @@ func TestOperatorWorkflowEndToEnd(t *testing.T) {
 		ResultJSON: string(applyResult),
 	})
 
+	rolloutResp := doJSONRequest[protocol.CreateRolloutResponse](t, client, http.MethodPost, server.URL+"/api/rollouts", "operator-token", protocol.CreateRolloutRequest{
+		Spec: protocol.RolloutSpec{
+			Selector:    map[string]string{"role": "canary"},
+			RuntimeType: "hermes",
+			Target:      protocol.ProviderModelConfig{Provider: "openai", Model: "gpt-4o"},
+			BatchSize:   1,
+		},
+	})
+	if rolloutResp.Rollout.State != protocol.RolloutStatePending || len(rolloutResp.Rollout.Spec.NodeIDs) != 1 || rolloutResp.Rollout.Spec.NodeIDs[0] != "node-e2e" {
+		t.Fatalf("created rollout = %#v, want pending selector rollout for node-e2e", rolloutResp.Rollout)
+	}
+	orchestrator := NewRolloutOrchestrator(RolloutOrchestratorConfig{
+		Store:      nodeStore,
+		Freshness:  FreshnessPolicy{StaleAfter: time.Minute, OfflineAfter: 5 * time.Minute, Now: clock.Now},
+		SigningKey: keyPair,
+		Now:        clock.Now,
+	})
+	if err := orchestrator.ReconcileOnce(ctx); err != nil {
+		t.Fatalf("reconcile dispatch: %v", err)
+	}
+	dispatched, err := nodeStore.GetRollout(ctx, rolloutResp.Rollout.ID)
+	if err != nil {
+		t.Fatalf("get dispatched rollout: %v", err)
+	}
+	if dispatched == nil || dispatched.State != protocol.RolloutStateRunning {
+		t.Fatalf("dispatched rollout = %#v, want running", dispatched)
+	}
+	rolloutJobID := dispatched.Batches[0].Nodes["node-e2e"].JobID
+	if rolloutJobID == "" || dispatched.Batches[0].Nodes["node-e2e"].State != protocol.RolloutNodeStateDispatched {
+		t.Fatalf("rollout node progress = %#v, want dispatched with job", dispatched.Batches[0].Nodes["node-e2e"])
+	}
+	claimedRolloutJob := doJSONRequest[protocol.Job](t, client, http.MethodGet, server.URL+"/api/sidecar/jobs/next?nodeId=node-e2e", enrollResp.NodeCredential, nil)
+	if claimedRolloutJob.ID != rolloutJobID || claimedRolloutJob.Status != protocol.JobStatusClaimed {
+		t.Fatalf("claimed rollout job = %#v, want %s claimed", claimedRolloutJob, rolloutJobID)
+	}
+	submitJobResult(t, client, server.URL, rolloutJobID, enrollResp.NodeCredential, protocol.JobResultRequest{
+		Status:     protocol.JobStatusCompleted,
+		ResultJSON: string(applyResult),
+	})
+	clock.Set(now.Add(time.Second))
+	if err := orchestrator.ReconcileOnce(ctx); err != nil {
+		t.Fatalf("reconcile completion: %v", err)
+	}
+	completed, err := nodeStore.GetRollout(ctx, rolloutResp.Rollout.ID)
+	if err != nil {
+		t.Fatalf("get completed rollout: %v", err)
+	}
+	if completed == nil || completed.State != protocol.RolloutStateCompleted || completed.Batches[0].Nodes["node-e2e"].State != protocol.RolloutNodeStateSucceeded {
+		t.Fatalf("completed rollout = %#v, want completed with succeeded node", completed)
+	}
+
 	auditResp := doJSONRequest[protocol.ListAuditEventsResponse](t, client, http.MethodGet, server.URL+"/api/audit", "", nil)
 	wantActions := map[string]bool{
 		audit.ActionEnrollmentTokenCreate: false,
@@ -2636,16 +2729,59 @@ func TestOperatorWorkflowEndToEnd(t *testing.T) {
 		audit.ActionJobComplete:           false,
 		audit.ActionConfigApply:           false,
 		audit.ActionDesiredConfigUpdate:   false,
+		audit.ActionRolloutCreate:         false,
+		audit.ActionNodeLabelsUpdate:      false,
 	}
 	for _, event := range auditResp.Events {
 		if _, ok := wantActions[event.Action]; ok {
 			wantActions[event.Action] = true
+		}
+		if event.Actor == audit.ActorOperator && event.ActorName != "bootstrap" {
+			t.Fatalf("operator audit actorName = %q, want bootstrap in event %#v", event.ActorName, event)
 		}
 	}
 	for action, seen := range wantActions {
 		if !seen {
 			t.Fatalf("audit action %q not recorded in %#v", action, auditResp.Events)
 		}
+	}
+
+	req, err := http.NewRequest(http.MethodGet, server.URL+"/api/audit/export?format=ndjson&limit=50", nil)
+	if err != nil {
+		t.Fatalf("build audit export request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer operator-token")
+	res, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("export audit: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("audit export status = %d, want 200", res.StatusCode)
+	}
+	exportedActions := map[string]bool{}
+	scanner := bufio.NewScanner(res.Body)
+	for scanner.Scan() {
+		var event protocol.AuditEvent
+		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
+			t.Fatalf("decode audit export line: %v", err)
+		}
+		exportedActions[event.Action] = true
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("scan audit export: %v", err)
+	}
+	if !exportedActions[audit.ActionRolloutCreate] || !exportedActions[audit.ActionConfigApply] {
+		t.Fatalf("exported audit actions = %#v, want rollout.create and config.apply", exportedActions)
+	}
+
+	whoami := doJSONRequest[protocol.WhoamiResponse](t, client, http.MethodGet, server.URL+"/api/whoami", "operator-token", nil)
+	if whoami.Scope != protocol.OperatorTokenScopeAdmin || whoami.TokenName != "bootstrap" {
+		t.Fatalf("whoami = %#v, want bootstrap admin", whoami)
+	}
+	status := doJSONRequest[protocol.ServerStatusResponse](t, client, http.MethodGet, server.URL+"/api/status", "operator-token", nil)
+	if status.NodeCount != 1 || status.RolloutCount != 1 || status.SchemaVersion != schemaVersion || status.UptimeSeconds < 60 {
+		t.Fatalf("status = %#v, want one node, one rollout, schema %d, uptime >= 60", status, schemaVersion)
 	}
 }
 
