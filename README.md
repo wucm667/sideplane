@@ -423,7 +423,7 @@ Generate shell completion with `sideplane completion bash` or
 | `sideplane enrollment create` | Create a one-time sidecar enrollment token. | `--server`, `--operator-token`, `--expires-in` |
 | `sideplane webhook create/list/delete` | Manage alert webhooks. | `--server`, `--operator-token`, `--url`, `--event`, `--sign`, `--json` |
 | `sideplane settings get/set` | Show or update server settings (expected sidecar version). | `--server`, `--operator-token`, `--expected-sidecar-version`, `--json` |
-| `sideplane version` | Print CLI version. | none |
+| `sideplane version` | Print CLI version. | `--json` |
 
 ## Web Operator Notes
 
@@ -483,6 +483,8 @@ workflow.
 - [Operations guide](docs/operations.md)
 - [Fleet rollouts](docs/fleet-rollouts.md)
 - [Signed config apply pipeline](docs/config-apply-pipeline.md)
+- [Release runbook](docs/releasing.md)
+- [Pre-release checklist](RELEASE.md)
 - [Live-write preflight](docs/live-write-preflight.md)
 - [Read-only sidecar deployment](docs/read-only-sidecar-deployment.md)
 - [Real-machine read-only smoke test](docs/real-machine-readonly-smoke-test.md)

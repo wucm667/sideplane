@@ -90,9 +90,12 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		printHelp(stdout)
 		return 0
 	}
-	if len(args) == 1 && (args[0] == "version" || args[0] == "--version") {
+	if len(args) == 1 && args[0] == "--version" {
 		fmt.Fprintln(stdout, buildinfo.Format("sideplane"))
 		return 0
+	}
+	if args[0] == "version" {
+		return runVersion(args[1:], stdout, stderr)
 	}
 	if args[0] == "config-file" && len(args) >= 2 && args[1] == "path" {
 		return runConfigFilePath(args[2:], stdout, stderr)
@@ -310,6 +313,47 @@ func runConfigFilePath(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 1
 	}
 	fmt.Fprintln(stdout, resolvedCLIConfigPath())
+	return 0
+}
+
+func runVersion(args []string, stdout io.Writer, stderr io.Writer) int {
+	flags := flag.NewFlagSet("sideplane version", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	jsonOutput := flags.Bool("json", false, "print JSON output")
+	usage := "sideplane version [--json]"
+	if commandHelpRequested(args) {
+		printCommandHelp(stdout, usage, flags)
+		return 0
+	}
+	if err := parseCommandFlags(flags, args, "json"); err != nil {
+		return 2
+	}
+	if flags.NArg() != 0 {
+		fmt.Fprintln(stderr, "usage: "+usage)
+		return 1
+	}
+	if *jsonOutput {
+		version, commit, buildDate := buildinfo.Labels()
+		resp := struct {
+			Binary    string `json:"binary"`
+			Version   string `json:"version"`
+			Commit    string `json:"commit,omitempty"`
+			BuildDate string `json:"buildDate,omitempty"`
+		}{
+			Binary:    "sideplane",
+			Version:   version,
+			Commit:    commit,
+			BuildDate: buildDate,
+		}
+		encoder := json.NewEncoder(stdout)
+		encoder.SetIndent("", "  ")
+		if err := encoder.Encode(resp); err != nil {
+			fmt.Fprintf(stderr, "version: encode JSON: %v\n", err)
+			return 1
+		}
+		return 0
+	}
+	fmt.Fprintln(stdout, buildinfo.Format("sideplane"))
 	return 0
 }
 

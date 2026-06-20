@@ -1202,6 +1202,23 @@ func TestVersionCommand(t *testing.T) {
 	if got := stdout.String(); !strings.Contains(got, "sideplane dev") {
 		t.Fatalf("stdout = %q, want version", got)
 	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"version", "--json"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("json run returned %d, stderr=%q", code, stderr.String())
+	}
+	var got struct {
+		Binary  string `json:"binary"`
+		Version string `json:"version"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode JSON version: %v", err)
+	}
+	if got.Binary != "sideplane" || got.Version != "dev" {
+		t.Fatalf("json version = %+v, want sideplane/dev", got)
+	}
 }
 
 func TestProbeCreatesDeepProbeJob(t *testing.T) {
