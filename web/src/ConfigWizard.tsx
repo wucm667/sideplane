@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { apiErrorMessage, formatDate } from './helpers.ts'
+import { apiErrorMessage, apiURL, formatDate } from './helpers.ts'
 import type { ConfigApplyResult, ConfigApplyStep, DesiredConfig, DesiredConfigHistoryEntry, EffectiveConfigPreviewRequest, EffectiveConfigResponse, Job, ListDesiredConfigHistoryResponse, RevertDesiredConfigResponse } from './types.ts'
 
 const WIZARD_STEPS = ['Edit', 'Review', 'Apply', 'Done'] as const
@@ -70,7 +70,7 @@ export default function ConfigWizard({
       headers.set('Content-Type', 'application/json')
       const token = operatorToken.trim()
       if (token) headers.set('Authorization', `Bearer ${token}`)
-      return fetch(url, { ...init, headers })
+      return fetch(apiURL(url), { ...init, headers })
     },
     [operatorToken],
   )
@@ -206,7 +206,7 @@ export default function ConfigWizard({
     setApplyStatus(null)
     setStep('Apply')
     try {
-      const current: DesiredConfig = await fetch('/api/config/desired').then((res) => {
+      const current: DesiredConfig = await fetch(apiURL('/api/config/desired')).then((res) => {
         if (!res.ok) return failMessage(res).then((message) => { throw new Error(message) })
         return res.json()
       })

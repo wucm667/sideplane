@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react'
-import { formatDate, formatRelativeTime, rolloutBadgeClasses } from '../helpers.ts'
+import { apiURL, formatDate, formatRelativeTime, rolloutBadgeClasses } from '../helpers.ts'
 import type { CreateRolloutRequest, ListRolloutTemplatesResponse, NodeStatus, Rollout, RolloutAction, RolloutBatch, RolloutNodeProgress, RolloutTemplate } from '../types.ts'
 import { TableMessage } from './FleetOverview.tsx'
 
@@ -173,7 +173,7 @@ function RolloutCreateForm({
       return
     }
     try {
-      const res = await fetch('/api/rollout-templates', { headers: authHeaders() })
+      const res = await fetch(apiURL('/api/rollout-templates'), { headers: authHeaders() })
       if (!res.ok) return
       const data = (await res.json()) as ListRolloutTemplatesResponse
       setTemplates(data.templates ?? [])
@@ -222,7 +222,7 @@ function RolloutCreateForm({
     setFormError(null)
     setTemplateMessage(null)
     try {
-      const res = await fetch('/api/rollout-templates', {
+      const res = await fetch(apiURL('/api/rollout-templates'), {
         method: 'POST',
         headers: authHeaders(),
         body: JSON.stringify({ name, spec }),

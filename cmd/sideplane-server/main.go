@@ -233,7 +233,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 
 	webMode := "embedded"
 	if *webDir != "" {
-		webHandler, err := server.NewWebHandler(*webDir, handler)
+		webHandler, err := server.NewWebHandlerWithBase(*webDir, handler, normalizedBasePath)
 		if err != nil {
 			logger.Error("configure web-dir", "web_dir", *webDir, "error", err)
 			return 1
@@ -246,7 +246,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 			logger.Error("configure embedded web assets", "error", err)
 			return 1
 		}
-		handler = server.NewEmbeddedWebHandler(distFS, handler)
+		handler = server.NewEmbeddedWebHandlerWithBase(distFS, handler, normalizedBasePath)
 	}
 	handler, err = server.NewBasePathHandler(normalizedBasePath, handler)
 	if err != nil {

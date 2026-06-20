@@ -1,6 +1,8 @@
 package server
 
 import (
+	"bytes"
+	"encoding/json"
 	"io/fs"
 	"net/http"
 	"os"
@@ -34,6 +36,16 @@ func isAPIPath(path string) bool {
 // built), requests that would fall back to it return 404 instead of serving a
 // directory listing.
 func NewWebHandler(webDir string, api http.Handler) (http.Handler, error) {
+	return NewWebHandlerWithBase(webDir, api, "")
+}
+
+// NewWebHandlerWithBase wraps api with a static-file handler and injects the
+// configured base path into index.html for the browser client.
+func NewWebHandlerWithBase(webDir string, api http.Handler, basePath string) (http.Handler, error) {
+	normalizedBasePath, err := NormalizeBasePath(basePath)
+	if err != nil {
+		return nil, err
+	}
 	root, err := filepath.Abs(webDir)
 	if err != nil {
 		return nil, err
@@ -54,7 +66,7 @@ func NewWebHandler(webDir string, api http.Handler) (http.Handler, error) {
 			return
 		}
 
-		serveWebAsset(w, r, root, fileServer)
+		serveWebAsset(w, r, root, fileServer, normalizedBasePath)
 	})
 	return securityHeaders(webHandler), nil
 }
@@ -62,6 +74,16 @@ func NewWebHandler(webDir string, api http.Handler) (http.Handler, error) {
 // NewEmbeddedWebHandler wraps api with a static-file handler that serves assets
 // from an embedded filesystem for non-API requests.
 func NewEmbeddedWebHandler(assets fs.FS, api http.Handler) http.Handler {
+	return NewEmbeddedWebHandlerWithBase(assets, api, "")
+}
+
+// NewEmbeddedWebHandlerWithBase wraps api with an embedded static-file handler
+// and injects the configured base path into index.html.
+func NewEmbeddedWebHandlerWithBase(assets fs.FS, api http.Handler, basePath string) http.Handler {
+	normalizedBasePath, err := NormalizeBasePath(basePath)
+	if err != nil {
+		normalizedBasePath = ""
+	}
 	fileServer := http.FileServer(http.FS(assets))
 
 	webHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -70,7 +92,7 @@ func NewEmbeddedWebHandler(assets fs.FS, api http.Handler) http.Handler {
 			return
 		}
 
-		serveEmbeddedWebAsset(w, r, assets, fileServer)
+		serveEmbeddedWebAsset(w, r, assets, fileServer, normalizedBasePath)
 	})
 	return securityHeaders(webHandler)
 }
@@ -79,7 +101,7 @@ func NewEmbeddedWebHandler(assets fs.FS, api http.Handler) http.Handler {
 // for unknown SPA routes. Paths that look like static assets (have a file
 // extension) return 404 when the file is missing, so broken asset references
 // are not silently masked by the SPA shell.
-func serveWebAsset(w http.ResponseWriter, r *http.Request, root string, fileServer http.Handler) {
+func serveWebAsset(w http.ResponseWriter, r *http.Request, root string, fileServer http.Handler, basePath string) {
 	requestPath := filepath.Clean("/" + r.URL.Path)
 	cleanRoot := filepath.Clean(root)
 
@@ -109,10 +131,10 @@ func serveWebAsset(w http.ResponseWriter, r *http.Request, root string, fileServ
 	// Unknown route without a file extension: fall back to index.html for
 	// SPA routing. If index.html does not exist, surface a 404 rather than
 	// a directory listing.
-	serveIndex(w, r, cleanRoot)
+	serveIndex(w, r, cleanRoot, basePath)
 }
 
-func serveEmbeddedWebAsset(w http.ResponseWriter, r *http.Request, assets fs.FS, fileServer http.Handler) {
+func serveEmbeddedWebAsset(w http.ResponseWriter, r *http.Request, assets fs.FS, fileServer http.Handler, basePath string) {
 	requestPath := path.Clean("/" + r.URL.Path)
 	assetPath := strings.TrimPrefix(requestPath, "/")
 	if assetPath == "" {
@@ -130,7 +152,7 @@ func serveEmbeddedWebAsset(w http.ResponseWriter, r *http.Request, assets fs.FS,
 		return
 	}
 
-	serveEmbeddedIndex(w, r, assets)
+	serveEmbeddedIndex(w, r, assets, basePath)
 }
 
 // hasFileExtension reports whether the last path segment has a file
@@ -140,17 +162,22 @@ func hasFileExtension(path string) bool {
 	return filepath.Ext(filepath.Base(path)) != ""
 }
 
-func serveIndex(w http.ResponseWriter, r *http.Request, root string) {
+func serveIndex(w http.ResponseWriter, r *http.Request, root string, basePath string) {
 	index := filepath.Join(root, "index.html")
 	info, err := os.Stat(index)
 	if err != nil || info.IsDir() {
 		http.NotFound(w, r)
 		return
 	}
-	http.ServeFile(w, r, index)
+	data, err := os.ReadFile(index)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	serveIndexHTML(w, r, data, basePath)
 }
 
-func serveEmbeddedIndex(w http.ResponseWriter, r *http.Request, assets fs.FS) {
+func serveEmbeddedIndex(w http.ResponseWriter, r *http.Request, assets fs.FS, basePath string) {
 	info, err := fs.Stat(assets, "index.html")
 	if err != nil || info.IsDir() {
 		http.NotFound(w, r)
@@ -161,11 +188,28 @@ func serveEmbeddedIndex(w http.ResponseWriter, r *http.Request, assets fs.FS) {
 		http.NotFound(w, r)
 		return
 	}
+	serveIndexHTML(w, r, data, basePath)
+}
+
+func serveIndexHTML(w http.ResponseWriter, r *http.Request, data []byte, basePath string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	if r.Method != http.MethodHead {
-		w.Write(data)
+		_, _ = w.Write(injectWebBase(data, basePath))
 	}
+}
+
+func injectWebBase(data []byte, basePath string) []byte {
+	baseJSON, err := json.Marshal(basePath)
+	if err != nil {
+		baseJSON = []byte(`""`)
+	}
+	script := []byte(`<script>window.__SIDEPLANE_BASE__ = ` + string(baseJSON) + `;</script>`)
+	headClose := []byte("</head>")
+	if bytes.Contains(data, headClose) {
+		return bytes.Replace(data, headClose, append(script, headClose...), 1)
+	}
+	return append(script, data...)
 }
 
 // errNotADirectory is returned when --web-dir points at something other than a

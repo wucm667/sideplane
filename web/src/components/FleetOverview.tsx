@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { apiErrorMessage, compactHash, fleetOverviewMetrics, formatDate, formatRelativeTime, hasActiveDeepProbe, runtimeKey, runtimeLabel, stateBadgeClasses } from '../helpers.ts'
+import { apiErrorMessage, apiURL, compactHash, fleetOverviewMetrics, formatDate, formatRelativeTime, hasActiveDeepProbe, runtimeKey, runtimeLabel, stateBadgeClasses } from '../helpers.ts'
 import type { FleetOverviewMetrics } from '../helpers.ts'
 import type { BulkJobResponse, BulkNodeLabelsResponse, Job, NodeStatus, Rollout } from '../types.ts'
 
@@ -104,7 +104,7 @@ export function FleetOverview({
     setBulkError(null)
     setBulkMessage(null)
     try {
-      const res = await fetch('/api/jobs/bulk', {
+      const res = await fetch(apiURL('/api/jobs/bulk'), {
         method: 'POST',
         headers: authHeaders(),
         body: JSON.stringify({ nodeIds: selectedIds, type: 'deep_probe' }),
@@ -136,7 +136,7 @@ export function FleetOverview({
     setBulkError(null)
     setBulkMessage(null)
     try {
-      const res = await fetch('/api/nodes/labels', {
+      const res = await fetch(apiURL('/api/nodes/labels'), {
         method: 'PUT',
         headers: authHeaders(),
         body: JSON.stringify({ nodeIds: selectedIds, labels }),

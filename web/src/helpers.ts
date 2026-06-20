@@ -13,8 +13,32 @@ const ACTIVE_JOB_STATUSES: JobStatus[] = ['pending', 'claimed']
 const OPERATOR_TOKEN_STORAGE_KEY = 'sideplane.operatorToken'
 const THEME_STORAGE_KEY = 'sideplane.theme'
 
+declare global {
+  interface Window {
+    __SIDEPLANE_BASE__?: string
+  }
+}
+
 export type View = 'fleet' | 'node' | 'rollouts' | 'activity' | 'enrollment'
 export type Theme = 'light' | 'dark'
+
+export function sideplaneBasePath(): string {
+  if (typeof window === 'undefined') return ''
+  const raw = typeof window.__SIDEPLANE_BASE__ === 'string' ? window.__SIDEPLANE_BASE__.trim() : ''
+  if (!raw || raw === '/') return ''
+  const withLeadingSlash = raw.startsWith('/') ? raw : `/${raw}`
+  return withLeadingSlash.replace(/\/+$/, '')
+}
+
+export function apiURL(path: string): string {
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`
+  return `${sideplaneBasePath()}${normalizedPath}`
+}
+
+export function sideplaneServerURL(): string {
+  if (typeof window === 'undefined') return ''
+  return `${window.location.origin}${sideplaneBasePath()}`
+}
 
 // fuzzyMatch reports whether every character of query appears in order within
 // text (case-insensitive subsequence match). An empty query always matches.
@@ -420,7 +444,7 @@ export function useFleetPageController() {
       if (status) {
         params.set('status', status)
       }
-      const res = await fetch(`/api/nodes/${encodeURIComponent(nodeId)}/jobs?${params.toString()}`, { headers })
+      const res = await fetch(apiURL(`/api/nodes/${encodeURIComponent(nodeId)}/jobs?${params.toString()}`), { headers })
       if (!res.ok) {
         throw new Error(await apiErrorMessage(res))
       }
@@ -470,7 +494,7 @@ export function useFleetPageController() {
     }
     const query = params.toString()
     const path = query ? `/api/nodes?${query}` : '/api/nodes'
-    const res = await fetch(path)
+    const res = await fetch(apiURL(path))
     if (!res.ok) {
       throw new Error(await apiErrorMessage(res))
     }
@@ -530,7 +554,7 @@ export function useFleetPageController() {
         headers.Authorization = `Bearer ${token}`
       }
 
-      const res = await fetch(`/api/nodes/${encodeURIComponent(nodeId)}/jobs`, {
+      const res = await fetch(apiURL(`/api/nodes/${encodeURIComponent(nodeId)}/jobs`), {
         method: 'POST',
         headers,
         body: JSON.stringify({ type: 'deep_probe' }),
@@ -576,7 +600,7 @@ export function useFleetPageController() {
         headers.Authorization = `Bearer ${token}`
       }
 
-      const res = await fetch(`/api/nodes/${encodeURIComponent(nodeId)}/restart`, {
+      const res = await fetch(apiURL(`/api/nodes/${encodeURIComponent(nodeId)}/restart`), {
         method: 'POST',
         headers,
         body: JSON.stringify(request),
@@ -622,7 +646,7 @@ export function useFleetPageController() {
         headers.Authorization = `Bearer ${token}`
       }
 
-      const res = await fetch(`/api/nodes/${encodeURIComponent(nodeId)}/rollback`, {
+      const res = await fetch(apiURL(`/api/nodes/${encodeURIComponent(nodeId)}/rollback`), {
         method: 'POST',
         headers,
         body: JSON.stringify(request),
@@ -669,7 +693,7 @@ export function useFleetPageController() {
       setBackupsLoadingByNode((current) => ({ ...current, [nodeId]: true }))
     }
     try {
-      const res = await fetch(`/api/nodes/${encodeURIComponent(nodeId)}/backups`, {
+      const res = await fetch(apiURL(`/api/nodes/${encodeURIComponent(nodeId)}/backups`), {
         headers: { Authorization: `Bearer ${token}` },
       })
       if (!res.ok) {
@@ -707,7 +731,7 @@ export function useFleetPageController() {
         headers.Authorization = `Bearer ${token}`
       }
 
-      const res = await fetch(`/api/nodes/${encodeURIComponent(nodeId)}/labels`, {
+      const res = await fetch(apiURL(`/api/nodes/${encodeURIComponent(nodeId)}/labels`), {
         method: 'PUT',
         headers,
         body: JSON.stringify({ labels }),
@@ -752,7 +776,7 @@ export function useFleetPageController() {
         params.set('action', auditFilters.action)
       }
       const query = params.toString()
-      const res = await fetch(query ? `/api/audit?${query}` : '/api/audit')
+      const res = await fetch(apiURL(query ? `/api/audit?${query}` : '/api/audit'))
       if (!res.ok) {
         throw new Error(await apiErrorMessage(res))
       }
@@ -783,7 +807,7 @@ export function useFleetPageController() {
       setRolloutsLoading(true)
     }
     try {
-      const res = await fetch('/api/rollouts', {
+      const res = await fetch(apiURL('/api/rollouts'), {
         headers: { Authorization: `Bearer ${token}` },
       })
       if (!res.ok) {
@@ -813,7 +837,7 @@ export function useFleetPageController() {
     }
     setCreatingRollout(true)
     try {
-      const res = await fetch('/api/rollouts', {
+      const res = await fetch(apiURL('/api/rollouts'), {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${token}`,
@@ -850,7 +874,7 @@ export function useFleetPageController() {
     }
     setRolloutActioningId(rolloutId)
     try {
-      const res = await fetch(`/api/rollouts/${encodeURIComponent(rolloutId)}/actions`, {
+      const res = await fetch(apiURL(`/api/rollouts/${encodeURIComponent(rolloutId)}/actions`), {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${token}`,
@@ -881,7 +905,7 @@ export function useFleetPageController() {
   const loadEffectiveConfig = useCallback(async (nodeId: string, runtimeType = 'hermes', profile = 'default') => {
     try {
       const params = new URLSearchParams({ nodeId, runtimeType, profile })
-      const res = await fetch(`/api/config/effective?${params.toString()}`)
+      const res = await fetch(apiURL(`/api/config/effective?${params.toString()}`))
       if (!res.ok) {
         throw new Error(await apiErrorMessage(res))
       }
@@ -940,7 +964,7 @@ export function useFleetPageController() {
       ticketRequest = new AbortController()
 
       try {
-        const res = await fetch('/api/events/tickets', {
+        const res = await fetch(apiURL('/api/events/tickets'), {
           method: 'POST',
           headers: { Authorization: `Bearer ${token}` },
           signal: ticketRequest.signal,
@@ -952,7 +976,7 @@ export function useFleetPageController() {
         if (closed || !ticket.ticket) return
 
         source?.close()
-        source = new EventSource(`/api/events?ticket=${encodeURIComponent(ticket.ticket)}`)
+        source = new EventSource(apiURL(`/api/events?ticket=${encodeURIComponent(ticket.ticket)}`))
         source.onopen = () => {
           if (closed) return
           setLiveConnected(true)

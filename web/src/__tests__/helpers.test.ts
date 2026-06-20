@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  apiURL,
   compactHash,
   filterFuzzy,
   fleetOverviewMetrics,
@@ -10,6 +11,8 @@ import {
   latestConfigSnapshots,
   normalizeNodeListResponse,
   rolloutBadgeClasses,
+  sideplaneBasePath,
+  sideplaneServerURL,
   snapshotForRuntime,
   stateBadgeClasses,
 } from '../helpers.ts'
@@ -40,6 +43,29 @@ describe('formatRelativeTime', () => {
 
   it('does not report negative ages for future timestamps', () => {
     expect(formatRelativeTime('2026-06-19T12:00:30Z')).toBe('0s ago')
+  })
+})
+
+describe('base path URL helpers', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('keeps API URLs unchanged without an injected base path', () => {
+    expect(sideplaneBasePath()).toBe('')
+    expect(apiURL('/api/nodes')).toBe('/api/nodes')
+    expect(apiURL('api/events')).toBe('/api/events')
+  })
+
+  it('prefixes API URLs with the normalized injected base path', () => {
+    vi.stubGlobal('window', {
+      __SIDEPLANE_BASE__: '/sideplane/',
+      location: { origin: 'https://ops.example' },
+    } as unknown as Window)
+
+    expect(sideplaneBasePath()).toBe('/sideplane')
+    expect(apiURL('/api/nodes?selector=role%3Dcanary')).toBe('/sideplane/api/nodes?selector=role%3Dcanary')
+    expect(sideplaneServerURL()).toBe('https://ops.example/sideplane')
   })
 })
 

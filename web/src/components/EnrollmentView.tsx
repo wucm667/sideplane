@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { apiErrorMessage, formatDate } from '../helpers.ts'
+import { apiErrorMessage, apiURL, formatDate, sideplaneServerURL } from '../helpers.ts'
 import type { AlertEventType, AlertWebhook, CreateAlertWebhookResponse, CreateEnrollmentTokenResponse, CreateOperatorTokenResponse, ListAlertWebhooksResponse, ListOperatorTokensResponse, OperatorToken, OperatorTokenScope, RevokeOperatorTokenResponse, ServerSettings } from '../types.ts'
 
 const ALERT_EVENT_TYPES: AlertEventType[] = ['node.offline', 'node.drift', 'rollout.paused', 'rollout.failed']
@@ -17,7 +17,7 @@ export function EnrollmentView({ operatorToken }: { operatorToken: string }) {
   const [creatingOperatorToken, setCreatingOperatorToken] = useState(false)
   const [createdOperatorToken, setCreatedOperatorToken] = useState<CreateOperatorTokenResponse | null>(null)
   const [revokingTokenId, setRevokingTokenId] = useState<string | null>(null)
-  const serverURL = window.location.origin
+  const serverURL = sideplaneServerURL()
   const enrollCommand = created
     ? `sideplane-sidecar enroll --server ${serverURL} --token ${created.token}`
     : `sideplane-sidecar enroll --server ${serverURL} --token <token>`
@@ -34,7 +34,7 @@ export function EnrollmentView({ operatorToken }: { operatorToken: string }) {
     setOperatorTokensLoading(true)
     setOperatorTokensError(null)
     try {
-      const res = await fetch('/api/operator-tokens', {
+      const res = await fetch(apiURL('/api/operator-tokens'), {
         headers: { Authorization: `Bearer ${token}` },
       })
       if (!res.ok) {
@@ -60,7 +60,7 @@ export function EnrollmentView({ operatorToken }: { operatorToken: string }) {
     setError(null)
     setCopied(null)
     try {
-      const res = await fetch('/api/enrollment-tokens', {
+      const res = await fetch(apiURL('/api/enrollment-tokens'), {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${operatorToken.trim()}`,
@@ -110,7 +110,7 @@ export function EnrollmentView({ operatorToken }: { operatorToken: string }) {
     setOperatorTokensError(null)
     setCopied(null)
     try {
-      const res = await fetch('/api/operator-tokens', {
+      const res = await fetch(apiURL('/api/operator-tokens'), {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${token}`,
@@ -140,7 +140,7 @@ export function EnrollmentView({ operatorToken }: { operatorToken: string }) {
     setRevokingTokenId(id)
     setOperatorTokensError(null)
     try {
-      const res = await fetch(`/api/operator-tokens/${encodeURIComponent(id)}`, {
+      const res = await fetch(apiURL(`/api/operator-tokens/${encodeURIComponent(id)}`), {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${token}` },
       })
@@ -391,7 +391,7 @@ function ServerSettingsSection({ operatorToken }: { operatorToken: string }) {
 
   const loadSettings = useCallback(async () => {
     try {
-      const res = await fetch('/api/settings', { headers: authHeaders() })
+      const res = await fetch(apiURL('/api/settings'), { headers: authHeaders() })
       if (!res.ok) throw new Error(await apiErrorMessage(res))
       const data = (await res.json()) as ServerSettings
       setExpectedVersion(data.expectedSidecarVersion ?? '')
@@ -410,7 +410,7 @@ function ServerSettingsSection({ operatorToken }: { operatorToken: string }) {
     setError(null)
     setMessage(null)
     try {
-      const res = await fetch('/api/settings', {
+      const res = await fetch(apiURL('/api/settings'), {
         method: 'PUT',
         headers: authHeaders(),
         body: JSON.stringify({ expectedSidecarVersion: expectedVersion.trim() }),
@@ -484,7 +484,7 @@ function AlertWebhooksSection({ operatorToken }: { operatorToken: string }) {
     setLoading(true)
     setError(null)
     try {
-      const res = await fetch('/api/webhooks', { headers: authHeaders() })
+      const res = await fetch(apiURL('/api/webhooks'), { headers: authHeaders() })
       if (!res.ok) throw new Error(await apiErrorMessage(res))
       const data = (await res.json()) as ListAlertWebhooksResponse
       setWebhooks(data.webhooks ?? [])
@@ -518,7 +518,7 @@ function AlertWebhooksSection({ operatorToken }: { operatorToken: string }) {
     setError(null)
     setCreatedSecret(null)
     try {
-      const res = await fetch('/api/webhooks', {
+      const res = await fetch(apiURL('/api/webhooks'), {
         method: 'POST',
         headers: authHeaders(),
         body: JSON.stringify({ url: url.trim(), events: Array.from(events), sign }),
@@ -546,7 +546,7 @@ function AlertWebhooksSection({ operatorToken }: { operatorToken: string }) {
     setDeletingId(id)
     setError(null)
     try {
-      const res = await fetch(`/api/webhooks/${encodeURIComponent(id)}`, { method: 'DELETE', headers: authHeaders() })
+      const res = await fetch(apiURL(`/api/webhooks/${encodeURIComponent(id)}`), { method: 'DELETE', headers: authHeaders() })
       if (!res.ok && res.status !== 204) throw new Error(await apiErrorMessage(res))
       setWebhooks((current) => current.filter((item) => item.id !== id))
     } catch (e) {

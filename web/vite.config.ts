@@ -15,6 +15,7 @@ function keepDistGitkeep() {
 }
 
 export default defineConfig({
+  base: './',
   plugins: [react(), keepDistGitkeep()],
   server: {
     proxy: {

@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import ConfigWizard from '../ConfigWizard.tsx'
-import { apiErrorMessage, compactHash, formatDate, formatRelativeTime, hasActiveConfigApply, hasActiveDeepProbe, hasActiveRestart, hasActiveRollback, jobBadgeClasses, latestConfigSnapshots, runtimeKey, snapshotForRuntime, stateBadgeClasses } from '../helpers.ts'
+import { apiErrorMessage, apiURL, compactHash, formatDate, formatRelativeTime, hasActiveConfigApply, hasActiveDeepProbe, hasActiveRestart, hasActiveRollback, jobBadgeClasses, latestConfigSnapshots, runtimeKey, snapshotForRuntime, stateBadgeClasses } from '../helpers.ts'
 import type { ConfigApplyResult, ConfigDiffEntry, DeepProbeResult, EffectiveConfigResponse, Job, JobStatus, NodeLabels, NodeStatus, RestartJobResult, RestartRequest, RollbackBackupInventoryItem, RollbackJobResult, RollbackRequest, RuntimeConfigSnapshot, RuntimeStatus } from '../types.ts'
 
 export function NodeDetailView({
@@ -96,7 +96,7 @@ export function NodeDetailView({
     setRemoveError(null)
     let removed = false
     try {
-      const res = await fetch(`/api/nodes/${encodeURIComponent(node.nodeId)}`, {
+      const res = await fetch(apiURL(`/api/nodes/${encodeURIComponent(node.nodeId)}`), {
         method: 'DELETE',
         headers: {
           Authorization: `Bearer ${operatorToken.trim()}`,

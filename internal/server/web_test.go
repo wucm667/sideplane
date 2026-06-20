@@ -51,6 +51,24 @@ func newEmbeddedWebFixtureHandler(t *testing.T) http.Handler {
 	}, NewHandler())
 }
 
+func newWebFixtureHandlerWithBase(t *testing.T, basePath string) http.Handler {
+	t.Helper()
+	dir := writeWebFixture(t)
+	handler, err := NewWebHandlerWithBase(dir, NewHandler(), basePath)
+	if err != nil {
+		t.Fatalf("NewWebHandlerWithBase: %v", err)
+	}
+	return handler
+}
+
+func newEmbeddedWebFixtureHandlerWithBase(t *testing.T, basePath string) http.Handler {
+	t.Helper()
+	return NewEmbeddedWebHandlerWithBase(fstest.MapFS{
+		"index.html":    {Data: []byte("<!doctype html><html><head></head><body>Embedded SPA root</body></html>")},
+		"assets/app.js": {Data: []byte("// embedded app js")},
+	}, NewHandler(), basePath)
+}
+
 func TestWebAPIRoutesTakePrecedence(t *testing.T) {
 	handler := newWebFixtureHandler(t)
 
@@ -128,6 +146,38 @@ func TestEmbeddedWebRootServesIndexHTML(t *testing.T) {
 	}
 	if got := rec.Body.String(); !strings.Contains(got, "Embedded SPA root") {
 		t.Fatalf("body = %q, want embedded index.html content", got)
+	}
+}
+
+func TestWebIndexInjectsBasePath(t *testing.T) {
+	handler := newWebFixtureHandlerWithBase(t, "/sideplane")
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if got := rec.Body.String(); !strings.Contains(got, `window.__SIDEPLANE_BASE__ = "/sideplane"`) {
+		t.Fatalf("body = %q, want injected base path", got)
+	}
+}
+
+func TestEmbeddedWebIndexInjectsBasePath(t *testing.T) {
+	handler := newEmbeddedWebFixtureHandlerWithBase(t, "/sideplane")
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if got := rec.Body.String(); !strings.Contains(got, `window.__SIDEPLANE_BASE__ = "/sideplane"`) {
+		t.Fatalf("body = %q, want injected base path", got)
 	}
 }
 
