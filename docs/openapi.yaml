@@ -520,7 +520,9 @@ paths:
       operationId: createRollout
       description: >
         Resolves a label selector or explicit node IDs and creates sequential
-        config-apply batches. Dry-run rollout jobs are the default.
+        config-apply batches. Dry-run rollout jobs are the default. By default,
+        creation returns 409 when any resolved node is already part of a
+        non-terminal rollout; set spec.allowOverlap to intentionally override.
       security:
         - operatorBearer: []
       requestBody:
@@ -541,6 +543,8 @@ paths:
         "401":
           $ref: "#/components/responses/APIError"
         "404":
+          $ref: "#/components/responses/APIError"
+        "409":
           $ref: "#/components/responses/APIError"
         "429":
           $ref: "#/components/responses/RateLimited"
@@ -1830,7 +1834,7 @@ components:
           type: string
     RolloutState:
       type: string
-      enum: [pending, running, paused, completed, aborted, failed]
+      enum: [pending, scheduled, running, paused, completed, aborted, failed]
     RolloutBatchState:
       type: string
       enum: [pending, running, completed, paused, failed]
@@ -1877,6 +1881,14 @@ components:
           type: string
           format: date-time
           description: Optional scheduled start time (RFC3339). A future value keeps the rollout scheduled until then; empty or past runs immediately.
+        includeMaintenance:
+          type: boolean
+          default: false
+          description: When true, explicitly include nodes in maintenance mode; default false excludes them from new rollouts.
+        allowOverlap:
+          type: boolean
+          default: false
+          description: When true, allow creating a rollout whose resolved nodes overlap non-terminal rollouts; default false returns a 409 conflict.
     RolloutNodeProgress:
       type: object
       required: [nodeId, state]
@@ -2047,12 +2059,17 @@ components:
     AlertEventType:
       type: string
       enum: [node.offline, node.drift, rollout.paused, rollout.failed]
+    AlertWebhookKind:
+      type: string
+      enum: [generic, slack]
     AlertWebhook:
       type: object
-      required: [id, url, events, hasSecret, disabled, createdAt]
+      required: [id, kind, url, events, hasSecret, disabled, createdAt]
       properties:
         id:
           type: string
+        kind:
+          $ref: "#/components/schemas/AlertWebhookKind"
         url:
           type: string
         events:
@@ -2072,15 +2089,19 @@ components:
       properties:
         url:
           type: string
+        kind:
+          $ref: "#/components/schemas/AlertWebhookKind"
+          description: Defaults to generic. Slack sends an incoming-webhook-compatible body and cannot use Sideplane HMAC signing.
         events:
           type: array
           items:
             $ref: "#/components/schemas/AlertEventType"
         sign:
           type: boolean
-          description: When true and no secret is provided, the server generates one and returns it once.
+          description: Generic webhooks only. When true and no secret is provided, the server generates one and returns it once.
         secret:
           type: string
+          description: Generic webhooks only. If provided, deliveries carry an HMAC signature header.
     CreateAlertWebhookResponse:
       type: object
       required: [webhook]

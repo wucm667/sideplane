@@ -286,7 +286,7 @@ export interface RollbackJobResult {
   healthStatus?: string;
 }
 
-export type RolloutState = "pending" | "running" | "paused" | "completed" | "aborted" | "failed";
+export type RolloutState = "pending" | "scheduled" | "running" | "paused" | "completed" | "aborted" | "failed";
 
 export type RolloutBatchState = "pending" | "running" | "completed" | "paused" | "failed";
 
@@ -305,6 +305,8 @@ export interface RolloutSpec {
   autoRollbackOnFailure?: boolean;
   healthTimeout?: number;
   startAt?: string;
+  includeMaintenance?: boolean;
+  allowOverlap?: boolean;
 }
 
 export interface RolloutNodeProgress {
@@ -392,8 +394,11 @@ export interface BulkNodeLabelsResponse {
 
 export type AlertEventType = "node.offline" | "node.drift" | "rollout.paused" | "rollout.failed";
 
+export type AlertWebhookKind = "generic" | "slack";
+
 export interface AlertWebhook {
   id: string;
+  kind: AlertWebhookKind;
   url: string;
   events: AlertEventType[];
   hasSecret: boolean;
@@ -403,6 +408,7 @@ export interface AlertWebhook {
 
 export interface CreateAlertWebhookRequest {
   url: string;
+  kind?: AlertWebhookKind;
   events: AlertEventType[];
   sign?: boolean;
   secret?: string;

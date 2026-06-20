@@ -17,14 +17,16 @@ Production operators should still treat it as pre-1.0 infrastructure. Run it on 
 - Fleet inventory with node heartbeat, freshness state, runtime summary, and drift badges.
 - Operator-managed node labels with exact selector filtering for fleet views and rollouts.
 - Sidecar enrollment token flow with one-time tokens exchanged for long-lived node credentials.
+- Sidecar delivery resilience for short server outages: latest-wins heartbeat retry and bounded in-memory job-result retry.
 - Named, revocable operator tokens for API and Web sessions.
 - Hermes and OpenClaw adapters for read-only runtime discovery, config hash reporting, and provider/model snapshots.
 - Desired configuration layering with effective config preview and read-only actual-vs-desired diffs.
 - Desired config history with explicit revert.
 - Signed config apply plans, dry-run by default, with live apply gated behind explicit sidecar opt-in and rollback handling.
-- Staged fleet rollouts for provider/model changes across node labels or explicit node lists, canary-first by default.
+- Staged fleet rollouts for provider/model changes across node labels or explicit node lists, canary-first by default, with overlap protection.
 - Deep-probe, config-apply, restart/rollback-aware job lifecycle with paginated recent job status in the UI.
 - Operator audit log with node/action filtering and deletion audit events.
+- Generic and Slack-compatible alert webhooks for important fleet and rollout events.
 - Node removal API and UI flow for decommissioned fleet entries.
 - Conservative retention pruning for old completed/failed jobs and audit events.
 - Prometheus-compatible `/metrics`, including job counters and fleet freshness/drift gauges.
@@ -133,6 +135,11 @@ Start heartbeat and job polling:
 ```bash
 go run ./cmd/sideplane-sidecar --state ./sidecar-state.json
 ```
+
+The sidecar tolerates brief server outages without silently losing the newest
+status: failed heartbeats are retried with latest-wins semantics, and failed job
+result submissions are retried from a bounded in-memory buffer. The retry buffer
+is intentionally not persisted across sidecar restarts.
 
 ## Configuration
 
@@ -262,10 +269,10 @@ Core endpoints:
 - `POST /api/nodes/{nodeId}/config-apply` creates a signed config apply job with operator auth.
 - `GET /api/nodes/{nodeId}/backups` lists server-known rollback backup references.
 - `POST /api/nodes/{nodeId}/restart` and `POST /api/nodes/{nodeId}/rollback` create allowlisted restart and explicit rollback jobs.
-- `GET /api/rollouts`, `POST /api/rollouts`, `GET /api/rollouts/{rolloutId}`, and `POST /api/rollouts/{rolloutId}/actions` manage staged rollouts.
+- `GET /api/rollouts`, `POST /api/rollouts`, `GET /api/rollouts/{rolloutId}`, and `POST /api/rollouts/{rolloutId}/actions` manage staged rollouts, including the default overlap guard.
 - `POST /api/jobs/bulk` and `PUT /api/nodes/labels` perform bulk deep probes and label assignment by selector or node set.
 - `GET/POST /api/rollout-templates` and `DELETE /api/rollout-templates/{templateId}` manage reusable rollout templates.
-- `GET/POST /api/webhooks` and `DELETE /api/webhooks/{webhookId}` manage outbound alert webhooks.
+- `GET/POST /api/webhooks` and `DELETE /api/webhooks/{webhookId}` manage generic or Slack-compatible outbound alert webhooks.
 - `GET /api/audit/export?format=ndjson|csv` streams the filtered audit log.
 - `GET/PUT /api/settings` reads and updates server settings such as the expected sidecar version.
 - `GET /api/config/desired/history` lists desired config history; `POST /api/config/desired/revert` restores a history entry.
@@ -360,8 +367,11 @@ the default, and live mode still requires the signed config-apply pipeline plus
 sidecar `--allow-live-apply`. A failed, timed-out, or offline batch pauses the
 rollout with failing node IDs. Opt into `autoRollbackOnFailure` (CLI
 `--auto-rollback`) to roll back already-applied nodes of a failed live batch
-before pausing. Reusable specs can be saved as rollout templates and referenced
-by `templateId` when creating a rollout. See
+before pausing. New rollouts are rejected with `409` when their resolved nodes
+overlap another non-terminal rollout; use `allowOverlap` or CLI
+`--allow-overlap` only when that concurrency is intentional. Reusable specs can
+be saved as rollout templates and referenced by `templateId` when creating a
+rollout. See
 [Fleet rollouts](docs/fleet-rollouts.md).
 
 ### Live Refresh
@@ -403,7 +413,7 @@ Generate shell completion with `sideplane completion bash` or
 | `sideplane token create` | Create a named operator token shown once. | `--server`, `--operator-token`, `--name`, `--scope`, `--json` |
 | `sideplane token list` | List named operator token metadata. | `--server`, `--operator-token`, `--json` |
 | `sideplane token revoke <id>` | Revoke a named operator token. | `--server`, `--operator-token`, `--json` |
-| `sideplane rollout create` | Create a staged provider/model rollout, or use `--template`. | `--server`, `--operator-token`, `--template`, `--selector`, `--node`, `--provider`, `--model`, `--runtime-type`, `--profile`, `--batch-size`, `--live`, `--yes`, `--auto-rollback`, `--health-timeout`, `--json` |
+| `sideplane rollout create` | Create a staged provider/model rollout, or use `--template`. | `--server`, `--operator-token`, `--template`, `--selector`, `--node`, `--provider`, `--model`, `--runtime-type`, `--profile`, `--batch-size`, `--start-at`, `--live`, `--yes`, `--auto-rollback`, `--allow-overlap`, `--health-timeout`, `--json` |
 | `sideplane rollout list` | List staged rollouts. | `--server`, `--operator-token`, `--json` |
 | `sideplane rollout status <id>` | Show rollout batches and per-node progress. | `--server`, `--operator-token`, `--watch`, `--json` |
 | `sideplane rollout pause/resume/abort <id>` | Control a rollout. | `--server`, `--operator-token`, `--json` |
@@ -421,7 +431,7 @@ Generate shell completion with `sideplane completion bash` or
 | `sideplane node remove <nodeId>` | Remove a decommissioned node record. | `--server`, `--operator-token`, `--yes` |
 | `sideplane backups list <nodeId>` | List rollback backups for a node. | `--server`, `--operator-token`, `--limit`, `--json` |
 | `sideplane enrollment create` | Create a one-time sidecar enrollment token. | `--server`, `--operator-token`, `--expires-in` |
-| `sideplane webhook create/list/delete` | Manage alert webhooks. | `--server`, `--operator-token`, `--url`, `--event`, `--sign`, `--json` |
+| `sideplane webhook create/list/delete` | Manage alert webhooks. | `--server`, `--operator-token`, `--url`, `--kind`, `--event`, `--sign`, `--json` |
 | `sideplane settings get/set` | Show or update server settings (expected sidecar version). | `--server`, `--operator-token`, `--expected-sidecar-version`, `--json` |
 | `sideplane version` | Print CLI version. | `--json` |
 
@@ -437,6 +447,7 @@ The Web UI is intentionally a compact infrastructure console. It includes:
 - Rollout creation, batch progress, pause/resume/abort controls, and node drill-down.
 - Activity history filters by node ID and action.
 - Enrollment-token creation and named operator token management.
+- Alert webhook management with generic/Slack kind selection.
 - Live refresh over SSE with polling fallback.
 - Keyboard shortcuts: `f`/`1` opens Fleet, `a`/`2` opens Activity, `e`/`3`
   opens Enrollment, `r` refreshes the current view, and `Esc` returns from a

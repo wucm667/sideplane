@@ -1,8 +1,9 @@
 # Operations
 
 This guide covers day-2 operations for a self-hosted Sideplane server: database
-backup/restore, operator token scopes, bulk fleet operations, alert webhooks,
-expected sidecar version, and rollout templates.
+backup/restore, server config files, operator token scopes, bulk fleet
+operations, alert webhooks, expected sidecar version, sidecar delivery
+resilience, and rollout templates.
 
 ## Database Backup And Restore
 
@@ -31,6 +32,28 @@ sudo systemctl start sideplane-server
 ```
 
 Do not swap the database file while the server is running.
+
+## Server Config File
+
+`sideplane-server` reads a flat YAML config file by default from
+`~/.config/sideplane/server.yaml`. Override the path with
+`SIDEPLANE_SERVER_CONFIG` or `sideplane-server --config PATH`, and inspect the
+resolved path with:
+
+```bash
+sideplane-server config-file path
+```
+
+Runtime settings resolve in this order: explicit CLI flag, environment
+variable, config file, then built-in default. Supported keys mirror the
+non-secret server flags, such as `addr`, `db`, `base-path`, `stale-after`,
+`offline-after`, `rollout-interval`, `backup-dir`, `backup-interval`,
+`tls-cert`, `tls-key`, and `tls-redirect-addr`.
+
+Keep raw secrets out of the config file. Continue to provide the operator token
+through `SIDEPLANE_OPERATOR_TOKEN` or `--operator-token`, and provide the
+config-plan signing key as a key-file path via `SIDEPLANE_SIGNING_KEY` or
+`--signing-key`.
 
 ## Operator Token Scopes
 
@@ -72,19 +95,32 @@ results. Both actions are audited (`job.bulk.create`, `node.labels.bulk.update`)
 
 ## Alert Webhooks
 
-Operator-configured webhooks receive a small JSON payload on these events:
-`node.offline`, `node.drift`, `rollout.paused`, `rollout.failed`. Delivery is
-best-effort with bounded retries and a per-attempt timeout; it never blocks core
-request paths, and payloads contain no secrets.
+Operator-configured webhooks receive alerts for `node.offline`, `node.drift`,
+`rollout.paused`, and `rollout.failed`. Delivery is best-effort with bounded
+retries and a per-attempt timeout; it never blocks core request paths, and
+payloads contain no secrets.
+
+Generic webhooks are the default and receive the Sideplane JSON payload:
 
 ```bash
 sideplane webhook create --url https://hooks.example.com/sp \
   --event rollout.paused --event rollout.failed --sign
 ```
 
-When `--sign` is set (or a secret is provided), the server returns a signing
-secret once. Deliveries then carry an `X-Sideplane-Signature: sha256=<hex>` HMAC
-of the request body. Verify it on the receiver with the shared secret.
+Slack webhooks use an incoming-webhook-compatible body with `text` plus a small
+`blocks` summary:
+
+```bash
+sideplane webhook create --kind slack --url https://hooks.slack.example/services/... \
+  --event node.offline --event rollout.failed
+```
+
+When `--sign` is set on a generic webhook (or a secret is provided), the server
+returns a signing secret once. Deliveries then carry an
+`X-Sideplane-Signature: sha256=<hex>` HMAC of the request body. Verify it on the
+receiver with the shared secret. HMAC signing is generic-only; Slack webhooks
+reject `--sign` and user-provided secrets because Slack incoming webhooks do
+not consume Sideplane's signature header.
 
 Retry policy: network errors, `5xx`, and `429` are retried with backoff up to a
 bounded number of attempts; other `4xx` responses are treated as permanent and
@@ -103,6 +139,32 @@ Nodes whose reported `sidecarVersion` differs are marked `sidecarOutdated` in th
 fleet view and counted by the `sideplane_fleet_sidecar_outdated` metric gauge.
 Leave the value empty to disable the check. Sideplane never downloads or executes
 sidecar binaries; this is visibility only.
+
+## Sidecar Delivery Resilience
+
+The sidecar retries the latest failed heartbeat on the next heartbeat cycle. If
+newer local status is available before the retry succeeds, the newer heartbeat
+replaces the older unsent heartbeat so the server sees the freshest state and
+the sidecar never builds a heartbeat backlog.
+
+Job result delivery uses a bounded in-memory retry buffer. When submitting a
+job result fails, the sidecar enqueues it and retries buffered results on later
+poll cycles with backoff. If the buffer is full, the oldest queued result is
+dropped with a warning log. Result submission is safe to retry because the
+server accepts late or duplicate results idempotently. The buffer is not
+persisted to disk; restarting the sidecar starts with an empty retry queue.
+
+## Rollout Overlap Guard
+
+At rollout creation, the server resolves the requested selector or node IDs and
+rejects the request with `409` if any target node is already part of a
+non-terminal rollout (`pending`, `scheduled`, `running`, or `paused`). The error
+message names the conflicting node, rollout id, and state so the operator can
+decide whether to wait, abort, or resume the existing rollout.
+
+Use `allowOverlap: true` in the API or `sideplane rollout create
+--allow-overlap` only when concurrent rollout work on the same node is
+intentional. Completed, aborted, and failed rollouts do not block new rollouts.
 
 ## Rollout Auto-Rollback
 
