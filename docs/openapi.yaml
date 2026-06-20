@@ -139,6 +139,43 @@ paths:
           $ref: "#/components/responses/APIError"
         "429":
           $ref: "#/components/responses/RateLimited"
+  /api/whoami:
+    get:
+      tags: [Operator]
+      summary: Describe the authenticated operator identity.
+      description: Returns the acting token scope and name. Never returns a secret.
+      operationId: whoami
+      security:
+        - operatorBearer: []
+      responses:
+        "200":
+          description: Authenticated identity.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WhoamiResponse"
+        "401":
+          $ref: "#/components/responses/APIError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+  /api/status:
+    get:
+      tags: [Operator]
+      summary: Cheap control-plane status summary.
+      operationId: serverStatus
+      security:
+        - operatorBearer: []
+      responses:
+        "200":
+          description: Server status.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServerStatusResponse"
+        "401":
+          $ref: "#/components/responses/APIError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
   /api/operator-tokens:
     get:
       tags: [Operator]
@@ -366,6 +403,41 @@ paths:
         "400":
           $ref: "#/components/responses/APIError"
         "401":
+          $ref: "#/components/responses/APIError"
+        "404":
+          $ref: "#/components/responses/APIError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+  /api/nodes/{nodeId}/maintenance:
+    put:
+      tags: [Operator]
+      summary: Set node maintenance mode.
+      description: Maintenance nodes are excluded from rollouts and bulk operations by default and have node-offline/drift alerts suppressed.
+      operationId: setNodeMaintenance
+      security:
+        - operatorBearer: []
+      parameters:
+        - $ref: "#/components/parameters/NodeId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NodeMaintenanceRequest"
+            example:
+              maintenance: true
+      responses:
+        "200":
+          description: Updated maintenance state.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NodeMaintenanceResponse"
+        "400":
+          $ref: "#/components/responses/APIError"
+        "401":
+          $ref: "#/components/responses/APIError"
+        "403":
           $ref: "#/components/responses/APIError"
         "404":
           $ref: "#/components/responses/APIError"
@@ -1362,6 +1434,18 @@ components:
           type: array
           items:
             type: string
+        health:
+          $ref: "#/components/schemas/RuntimeHealth"
+    RuntimeHealth:
+      type: object
+      required: [state]
+      description: Read-only local liveness result for a runtime. Never contacts external networks or restarts anything.
+      properties:
+        state:
+          type: string
+          enum: [healthy, degraded, unknown]
+        reason:
+          type: string
     NodeStatus:
       type: object
       required: [nodeId, state, lastHeartbeatAt]
@@ -1385,6 +1469,9 @@ components:
           type: string
         labels:
           $ref: "#/components/schemas/Labels"
+        maintenance:
+          type: boolean
+          description: True when the node is in operator-set maintenance mode (excluded from rollouts and bulk ops by default; node-offline/drift alerts suppressed).
         lastError:
           type: string
     NodeStatusWithDrift:
@@ -1430,6 +1517,48 @@ components:
           type: string
         labels:
           $ref: "#/components/schemas/Labels"
+    NodeMaintenanceRequest:
+      type: object
+      required: [maintenance]
+      properties:
+        maintenance:
+          type: boolean
+    NodeMaintenanceResponse:
+      type: object
+      required: [nodeId, maintenance]
+      properties:
+        nodeId:
+          type: string
+        maintenance:
+          type: boolean
+    WhoamiResponse:
+      type: object
+      required: [scope, tokenName]
+      properties:
+        scope:
+          $ref: "#/components/schemas/OperatorTokenScope"
+        tokenName:
+          type: string
+          description: Acting token name, or "bootstrap" for the env/flag token.
+    ServerStatusResponse:
+      type: object
+      required: [version, uptimeSeconds, schemaVersion, nodeCount, rolloutCount]
+      properties:
+        version:
+          type: string
+        commit:
+          type: string
+        buildDate:
+          type: string
+        uptimeSeconds:
+          type: integer
+          format: int64
+        schemaVersion:
+          type: integer
+        nodeCount:
+          type: integer
+        rolloutCount:
+          type: integer
     HeartbeatRequest:
       type: object
       required: [nodeId, sentAt]
@@ -1744,6 +1873,10 @@ components:
           format: int64
           minimum: 0
           description: Nanoseconds. Omit or send 0 to use the server default.
+        startAt:
+          type: string
+          format: date-time
+          description: Optional scheduled start time (RFC3339). A future value keeps the rollout scheduled until then; empty or past runs immediately.
     RolloutNodeProgress:
       type: object
       required: [nodeId, state]
@@ -2040,6 +2173,8 @@ components:
           type: array
           items:
             type: string
+        health:
+          $ref: "#/components/schemas/RuntimeHealth"
     ProviderModelConfig:
       type: object
       properties:
@@ -2221,6 +2356,9 @@ components:
           type: string
         actor:
           type: string
+        actorName:
+          type: string
+          description: Acting operator token name when known ("bootstrap" for the env/flag token). Never a secret.
         action:
           type: string
         targetNode:

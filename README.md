@@ -279,6 +279,13 @@ supported: terminate TLS at the proxy and keep `sideplane-server` on plain HTTP
 bound to localhost or a private interface. Health, readiness, metrics, REST API,
 SSE, and Web UI traffic can all be proxied to the same server address.
 
+To serve everything under a subpath (for example `https://host/sideplane`), set
+`--base-path /sideplane` (or `SIDEPLANE_BASE_PATH`). The REST API, SSE stream, and
+embedded Web UI are mounted under the prefix and the Web client discovers the base
+automatically; `/healthz`, `/readyz`, and `/metrics` stay at the root for probes.
+See [docs/operations.md](docs/operations.md) for base-path, node maintenance mode,
+scheduled rollouts, and runtime health details.
+
 ### Database Backup And Restore
 
 The SQLite store can be snapshotted online while the server runs:

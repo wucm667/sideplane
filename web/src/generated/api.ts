@@ -82,6 +82,12 @@ export interface RuntimeStatus {
   configHash?: string;
   lastError?: string;
   warnings?: string[];
+  health?: RuntimeHealth;
+}
+
+export interface RuntimeHealth {
+  state: "healthy" | "degraded" | "unknown";
+  reason?: string;
 }
 
 export interface NodeStatus {
@@ -93,6 +99,7 @@ export interface NodeStatus {
   runtimes?: RuntimeStatus[];
   configHash?: string;
   labels?: Labels;
+  maintenance?: boolean;
   lastError?: string;
 }
 
@@ -116,6 +123,30 @@ export interface NodeLabelsRequest {
 export interface NodeLabelsResponse {
   nodeId: string;
   labels: Labels;
+}
+
+export interface NodeMaintenanceRequest {
+  maintenance: boolean;
+}
+
+export interface NodeMaintenanceResponse {
+  nodeId: string;
+  maintenance: boolean;
+}
+
+export interface WhoamiResponse {
+  scope: OperatorTokenScope;
+  tokenName: string;
+}
+
+export interface ServerStatusResponse {
+  version: string;
+  commit?: string;
+  buildDate?: string;
+  uptimeSeconds: number;
+  schemaVersion: number;
+  nodeCount: number;
+  rolloutCount: number;
 }
 
 export interface HeartbeatRequest {
@@ -273,6 +304,7 @@ export interface RolloutSpec {
   live: boolean;
   autoRollbackOnFailure?: boolean;
   healthTimeout?: number;
+  startAt?: string;
 }
 
 export interface RolloutNodeProgress {
@@ -426,6 +458,7 @@ export interface RuntimeConfigSnapshot {
   model?: string;
   configHash?: string;
   warnings?: string[];
+  health?: RuntimeHealth;
 }
 
 export interface ProviderModelConfig {
@@ -524,6 +557,7 @@ export interface PublicSigningKeyResponse {
 export interface AuditEvent {
   id: string;
   actor: string;
+  actorName?: string;
   action: string;
   targetNode?: string;
   detail?: string;

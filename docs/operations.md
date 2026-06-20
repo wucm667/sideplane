@@ -126,3 +126,54 @@ sideplane rollout create --template <templateId>
 
 The template prefills the spec; the spec is still resolved and validated at
 rollout creation time.
+
+## Scheduled Rollouts
+
+A rollout can carry an optional `startAt` time (RFC3339). With a future
+`startAt` the rollout stays scheduled and the orchestrator does not dispatch any
+batch until that time is reached; an empty or past value runs immediately. Abort
+works while a rollout is still scheduled.
+
+```bash
+sideplane rollout create --selector role=canary --provider openai --model gpt-4o \
+  --start-at 2026-07-01T09:00:00Z
+```
+
+## Node Maintenance Mode
+
+Put a node into maintenance to take it out of automated change flows without
+removing it from the fleet:
+
+```bash
+sideplane node maintenance <nodeId> --on
+sideplane node maintenance <nodeId> --off
+```
+
+Maintenance nodes are excluded from rollout target resolution and bulk operations
+by default (pass an explicit include flag to override), and their node-offline and
+drift alert webhooks are suppressed. Heartbeats are still recorded and the node
+shows a maintenance badge. Already-running per-node jobs are not interrupted.
+
+## Runtime Health Checks
+
+The sidecar performs read-only, local liveness checks for each runtime and
+reports a health state of `healthy`, `degraded`, or `unknown` with a short
+reason. These checks only inspect local, allowlisted signals (config readability,
+declared service/container presence) — they never contact provider APIs, reach
+external networks, or restart anything. Health is shown on the node runtime cards
+and in `sideplane node inspect`, and degraded runtimes are counted by a metric
+gauge.
+
+## TLS And Reverse Proxy
+
+The server speaks plain HTTP by default. To terminate TLS in-process, set both
+`--tls-cert` and `--tls-key` (or `SIDEPLANE_TLS_CERT` / `SIDEPLANE_TLS_KEY`);
+setting only one fails fast. Optionally run an HTTP→HTTPS redirector with
+`--tls-redirect-addr`. There is no built-in ACME/auto-certificate issuance.
+
+To serve Sideplane under a subpath behind a reverse proxy, set `--base-path`
+(e.g. `--base-path /sideplane`, or `SIDEPLANE_BASE_PATH`). The API, SSE stream,
+and embedded web app are served under that prefix; the server injects the base
+into the served `index.html` so the web client builds all request and asset URLs
+relative to it. The `/healthz`, `/readyz`, and `/metrics` probe endpoints remain
+available at the root for liveness/readiness checks.
