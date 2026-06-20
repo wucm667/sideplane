@@ -938,6 +938,11 @@ func TestOperatorTokenManagementEndpointsCreateListRevokeAndAudit(t *testing.T) 
 		t.Fatalf("revoked operator token status = %d, want 401", res.StatusCode)
 	}
 
+	bootstrapResp := doJSONRequest[protocol.CreateEnrollmentTokenResponse](t, server.Client(), http.MethodPost, server.URL+"/api/enrollment-tokens", "bootstrap-token", protocol.CreateEnrollmentTokenRequest{})
+	if bootstrapResp.Token == "" {
+		t.Fatalf("bootstrap token did not remain authorized after named token revocation")
+	}
+
 	events, err := nodeStore.ListAuditEventsFiltered(context.Background(), store.AuditFilter{Limit: 20})
 	if err != nil {
 		t.Fatalf("list audit events: %v", err)
@@ -963,6 +968,7 @@ func TestOperatorTokenManagementEndpointsCreateListRevokeAndAudit(t *testing.T) 
 
 func TestOperatorTokenScopeEnforcement(t *testing.T) {
 	nodeStore := store.NewMemoryNodeStore()
+	enrollTestNode(t, nodeStore, "node-scope")
 	handler, err := NewHandlerWithConfig(HandlerConfig{
 		Store:         nodeStore,
 		Freshness:     DefaultFreshnessPolicy(),
@@ -1012,11 +1018,28 @@ func TestOperatorTokenScopeEnforcement(t *testing.T) {
 		t.Fatalf("readonly GET operator-tokens status = %d, want 200", code)
 	}
 	// readonly is forbidden on mutating endpoints.
-	if code := status(http.MethodPost, "/api/enrollment-tokens", readonly.Token, protocol.CreateEnrollmentTokenRequest{}); code != http.StatusForbidden {
-		t.Fatalf("readonly POST enrollment-tokens status = %d, want 403", code)
-	}
-	if code := status(http.MethodPost, "/api/operator-tokens", readonly.Token, protocol.CreateOperatorTokenRequest{Name: "escalation"}); code != http.StatusForbidden {
-		t.Fatalf("readonly POST operator-tokens status = %d, want 403", code)
+	for _, tt := range []struct {
+		name   string
+		method string
+		path   string
+		body   any
+	}{
+		{name: "create enrollment token", method: http.MethodPost, path: "/api/enrollment-tokens", body: protocol.CreateEnrollmentTokenRequest{}},
+		{name: "create operator token", method: http.MethodPost, path: "/api/operator-tokens", body: protocol.CreateOperatorTokenRequest{Name: "escalation"}},
+		{name: "update desired config", method: http.MethodPut, path: "/api/config/desired", body: protocol.DesiredConfig{Global: protocol.ProviderModelConfig{Provider: "openai", Model: "gpt-4o"}}},
+		{name: "set node labels", method: http.MethodPut, path: "/api/nodes/node-scope/labels", body: protocol.NodeLabelsRequest{Labels: map[string]string{"role": "canary"}}},
+		{name: "create node job", method: http.MethodPost, path: "/api/nodes/node-scope/jobs", body: protocol.CreateJobRequest{Type: protocol.JobTypeDeepProbe}},
+		{name: "create rollout", method: http.MethodPost, path: "/api/rollouts", body: protocol.CreateRolloutRequest{Spec: protocol.RolloutSpec{
+			NodeIDs:     []string{"node-scope"},
+			RuntimeType: "hermes",
+			Target:      protocol.ProviderModelConfig{Provider: "openai", Model: "gpt-4o"},
+		}}},
+	} {
+		t.Run("readonly denied "+tt.name, func(t *testing.T) {
+			if code := status(tt.method, tt.path, readonly.Token, tt.body); code != http.StatusForbidden {
+				t.Fatalf("readonly %s %s status = %d, want 403", tt.method, tt.path, code)
+			}
+		})
 	}
 	// admin named token has full access.
 	if code := status(http.MethodPost, "/api/enrollment-tokens", admin.Token, protocol.CreateEnrollmentTokenRequest{}); code != http.StatusCreated {
@@ -1830,6 +1853,25 @@ func TestDesiredConfigHistoryListAndRevert(t *testing.T) {
 	if revertResp.Desired.Global.Model != "gpt-4o" || revertResp.History.ID == firstHistory.ID {
 		t.Fatalf("revert response = %+v, want new gpt-4o history entry", revertResp)
 	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/config/desired/history", nil)
+	req.Header.Set("Authorization", "Bearer dev-token")
+	handler.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusOK)
+	var afterRevert protocol.ListDesiredConfigHistoryResponse
+	if err := json.NewDecoder(rec.Body).Decode(&afterRevert); err != nil {
+		t.Fatalf("decode post-revert history response: %v", err)
+	}
+	if afterRevert.Total != 3 || len(afterRevert.History) != 3 || afterRevert.History[0].ID != revertResp.History.ID || afterRevert.History[0].Config.Global.Model != "gpt-4o" {
+		t.Fatalf("post-revert history = %+v, want appended latest gpt-4o entry", afterRevert)
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/config/desired/revert", strings.NewReader(`{"historyId":"deshist_missing"}`))
+	req.Header.Set("Authorization", "Bearer dev-token")
+	handler.ServeHTTP(rec, req)
+	assertAPIError(t, rec, http.StatusNotFound, "not_found", "desired config history not found")
 
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/config/desired", nil))
