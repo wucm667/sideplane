@@ -3,7 +3,17 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"io"
+	"log/slog"
+	"math/big"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -58,6 +68,9 @@ func TestRunRejectsInvalidFreshnessDurations(t *testing.T) {
 func TestServerEnvFallbacksApplyWhenFlagsUnset(t *testing.T) {
 	t.Setenv("SIDEPLANE_ADDR", "127.0.0.1:18080")
 	t.Setenv("SIDEPLANE_DB_PATH", "/var/lib/sideplane/env.db")
+	t.Setenv("SIDEPLANE_TLS_CERT", "/etc/sideplane/tls.crt")
+	t.Setenv("SIDEPLANE_TLS_KEY", "/etc/sideplane/tls.key")
+	t.Setenv("SIDEPLANE_TLS_REDIRECT_ADDR", ":8081")
 	t.Setenv("SIDEPLANE_WEB_DIR", "/usr/share/sideplane/web")
 	t.Setenv("SIDEPLANE_STALE_AFTER", "90s")
 	t.Setenv("SIDEPLANE_OFFLINE_AFTER", "6m")
@@ -71,6 +84,9 @@ func TestServerEnvFallbacksApplyWhenFlagsUnset(t *testing.T) {
 
 	addr := ":8080"
 	dbPath := "sideplane.db"
+	tlsCert := ""
+	tlsKey := ""
+	tlsRedirectAddr := ""
 	webDir := ""
 	staleAfter := 2 * time.Minute
 	offlineAfter := 10 * time.Minute
@@ -85,6 +101,9 @@ func TestServerEnvFallbacksApplyWhenFlagsUnset(t *testing.T) {
 	if err := applyServerEnvFallbacks(map[string]bool{}, serverFlagValues{
 		addr:                  &addr,
 		dbPath:                &dbPath,
+		tlsCert:               &tlsCert,
+		tlsKey:                &tlsKey,
+		tlsRedirectAddr:       &tlsRedirectAddr,
 		webDir:                &webDir,
 		staleAfter:            &staleAfter,
 		offlineAfter:          &offlineAfter,
@@ -104,6 +123,15 @@ func TestServerEnvFallbacksApplyWhenFlagsUnset(t *testing.T) {
 	}
 	if dbPath != "/var/lib/sideplane/env.db" {
 		t.Fatalf("db path = %q, want env db", dbPath)
+	}
+	if tlsCert != "/etc/sideplane/tls.crt" {
+		t.Fatalf("tls cert = %q, want env tls cert", tlsCert)
+	}
+	if tlsKey != "/etc/sideplane/tls.key" {
+		t.Fatalf("tls key = %q, want env tls key", tlsKey)
+	}
+	if tlsRedirectAddr != ":8081" {
+		t.Fatalf("tls redirect addr = %q, want env redirect addr", tlsRedirectAddr)
 	}
 	if webDir != "/usr/share/sideplane/web" {
 		t.Fatalf("web dir = %q, want env web dir", webDir)
@@ -134,6 +162,98 @@ func TestServerEnvFallbacksApplyWhenFlagsUnset(t *testing.T) {
 	}
 	if rateLimitWindow != 45*time.Second {
 		t.Fatalf("rate limit window = %s, want 45s", rateLimitWindow)
+	}
+}
+
+func TestValidateServerTLSRequiresCertAndKeyTogether(t *testing.T) {
+	tests := []struct {
+		name string
+		cert string
+		key  string
+	}{
+		{name: "cert only", cert: "/tmp/cert.pem"},
+		{name: "key only", key: "/tmp/key.pem"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := validateServerTLS(tt.cert, tt.key)
+			if err == nil {
+				t.Fatalf("validateServerTLS succeeded, want error")
+			}
+			if !strings.Contains(err.Error(), "tls-cert and tls-key must be set together") {
+				t.Fatalf("error = %q, want both-or-neither error", err.Error())
+			}
+		})
+	}
+}
+
+func TestValidateServerTLSRequiresReadableFiles(t *testing.T) {
+	dir := t.TempDir()
+	_, err := validateServerTLS(filepath.Join(dir, "missing.crt"), filepath.Join(dir, "missing.key"))
+	if err == nil {
+		t.Fatalf("validateServerTLS succeeded, want missing file error")
+	}
+	if !strings.Contains(err.Error(), "read tls cert") {
+		t.Fatalf("error = %q, want cert read error", err.Error())
+	}
+}
+
+func TestServeHTTPServerWithTLS(t *testing.T) {
+	certFile, keyFile := writeTestCertificate(t)
+	tlsConfig, err := validateServerTLS(certFile, keyFile)
+	if err != nil {
+		t.Fatalf("validate tls: %v", err)
+	}
+	addr, err := freeTCPAddr()
+	if err != nil {
+		t.Fatalf("allocate tcp addr: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	httpServer := &http.Server{
+		Addr: addr,
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		}),
+	}
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- serveHTTPServer(ctx, httpServer, tlsConfig, discardServerLogger())
+	}()
+
+	client := &http.Client{
+		Timeout: 250 * time.Millisecond,
+		Transport: &http.Transport{TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: true,
+		}},
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		resp, err := client.Get("https://" + addr + "/healthz")
+		if err == nil {
+			if resp.StatusCode != http.StatusNoContent {
+				resp.Body.Close()
+				t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusNoContent)
+			}
+			resp.Body.Close()
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("https request did not succeed before deadline: %v", err)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+
+	cancel()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("serveHTTPServer returned error: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("serveHTTPServer did not shut down")
 	}
 }
 
@@ -397,4 +517,42 @@ func TestRunWarnsWhenSigningKeyIsEphemeral(t *testing.T) {
 	if stdout.Len() != 0 {
 		t.Fatalf("stdout = %q, want empty", stdout.String())
 	}
+}
+
+func writeTestCertificate(t *testing.T) (string, string) {
+	t.Helper()
+	dir := t.TempDir()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	template := x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "sideplane-test"},
+		NotBefore:    time.Now().Add(-time.Minute),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		DNSNames:     []string{"localhost"},
+		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1")},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, &template, &template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("create cert: %v", err)
+	}
+	certFile := filepath.Join(dir, "server.crt")
+	keyFile := filepath.Join(dir, "server.key")
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
+	if err := os.WriteFile(certFile, certPEM, 0o644); err != nil {
+		t.Fatalf("write cert: %v", err)
+	}
+	if err := os.WriteFile(keyFile, keyPEM, 0o600); err != nil {
+		t.Fatalf("write key: %v", err)
+	}
+	return certFile, keyFile
+}
+
+func discardServerLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }

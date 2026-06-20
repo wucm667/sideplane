@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -48,6 +50,9 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 
 	addr := flags.String("addr", ":8080", "HTTP listen address")
 	dbPath := flags.String("db", "sideplane.db", "SQLite database path")
+	tlsCert := flags.String("tls-cert", "", "path to TLS certificate file; can also be set with SIDEPLANE_TLS_CERT")
+	tlsKey := flags.String("tls-key", "", "path to TLS private key file; can also be set with SIDEPLANE_TLS_KEY")
+	tlsRedirectAddr := flags.String("tls-redirect-addr", "", "optional HTTP listen address that redirects requests to HTTPS; can also be set with SIDEPLANE_TLS_REDIRECT_ADDR")
 	backupDir := flags.String("backup-dir", "", "directory for periodic online DB backups; periodic backups are off unless set with a positive --backup-interval")
 	backupInterval := flags.Duration("backup-interval", 0, "interval between periodic online DB backups; set 0 to disable")
 	backupRetention := flags.Int("backup-retention", defaultBackupRetention, "number of recent periodic DB backups to retain")
@@ -78,6 +83,9 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	if err := applyServerEnvFallbacks(setFlags, serverFlagValues{
 		addr:                  addr,
 		dbPath:                dbPath,
+		tlsCert:               tlsCert,
+		tlsKey:                tlsKey,
+		tlsRedirectAddr:       tlsRedirectAddr,
 		webDir:                webDir,
 		staleAfter:            staleAfter,
 		offlineAfter:          offlineAfter,
@@ -139,6 +147,11 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 	if *rateLimitWindow <= 0 {
 		fmt.Fprintln(stderr, "invalid rate limit window: rate-limit-window must be positive")
+		return 1
+	}
+	tlsConfig, err := validateServerTLS(*tlsCert, *tlsKey)
+	if err != nil {
+		fmt.Fprintf(stderr, "invalid TLS configuration: %v\n", err)
 		return 1
 	}
 
@@ -228,6 +241,10 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		Addr:    *addr,
 		Handler: handler,
 	}
+	scheme := "http"
+	if tlsConfig.Enabled() {
+		scheme = "https"
+	}
 
 	startHeartbeatPruner(ctx, nodeStore, *heartbeatRetention, heartbeatPruneInterval, logger)
 	startRetentionPruner(ctx, nodeStore, *jobRetention, *auditRetention, retentionPruneInterval, logger)
@@ -247,6 +264,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	logger.Info(
 		"starting sideplane-server",
 		"addr", *addr,
+		"scheme", scheme,
 		"db", *dbPath,
 		"web", webMode,
 		"stale_after", staleAfter.String(),
@@ -263,37 +281,28 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		"schema_version", schemaVersion,
 	)
 
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- httpServer.ListenAndServe()
-	}()
-
-	select {
-	case err := <-errCh:
-		if err != nil && !errors.Is(err, http.ErrServerClosed) {
-			logger.Error("sideplane-server stopped", "error", err)
-			return 1
-		}
-	case <-ctx.Done():
-		logger.Info("shutting down sideplane-server", "timeout", shutdownTimeout.String())
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
-		defer cancel()
-		if err := httpServer.Shutdown(shutdownCtx); err != nil {
-			logger.Error("shutdown sideplane-server", "error", err)
-			return 1
-		}
-		if err := <-errCh; err != nil && !errors.Is(err, http.ErrServerClosed) {
-			logger.Error("sideplane-server stopped", "error", err)
-			return 1
-		}
+	if err := serveHTTPServer(ctx, httpServer, tlsConfig, logger); err != nil {
+		return 1
 	}
 	logger.Info("sideplane-server stopped")
 	return 0
 }
 
+type serverTLSConfig struct {
+	CertFile string
+	KeyFile  string
+}
+
+func (c serverTLSConfig) Enabled() bool {
+	return c.CertFile != "" && c.KeyFile != ""
+}
+
 type serverFlagValues struct {
 	addr                  *string
 	dbPath                *string
+	tlsCert               *string
+	tlsKey                *string
+	tlsRedirectAddr       *string
 	webDir                *string
 	staleAfter            *time.Duration
 	offlineAfter          *time.Duration
@@ -485,6 +494,9 @@ func visitedFlags(flags *flag.FlagSet) map[string]bool {
 func applyServerEnvFallbacks(setFlags map[string]bool, values serverFlagValues) error {
 	applyStringEnvFallback(setFlags, "addr", "SIDEPLANE_ADDR", values.addr)
 	applyStringEnvFallback(setFlags, "db", "SIDEPLANE_DB_PATH", values.dbPath)
+	applyStringEnvFallback(setFlags, "tls-cert", "SIDEPLANE_TLS_CERT", values.tlsCert)
+	applyStringEnvFallback(setFlags, "tls-key", "SIDEPLANE_TLS_KEY", values.tlsKey)
+	applyStringEnvFallback(setFlags, "tls-redirect-addr", "SIDEPLANE_TLS_REDIRECT_ADDR", values.tlsRedirectAddr)
 	applyStringEnvFallback(setFlags, "web-dir", "SIDEPLANE_WEB_DIR", values.webDir)
 	if err := applyDurationEnvFallback(setFlags, "stale-after", "SIDEPLANE_STALE_AFTER", values.staleAfter); err != nil {
 		return err
@@ -523,6 +535,68 @@ func applyStringEnvFallback(setFlags map[string]bool, flagName string, envName s
 	if envValue := strings.TrimSpace(os.Getenv(envName)); envValue != "" {
 		*value = envValue
 	}
+}
+
+func validateServerTLS(certFile string, keyFile string) (serverTLSConfig, error) {
+	certFile = strings.TrimSpace(certFile)
+	keyFile = strings.TrimSpace(keyFile)
+	if certFile == "" && keyFile == "" {
+		return serverTLSConfig{}, nil
+	}
+	if certFile == "" || keyFile == "" {
+		return serverTLSConfig{}, errors.New("tls-cert and tls-key must be set together")
+	}
+	if _, err := os.Stat(certFile); err != nil {
+		return serverTLSConfig{}, fmt.Errorf("read tls cert: %w", err)
+	}
+	if _, err := os.Stat(keyFile); err != nil {
+		return serverTLSConfig{}, fmt.Errorf("read tls key: %w", err)
+	}
+	if _, err := tls.LoadX509KeyPair(certFile, keyFile); err != nil {
+		return serverTLSConfig{}, fmt.Errorf("load tls cert/key pair: %w", err)
+	}
+	return serverTLSConfig{CertFile: certFile, KeyFile: keyFile}, nil
+}
+
+func serveHTTPServer(ctx context.Context, httpServer *http.Server, tlsConfig serverTLSConfig, logger *slog.Logger) error {
+	errCh := make(chan error, 1)
+	go func() {
+		if tlsConfig.Enabled() {
+			errCh <- httpServer.ListenAndServeTLS(tlsConfig.CertFile, tlsConfig.KeyFile)
+			return
+		}
+		errCh <- httpServer.ListenAndServe()
+	}()
+
+	select {
+	case err := <-errCh:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Error("sideplane-server stopped", "error", err)
+			return err
+		}
+	case <-ctx.Done():
+		logger.Info("shutting down sideplane-server", "timeout", shutdownTimeout.String())
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+		defer cancel()
+		if err := httpServer.Shutdown(shutdownCtx); err != nil {
+			logger.Error("shutdown sideplane-server", "error", err)
+			return err
+		}
+		if err := <-errCh; err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Error("sideplane-server stopped", "error", err)
+			return err
+		}
+	}
+	return nil
+}
+
+func freeTCPAddr() (string, error) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return "", err
+	}
+	defer listener.Close()
+	return listener.Addr().String(), nil
 }
 
 func applyDurationEnvFallback(setFlags map[string]bool, flagName string, envName string, value *time.Duration) error {
