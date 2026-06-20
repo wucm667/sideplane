@@ -138,6 +138,99 @@ func TestFleetStatusSelectorQuery(t *testing.T) {
 	}
 }
 
+func TestWhoamiCommandPrintsIdentityAndJSON(t *testing.T) {
+	response := protocol.WhoamiResponse{Scope: protocol.OperatorTokenScopeAdmin, TokenName: "ops laptop"}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/whoami" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer dev-token" {
+			t.Fatalf("Authorization = %q, want Bearer dev-token", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(response); err != nil {
+			t.Fatalf("encode whoami: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"whoami", "--server", server.URL, "--operator-token", "dev-token"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("run returned %d, stderr=%q", code, stderr.String())
+	}
+	for _, want := range []string{"Scope: admin", "Token name: ops laptop"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("whoami output missing %q:\n%s", want, stdout.String())
+		}
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"whoami", "--server", server.URL, "--operator-token", "dev-token", "--json"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("json run returned %d, stderr=%q", code, stderr.String())
+	}
+	var got protocol.WhoamiResponse
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode whoami JSON: %v\n%s", err, stdout.String())
+	}
+	if got.TokenName != "ops laptop" || got.Scope != protocol.OperatorTokenScopeAdmin {
+		t.Fatalf("whoami JSON = %+v", got)
+	}
+}
+
+func TestStatusCommandPrintsSummaryAndJSON(t *testing.T) {
+	response := protocol.ServerStatusResponse{
+		Version:       "dev",
+		Commit:        "abc123",
+		UptimeSeconds: 125,
+		SchemaVersion: 12,
+		NodeCount:     3,
+		RolloutCount:  2,
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/status" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer dev-token" {
+			t.Fatalf("Authorization = %q, want Bearer dev-token", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(response); err != nil {
+			t.Fatalf("encode status: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"status", "--server", server.URL, "--operator-token", "dev-token"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("run returned %d, stderr=%q", code, stderr.String())
+	}
+	for _, want := range []string{"Version: dev", "Commit: abc123", "Uptime: 2m5s", "Schema version: 12", "Nodes: 3", "Rollouts: 2"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("status output missing %q:\n%s", want, stdout.String())
+		}
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"status", "--server", server.URL, "--operator-token", "dev-token", "--json"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("json run returned %d, stderr=%q", code, stderr.String())
+	}
+	var got protocol.ServerStatusResponse
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode status JSON: %v\n%s", err, stdout.String())
+	}
+	if got.NodeCount != 3 || got.RolloutCount != 2 || got.UptimeSeconds != 125 {
+		t.Fatalf("status JSON = %+v", got)
+	}
+}
+
 func TestNodeInspectPrintsNodeDetail(t *testing.T) {
 	now := time.Now().UTC()
 	nodes := []cliNodeStatus{{
@@ -359,6 +452,8 @@ func TestHelpListsCommands(t *testing.T) {
 	for _, want := range []string{
 		"Usage: sideplane <command>",
 		"fleet status",
+		"whoami",
+		"status",
 		"probe <nodeId>",
 		"restart <nodeId>",
 		"rollback <nodeId>",
@@ -407,6 +502,8 @@ func TestPerCommandHelpPrintsFlags(t *testing.T) {
 		{args: []string{"rollout", "list", "--help"}, wantServer: true},
 		{args: []string{"rollout", "status", "--help"}, wantServer: true},
 		{args: []string{"rollout", "pause", "--help"}, wantServer: true},
+		{args: []string{"whoami", "--help"}, wantServer: true},
+		{args: []string{"status", "--help"}, wantServer: true},
 		{args: []string{"jobs", "list", "--help"}, wantServer: true},
 		{args: []string{"token", "create", "--help"}, wantServer: true},
 		{args: []string{"token", "list", "--help"}, wantServer: true},
@@ -447,6 +544,8 @@ func TestCompletionScriptsContainTopLevelCommands(t *testing.T) {
 			output := stdout.String()
 			for _, want := range []string{
 				"fleet",
+				"whoami",
+				"status",
 				"probe",
 				"restart",
 				"rollback",

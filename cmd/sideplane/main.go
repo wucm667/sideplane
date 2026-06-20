@@ -46,6 +46,8 @@ type completionCommand struct {
 
 var completionCommands = []completionCommand{
 	{Name: "fleet", Description: "show fleet node status", Subcommands: []string{"status"}},
+	{Name: "whoami", Description: "show authenticated operator identity"},
+	{Name: "status", Description: "show server status"},
 	{Name: "probe", Description: "run a deep probe on a node"},
 	{Name: "restart", Description: "create a standalone restart job"},
 	{Name: "rollback", Description: "create a rollback job from a backup ref"},
@@ -104,6 +106,10 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		if len(args) >= 2 && args[1] == "status" {
 			return runFleetStatus(args[2:], stdout, stderr)
 		}
+	case "whoami":
+		return runWhoami(args[1:], stdout, stderr)
+	case "status":
+		return runServerStatus(args[1:], stdout, stderr)
 	case "probe":
 		return runProbe(args[1:], stdout, stderr)
 	case "restart":
@@ -236,6 +242,8 @@ func printHelp(w io.Writer) {
 
 Commands:
   fleet status        Show fleet node status
+  whoami              Show authenticated operator identity
+  status              Show server status
   probe <nodeId>      Run a deep probe on a node
   restart <nodeId>    Create a standalone restart job
   rollback <nodeId>   Create a rollback job from a backup ref
@@ -302,6 +310,74 @@ func runConfigFilePath(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 1
 	}
 	fmt.Fprintln(stdout, resolvedCLIConfigPath())
+	return 0
+}
+
+func runWhoami(args []string, stdout io.Writer, stderr io.Writer) int {
+	flags := flag.NewFlagSet("sideplane whoami", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	serverURL := flags.String("server", "", "Sideplane server URL; can also be set with SIDEPLANE_SERVER_URL")
+	operatorTokenFlag := flags.String("operator-token", "", "operator bearer token; can also be set with SIDEPLANE_OPERATOR_TOKEN")
+	jsonOutput := flags.Bool("json", false, "print raw JSON response")
+	usage := "sideplane whoami [--server URL] [--operator-token TOKEN] [--json]"
+	if commandHelpRequested(args) {
+		printCommandHelp(stdout, usage, flags)
+		return 0
+	}
+	if err := parseCommandFlags(flags, args, "json"); err != nil {
+		return 2
+	}
+	if flags.NArg() != 0 {
+		fmt.Fprintln(stderr, "usage: "+usage)
+		return 1
+	}
+	resp, body, err := getJSON[protocol.WhoamiResponse](context.Background(), serverURLValue(*serverURL), "/api/whoami", operatorTokenValue(*operatorTokenFlag))
+	if err != nil {
+		fmt.Fprintf(stderr, "whoami: %v\n", err)
+		return 1
+	}
+	if *jsonOutput {
+		writeRawJSON(stdout, body)
+		return 0
+	}
+	fmt.Fprintf(stdout, "Scope: %s\n", valueOrDash(string(resp.Scope)))
+	fmt.Fprintf(stdout, "Token name: %s\n", valueOrDash(resp.TokenName))
+	return 0
+}
+
+func runServerStatus(args []string, stdout io.Writer, stderr io.Writer) int {
+	flags := flag.NewFlagSet("sideplane status", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	serverURL := flags.String("server", "", "Sideplane server URL; can also be set with SIDEPLANE_SERVER_URL")
+	operatorTokenFlag := flags.String("operator-token", "", "operator bearer token; can also be set with SIDEPLANE_OPERATOR_TOKEN")
+	jsonOutput := flags.Bool("json", false, "print raw JSON response")
+	usage := "sideplane status [--server URL] [--operator-token TOKEN] [--json]"
+	if commandHelpRequested(args) {
+		printCommandHelp(stdout, usage, flags)
+		return 0
+	}
+	if err := parseCommandFlags(flags, args, "json"); err != nil {
+		return 2
+	}
+	if flags.NArg() != 0 {
+		fmt.Fprintln(stderr, "usage: "+usage)
+		return 1
+	}
+	resp, body, err := getJSON[protocol.ServerStatusResponse](context.Background(), serverURLValue(*serverURL), "/api/status", operatorTokenValue(*operatorTokenFlag))
+	if err != nil {
+		fmt.Fprintf(stderr, "status: %v\n", err)
+		return 1
+	}
+	if *jsonOutput {
+		writeRawJSON(stdout, body)
+		return 0
+	}
+	fmt.Fprintf(stdout, "Version: %s\n", valueOrDash(resp.Version))
+	fmt.Fprintf(stdout, "Commit: %s\n", valueOrDash(resp.Commit))
+	fmt.Fprintf(stdout, "Uptime: %s\n", (time.Duration(resp.UptimeSeconds) * time.Second).String())
+	fmt.Fprintf(stdout, "Schema version: %d\n", resp.SchemaVersion)
+	fmt.Fprintf(stdout, "Nodes: %d\n", resp.NodeCount)
+	fmt.Fprintf(stdout, "Rollouts: %d\n", resp.RolloutCount)
 	return 0
 }
 

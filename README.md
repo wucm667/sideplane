@@ -350,6 +350,8 @@ Generate shell completion with `sideplane completion bash` or
 | Command | Purpose | Key flags |
 | --- | --- | --- |
 | `sideplane fleet status` | Show fleet node status. | `--server`, `--selector`, `--json` |
+| `sideplane whoami` | Show authenticated operator scope and token name. | `--server`, `--operator-token`, `--json` |
+| `sideplane status` | Show server version, uptime, schema, and fleet counts. | `--server`, `--operator-token`, `--json` |
 | `sideplane probe <nodeId>` | Create a deep-probe job, or a bulk probe with `--selector`. | `--server`, `--operator-token`, `--selector`, `--wait`, `--json` |
 | `sideplane jobs list <nodeId>` | List node jobs with optional filters. | `--server`, `--operator-token`, `--limit`, `--status`, `--json` |
 | `sideplane audit list` | List audit events newest first. | `--server`, `--node-id`, `--action`, `--limit`, `--json` |
