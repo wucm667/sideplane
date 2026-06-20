@@ -1,8 +1,7 @@
-import type { DesiredConfig, NodeStatusWithDrift, ProviderModelConfig, RuntimeConfigSnapshot as GeneratedRuntimeConfigSnapshot, RuntimeStatus as GeneratedRuntimeStatus } from './generated/api.ts'
+import type { AuditEvent as GeneratedAuditEvent, DesiredConfig, NodeStatusWithDrift, ProviderModelConfig, RuntimeConfigSnapshot as GeneratedRuntimeConfigSnapshot, RuntimeStatus as GeneratedRuntimeStatus } from './generated/api.ts'
 
 export type {
   APIError,
-  AuditEvent,
   ConfigApplyResult,
   ConfigApplyStep,
   ConfigDiffEntry,
@@ -25,6 +24,10 @@ export type {
   RestartJobResult,
   RestartRequest,
 } from './generated/api.ts'
+
+// AuditEvent augments the generated type with the optional acting token name
+// (actorName), surfaced for operator attribution. Never carries a secret.
+export type AuditEvent = GeneratedAuditEvent & { actorName?: string }
 
 export type NodeLabels = Record<string, string>
 export type RuntimeHealthState = 'healthy' | 'degraded' | 'unknown'

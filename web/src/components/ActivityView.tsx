@@ -112,7 +112,10 @@ export function ActivityView({
         {!loading && events.map((event) => (
           <div key={event.id} className="grid gap-2 border-b border-[var(--sp-border)] px-5 py-4 text-sm last:border-b-0 sm:grid-cols-[1fr_1fr_1.4fr_1.4fr] sm:items-center sm:gap-4">
             <div className="text-xs text-[var(--sp-faint)]" title={formatDate(event.createdAt)}>{formatRelativeTime(event.createdAt)}</div>
-            <div className="font-mono text-xs text-[var(--sp-muted)]">{event.actor}</div>
+            <div className="font-mono text-xs text-[var(--sp-muted)]">
+              {event.actor}
+              {event.actorName && <span className="text-[var(--sp-faint)]"> ({event.actorName})</span>}
+            </div>
             <div className="font-mono text-xs font-semibold text-[var(--sp-text)]">{event.action}</div>
             <div className="min-w-0">
               <div className="truncate font-mono text-xs text-[var(--sp-muted)]">{event.targetNode || '-'}</div>

@@ -3318,13 +3318,26 @@ func printAuditTable(w io.Writer, events []protocol.AuditEvent) {
 			table,
 			"%s\t%s\t%s\t%s\t%s\n",
 			timeLabel(event.CreatedAt),
-			valueOrDash(event.Actor),
+			valueOrDash(auditActorLabel(event)),
 			valueOrDash(event.Action),
 			valueOrDash(event.TargetNode),
 			valueOrDash(spconfig.RedactString(event.Detail)),
 		)
 	}
 	table.Flush()
+}
+
+// auditActorLabel renders the actor role plus the acting token name when known,
+// e.g. "operator (ops)". It never exposes a token secret.
+func auditActorLabel(event protocol.AuditEvent) string {
+	name := strings.TrimSpace(event.ActorName)
+	if name == "" {
+		return event.Actor
+	}
+	if strings.TrimSpace(event.Actor) == "" {
+		return name
+	}
+	return event.Actor + " (" + name + ")"
 }
 
 func printBackupsTable(w io.Writer, backups []protocol.RollbackBackupInventoryItem) {
