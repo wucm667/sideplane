@@ -2,12 +2,16 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/wucm667/sideplane/internal/store"
+	"github.com/wucm667/sideplane/pkg/protocol"
 )
 
 func TestRunRejectsInvalidFreshnessDurations(t *testing.T) {
@@ -279,6 +283,93 @@ func TestRunCreatesSigningKeyFromFlagBeforeListenFailure(t *testing.T) {
 	}
 	if info.Mode().Perm() != 0o600 {
 		t.Fatalf("signing key mode = %v, want 0600", info.Mode().Perm())
+	}
+}
+
+func TestRunBackupSubcommandWritesUsableCopy(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "sideplane.db")
+	src, err := store.OpenSQLiteNodeStore(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("open source db: %v", err)
+	}
+	if _, err := src.RecordHeartbeat(ctx, protocol.HeartbeatRequest{NodeID: "node-a", Hostname: "host-a"}, time.Now().UTC()); err != nil {
+		t.Fatalf("seed node: %v", err)
+	}
+	if err := src.Close(); err != nil {
+		t.Fatalf("close source db: %v", err)
+	}
+
+	outPath := filepath.Join(dir, "snapshot.db")
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"backup", "--db", dbPath, "--out", outPath}, &stdout, &stderr); code != 0 {
+		t.Fatalf("backup exit code = %d, stderr=%q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Backup written to "+outPath) {
+		t.Fatalf("stdout = %q, want backup confirmation", stdout.String())
+	}
+
+	restored, err := store.OpenSQLiteNodeStore(ctx, outPath)
+	if err != nil {
+		t.Fatalf("open backup db: %v", err)
+	}
+	defer restored.Close()
+	nodes, err := restored.ListNodes(ctx)
+	if err != nil {
+		t.Fatalf("list nodes from backup: %v", err)
+	}
+	if len(nodes) != 1 || nodes[0].NodeID != "node-a" {
+		t.Fatalf("backup nodes = %+v, want one node-a", nodes)
+	}
+}
+
+func TestRunBackupSubcommandRequiresOut(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"backup", "--db", filepath.Join(t.TempDir(), "sideplane.db")}, &stdout, &stderr); code != 1 {
+		t.Fatalf("exit code = %d, want 1", code)
+	}
+	if !strings.Contains(stderr.String(), "--out is required") {
+		t.Fatalf("stderr = %q, want --out is required", stderr.String())
+	}
+}
+
+func TestPerformScheduledBackupWritesAndPrunes(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	src, err := store.OpenSQLiteNodeStore(ctx, filepath.Join(dir, "sideplane.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer src.Close()
+
+	backupDir := filepath.Join(dir, "backups")
+	const keep = 2
+	base := time.Date(2026, 6, 18, 12, 0, 0, 0, time.UTC)
+	totalPruned := 0
+	for i := 0; i < 5; i++ {
+		_, pruned, err := performScheduledBackup(ctx, src, backupDir, keep, base.Add(time.Duration(i)*time.Second))
+		if err != nil {
+			t.Fatalf("scheduled backup %d: %v", i, err)
+		}
+		totalPruned += pruned
+	}
+
+	entries, err := os.ReadDir(backupDir)
+	if err != nil {
+		t.Fatalf("read backup dir: %v", err)
+	}
+	backups := 0
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), backupFilePrefix) && strings.HasSuffix(entry.Name(), ".db") {
+			backups++
+		}
+	}
+	if backups != keep {
+		t.Fatalf("retained backups = %d, want %d", backups, keep)
+	}
+	if totalPruned != 3 {
+		t.Fatalf("total pruned = %d, want 3", totalPruned)
 	}
 }
 

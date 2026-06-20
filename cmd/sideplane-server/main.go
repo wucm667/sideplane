@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -28,17 +30,27 @@ const shutdownTimeout = 10 * time.Second
 const heartbeatPruneInterval = 10 * time.Minute
 const retentionPruneInterval = time.Hour
 const defaultRolloutInterval = 5 * time.Second
+const defaultBackupRetention = 7
+const backupFilePrefix = "sideplane-backup-"
+const backupFileTimeLayout = "20060102T150405.000000000"
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
 
 func run(args []string, stdout io.Writer, stderr io.Writer) int {
+	if len(args) > 0 && args[0] == "backup" {
+		return runServerBackup(args[1:], stdout, stderr)
+	}
+
 	flags := flag.NewFlagSet("sideplane-server", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 
 	addr := flags.String("addr", ":8080", "HTTP listen address")
 	dbPath := flags.String("db", "sideplane.db", "SQLite database path")
+	backupDir := flags.String("backup-dir", "", "directory for periodic online DB backups; periodic backups are off unless set with a positive --backup-interval")
+	backupInterval := flags.Duration("backup-interval", 0, "interval between periodic online DB backups; set 0 to disable")
+	backupRetention := flags.Int("backup-retention", defaultBackupRetention, "number of recent periodic DB backups to retain")
 	webDir := flags.String("web-dir", "", "directory of built Web UI static assets to serve; overrides embedded assets when set")
 	staleAfter := flags.Duration("stale-after", server.DefaultStaleAfter, "duration after last heartbeat before a node is stale")
 	offlineAfter := flags.Duration("offline-after", server.DefaultOfflineAfter, "duration after last heartbeat before a node is offline")
@@ -103,6 +115,18 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 	if *rolloutInterval < 0 {
 		fmt.Fprintln(stderr, "invalid rollout interval: rollout-interval must be zero or positive")
+		return 1
+	}
+	if *backupInterval < 0 {
+		fmt.Fprintln(stderr, "invalid backup interval: backup-interval must be zero or positive")
+		return 1
+	}
+	if *backupRetention <= 0 {
+		fmt.Fprintln(stderr, "invalid backup retention: backup-retention must be positive")
+		return 1
+	}
+	if *backupInterval > 0 && strings.TrimSpace(*backupDir) == "" {
+		fmt.Fprintln(stderr, "invalid backup configuration: backup-dir is required when backup-interval is set")
 		return 1
 	}
 	if *enrollmentRateLimit < 0 {
@@ -207,6 +231,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 
 	startHeartbeatPruner(ctx, nodeStore, *heartbeatRetention, heartbeatPruneInterval, logger)
 	startRetentionPruner(ctx, nodeStore, *jobRetention, *auditRetention, retentionPruneInterval, logger)
+	startBackupScheduler(ctx, nodeStore, strings.TrimSpace(*backupDir), *backupInterval, *backupRetention, logger)
 	server.StartRolloutOrchestrator(ctx, server.RolloutOrchestratorConfig{
 		Store:      nodeStore,
 		Freshness:  freshness,
@@ -226,6 +251,8 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		"job_retention", jobRetention.String(),
 		"audit_retention", auditRetention.String(),
 		"rollout_interval", rolloutInterval.String(),
+		"backup_dir", *backupDir,
+		"backup_interval", backupInterval.String(),
 		"enrollment_rate_limit", *enrollmentRateLimit,
 		"operator_auth_rate_limit", *operatorAuthRateLimit,
 		"rate_limit_window", rateLimitWindow.String(),
@@ -273,6 +300,112 @@ type serverFlagValues struct {
 	enrollmentRateLimit   *int
 	operatorAuthRateLimit *int
 	rateLimitWindow       *time.Duration
+}
+
+// runServerBackup writes a one-shot online backup of the database and exits
+// without serving HTTP.
+func runServerBackup(args []string, stdout io.Writer, stderr io.Writer) int {
+	flags := flag.NewFlagSet("sideplane-server backup", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	dbPath := flags.String("db", "sideplane.db", "SQLite database path")
+	out := flags.String("out", "", "destination path for the backup copy")
+	if err := flags.Parse(args); err != nil {
+		return 2
+	}
+	dest := strings.TrimSpace(*out)
+	if dest == "" {
+		fmt.Fprintln(stderr, "backup: --out is required")
+		return 1
+	}
+
+	ctx := context.Background()
+	nodeStore, err := store.OpenSQLiteNodeStore(ctx, *dbPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "backup: open db %s: %v\n", *dbPath, err)
+		return 1
+	}
+	defer func() { _ = nodeStore.Close() }()
+
+	if err := nodeStore.BackupTo(ctx, dest); err != nil {
+		fmt.Fprintf(stderr, "backup: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "Backup written to %s\n", dest)
+	return 0
+}
+
+// startBackupScheduler periodically writes online DB backups into dir and prunes
+// all but the most recent keep backups. It is off unless dir and a positive
+// interval are both set.
+func startBackupScheduler(ctx context.Context, backupStore store.OnlineBackupStore, dir string, interval time.Duration, keep int, logger *slog.Logger) {
+	if backupStore == nil || dir == "" || interval <= 0 {
+		return
+	}
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				dest, pruned, err := performScheduledBackup(ctx, backupStore, dir, keep, time.Now())
+				if err != nil {
+					logger.Warn("scheduled db backup failed", "error", err)
+					continue
+				}
+				logger.Info("wrote scheduled db backup", "path", dest, "pruned", pruned)
+			}
+		}
+	}()
+}
+
+// performScheduledBackup writes one timestamped backup into dir and prunes old
+// backups, returning the new backup path and the number of pruned files.
+func performScheduledBackup(ctx context.Context, backupStore store.OnlineBackupStore, dir string, keep int, now time.Time) (string, int, error) {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", 0, fmt.Errorf("create backup dir: %w", err)
+	}
+	dest := filepath.Join(dir, backupFilePrefix+now.UTC().Format(backupFileTimeLayout)+".db")
+	if err := backupStore.BackupTo(ctx, dest); err != nil {
+		return "", 0, err
+	}
+	pruned, err := pruneBackups(dir, keep)
+	if err != nil {
+		return dest, pruned, err
+	}
+	return dest, pruned, nil
+}
+
+// pruneBackups keeps the newest keep backup files in dir (named by sortable
+// timestamp) and removes the rest, returning the number removed.
+func pruneBackups(dir string, keep int) (int, error) {
+	if keep <= 0 {
+		return 0, nil
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return 0, fmt.Errorf("read backup dir: %w", err)
+	}
+	var backups []string
+	for _, entry := range entries {
+		name := entry.Name()
+		if !entry.IsDir() && strings.HasPrefix(name, backupFilePrefix) && strings.HasSuffix(name, ".db") {
+			backups = append(backups, name)
+		}
+	}
+	if len(backups) <= keep {
+		return 0, nil
+	}
+	sort.Strings(backups)
+	removed := 0
+	for _, name := range backups[:len(backups)-keep] {
+		if err := os.Remove(filepath.Join(dir, name)); err != nil {
+			return removed, fmt.Errorf("remove old backup: %w", err)
+		}
+		removed++
+	}
+	return removed, nil
 }
 
 func startHeartbeatPruner(ctx context.Context, nodeStore store.NodeStore, keep int, interval time.Duration, logger *slog.Logger) {
