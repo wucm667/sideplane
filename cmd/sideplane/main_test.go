@@ -326,6 +326,8 @@ func TestHelpListsCommands(t *testing.T) {
 		"config preview <id>",
 		"config get",
 		"config set",
+		"config history",
+		"config revert <id>",
 		"node inspect <id>",
 		"node label <id>",
 		"node remove <id>",
@@ -341,6 +343,8 @@ func TestHelpListsCommands(t *testing.T) {
 func TestPerCommandHelpPrintsFlags(t *testing.T) {
 	tests := [][]string{
 		{"config", "apply", "--help"},
+		{"config", "history", "--help"},
+		{"config", "revert", "--help"},
 		{"restart", "--help"},
 		{"rollback", "--help"},
 		{"backups", "list", "--help"},
@@ -2014,6 +2018,127 @@ func TestConfigSetUpdatesGlobalDesiredConfig(t *testing.T) {
 	}
 	if got := stdout.String(); !strings.Contains(got, "Global: openai / gpt-4o") {
 		t.Fatalf("stdout = %q, want updated global config", got)
+	}
+}
+
+func TestConfigHistoryPrintsTableAndUsesPagination(t *testing.T) {
+	updatedAt := time.Date(2026, 6, 20, 10, 0, 0, 0, time.UTC)
+	resp := protocol.ListDesiredConfigHistoryResponse{
+		History: []protocol.DesiredConfigHistoryEntry{{
+			ID:          "deshist_123",
+			Config:      protocol.DesiredConfig{Global: protocol.ProviderModelConfig{Provider: "openai", Model: "gpt-4o"}},
+			DesiredHash: "sha256:abc",
+			UpdatedAt:   updatedAt,
+			Actor:       "operator",
+		}},
+		Total:  1,
+		Limit:  25,
+		Offset: 5,
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/config/desired/history" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer test-token" {
+			t.Fatalf("Authorization = %q, want bearer token", got)
+		}
+		if r.URL.Query().Get("limit") != "25" || r.URL.Query().Get("offset") != "5" {
+			t.Fatalf("query = %s, want limit 25 offset 5", r.URL.RawQuery)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(resp); err != nil {
+			t.Fatalf("encode response: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"config", "history", "--server", server.URL, "--operator-token", "test-token", "--limit", "25", "--offset", "5"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("run returned %d, stderr=%q", code, stderr.String())
+	}
+	output := stdout.String()
+	for _, want := range []string{"ID", "UPDATED", "ACTOR", "HASH", "GLOBAL", "deshist_123", "sha256:abc", "openai / gpt-4o"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output missing %q:\n%s", want, output)
+		}
+	}
+}
+
+func TestConfigHistoryJSONOutput(t *testing.T) {
+	resp := protocol.ListDesiredConfigHistoryResponse{
+		History: []protocol.DesiredConfigHistoryEntry{{ID: "deshist_json"}},
+		Total:   1,
+		Limit:   50,
+	}
+	server := httptest.NewServer(jsonHandler(t, http.MethodGet, "/api/config/desired/history", resp))
+	defer server.Close()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"config", "history", "--server", server.URL, "--json"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("run returned %d, stderr=%q", code, stderr.String())
+	}
+	var got protocol.ListDesiredConfigHistoryResponse
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("decode JSON output: %v", err)
+	}
+	if len(got.History) != 1 || got.History[0].ID != "deshist_json" {
+		t.Fatalf("history = %+v, want deshist_json", got.History)
+	}
+}
+
+func TestConfigRevertRequiresYesAndPostsHistoryID(t *testing.T) {
+	var sawPost bool
+	resp := protocol.RevertDesiredConfigResponse{
+		Desired: protocol.DesiredConfig{Global: protocol.ProviderModelConfig{Provider: "openai", Model: "gpt-4o"}},
+		History: protocol.DesiredConfigHistoryEntry{
+			ID:     "deshist_new",
+			Config: protocol.DesiredConfig{Global: protocol.ProviderModelConfig{Provider: "openai", Model: "gpt-4o"}},
+		},
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/config/desired/revert" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer test-token" {
+			t.Fatalf("Authorization = %q, want bearer token", got)
+		}
+		var req protocol.RevertDesiredConfigRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if req.HistoryID != "deshist_old" {
+			t.Fatalf("historyId = %q, want deshist_old", req.HistoryID)
+		}
+		sawPost = true
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(resp); err != nil {
+			t.Fatalf("encode response: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"config", "revert", "deshist_old", "--server", server.URL, "--operator-token", "test-token"}, &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("run without --yes returned %d, want 1", code)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run([]string{"config", "revert", "deshist_old", "--server", server.URL, "--operator-token", "test-token", "--yes"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("run returned %d, stderr=%q", code, stderr.String())
+	}
+	if !sawPost {
+		t.Fatal("server did not receive revert POST")
+	}
+	if !strings.Contains(stdout.String(), "Reverted desired config to history deshist_old.") || !strings.Contains(stdout.String(), "Global: openai / gpt-4o") {
+		t.Fatalf("stdout = %q, want revert summary", stdout.String())
 	}
 }
 

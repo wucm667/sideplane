@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { apiErrorMessage } from './helpers.ts'
-import type { ConfigApplyResult, ConfigApplyStep, DesiredConfig, EffectiveConfigPreviewRequest, EffectiveConfigResponse, Job } from './types.ts'
+import { apiErrorMessage, formatDate } from './helpers.ts'
+import type { ConfigApplyResult, ConfigApplyStep, DesiredConfig, DesiredConfigHistoryEntry, EffectiveConfigPreviewRequest, EffectiveConfigResponse, Job, ListDesiredConfigHistoryResponse, RevertDesiredConfigResponse } from './types.ts'
 
 const WIZARD_STEPS = ['Edit', 'Review', 'Apply', 'Done'] as const
 type WizardStep = (typeof WIZARD_STEPS)[number]
@@ -51,6 +51,10 @@ export default function ConfigWizard({
   const [review, setReview] = useState<EffectiveConfigResponse | undefined>(effective)
   const [applyResult, setApplyResult] = useState<ConfigApplyResult | null>(null)
   const [applyStatus, setApplyStatus] = useState<Job['status'] | null>(null)
+  const [history, setHistory] = useState<DesiredConfigHistoryEntry[]>([])
+  const [historyLoading, setHistoryLoading] = useState(false)
+  const [historyError, setHistoryError] = useState<string | null>(null)
+  const [revertingHistoryId, setRevertingHistoryId] = useState<string | null>(null)
   const mountedRef = useRef(true)
 
   useEffect(() => {
@@ -75,6 +79,64 @@ export default function ConfigWizard({
     if (res.status === 401) return 'Operator token required or invalid'
     return apiErrorMessage(res)
   }
+
+  const loadHistory = useCallback(async () => {
+    if (!operatorToken.trim()) {
+      setHistory([])
+      setHistoryError(null)
+      setHistoryLoading(false)
+      return
+    }
+    setHistoryLoading(true)
+    setHistoryError(null)
+    try {
+      const res = await authedFetch('/api/config/desired/history?limit=8', { method: 'GET' })
+      if (!res.ok) throw new Error(await failMessage(res))
+      const data = (await res.json()) as ListDesiredConfigHistoryResponse
+      if (!mountedRef.current) return
+      setHistory(data.history ?? [])
+    } catch (e) {
+      if (mountedRef.current) setHistoryError(e instanceof Error ? e.message : 'Unknown error')
+    } finally {
+      if (mountedRef.current) setHistoryLoading(false)
+    }
+  }, [authedFetch, operatorToken])
+
+  useEffect(() => {
+    void loadHistory()
+  }, [loadHistory])
+
+  const applyDesiredToFields = useCallback((desired: DesiredConfig) => {
+    const nodeRuntimeOverride = desired.nodeRuntimeProfileOverrides?.[nodeRuntimeProfileKey(nodeId, runtimeType, profile)]
+    const runtimeOverride = desired.runtimeProfileOverrides?.[runtimeProfileKey(runtimeType, profile)]
+    const nodeOverride = desired.nodeOverrides?.[nodeId]
+    const selected = nodeRuntimeOverride ?? runtimeOverride ?? nodeOverride ?? desired.global
+    setProvider(selected?.provider ?? '')
+    setModel(selected?.model ?? '')
+  }, [nodeId, profile, runtimeType])
+
+  const revertHistory = useCallback(async (entry: DesiredConfigHistoryEntry) => {
+    if (!operatorToken.trim() || revertingHistoryId) return
+    if (!window.confirm(`Revert desired config to ${entry.id}?`)) return
+    setRevertingHistoryId(entry.id)
+    setHistoryError(null)
+    try {
+      const res = await authedFetch('/api/config/desired/revert', {
+        method: 'POST',
+        body: JSON.stringify({ historyId: entry.id }),
+      })
+      if (!res.ok) throw new Error(await failMessage(res))
+      const data = (await res.json()) as RevertDesiredConfigResponse
+      if (!mountedRef.current) return
+      setHistory((current) => [data.history, ...current.filter((item) => item.id !== data.history.id)])
+      applyDesiredToFields(data.desired)
+      onApplied()
+    } catch (e) {
+      if (mountedRef.current) setHistoryError(e instanceof Error ? e.message : 'Unknown error')
+    } finally {
+      if (mountedRef.current) setRevertingHistoryId(null)
+    }
+  }, [applyDesiredToFields, authedFetch, onApplied, operatorToken, revertingHistoryId])
 
   const goReview = useCallback(async () => {
     if (!provider.trim() || !model.trim()) {
@@ -222,6 +284,15 @@ export default function ConfigWizard({
                 />
               </Field>
               <ApplyModeToggle dryRun={dryRun} onChange={setDryRun} />
+              <DesiredHistoryPanel
+                entries={history}
+                error={historyError}
+                loading={historyLoading}
+                revertingId={revertingHistoryId}
+                tokenReady={Boolean(operatorToken.trim())}
+                onRefresh={loadHistory}
+                onRevert={revertHistory}
+              />
             </div>
           )}
 
@@ -319,6 +390,15 @@ function runtimeProfileKey(runtimeType: string, profile: string): string {
   return `${trimmedRuntimeType}/${trimmedProfile}`
 }
 
+function desiredHistoryLabel(desired: DesiredConfig): string {
+  const provider = desired.global?.provider?.trim()
+  const model = desired.global?.model?.trim()
+  if (provider && model) return `${provider}/${model}`
+  if (provider) return provider
+  if (model) return model
+  return 'no global default'
+}
+
 function stepStatus(result: ConfigApplyResult | null, name: string): string {
   const step = result?.steps.find((entry) => entry.name === name)
   return step?.status ?? 'pending'
@@ -393,6 +473,74 @@ function pipelineVisual(status: string): { icon: string; tone: string } {
     default:
       return { icon: '○', tone: 'bg-[var(--sp-surface-3)] text-[var(--sp-faint)]' }
   }
+}
+
+function DesiredHistoryPanel({
+  entries,
+  error,
+  loading,
+  revertingId,
+  tokenReady,
+  onRefresh,
+  onRevert,
+}: {
+  entries: DesiredConfigHistoryEntry[]
+  error: string | null
+  loading: boolean
+  revertingId: string | null
+  tokenReady: boolean
+  onRefresh: () => void
+  onRevert: (entry: DesiredConfigHistoryEntry) => void
+}) {
+  return (
+    <section className="rounded-lg border border-[var(--sp-border)] bg-[var(--sp-surface-2)]">
+      <div className="flex items-center justify-between border-b border-[var(--sp-border)] px-3 py-2">
+        <div>
+          <div className="text-sm font-semibold">Desired config history</div>
+          <div className="text-[11px] text-[var(--sp-faint)]">Past saved desired states</div>
+        </div>
+        <button
+          type="button"
+          className="h-8 rounded-lg border border-[var(--sp-border-strong)] px-2.5 text-xs font-medium hover:bg-[var(--sp-surface)] disabled:cursor-not-allowed disabled:opacity-55"
+          disabled={!tokenReady || loading}
+          onClick={onRefresh}
+        >
+          {loading ? 'Loading...' : 'Refresh'}
+        </button>
+      </div>
+      {error && (
+        <div className="border-b border-rose-500/20 bg-rose-500/10 px-3 py-2 text-xs text-rose-600">
+          {error}
+        </div>
+      )}
+      <div className="grid divide-y divide-[var(--sp-border)]">
+        {entries.length === 0 && (
+          <div className="px-3 py-4 text-sm text-[var(--sp-muted)]">
+            {loading ? 'Loading history...' : tokenReady ? 'No desired config history yet.' : 'Set an operator token to load history.'}
+          </div>
+        )}
+        {entries.map((entry) => (
+          <div key={entry.id} className="grid gap-2 px-3 py-3">
+            <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+              <div className="min-w-0">
+                <div className="truncate font-mono text-xs text-[var(--sp-text)]">{entry.id}</div>
+                <div className="mt-1 text-xs text-[var(--sp-muted)]">{desiredHistoryLabel(entry.config)} · {formatDate(entry.updatedAt)}</div>
+              </div>
+              <button
+                type="button"
+                className="h-8 rounded-lg border border-amber-500/35 bg-amber-500/10 px-2.5 text-xs font-medium text-amber-700 hover:bg-amber-500/15 disabled:cursor-not-allowed disabled:opacity-55"
+                disabled={!tokenReady || Boolean(revertingId)}
+                onClick={() => onRevert(entry)}
+              >
+                {revertingId === entry.id ? 'Reverting...' : 'Revert'}
+              </button>
+            </div>
+            <div className="font-mono text-[11px] text-[var(--sp-faint)]">{entry.desiredHash || '-'}</div>
+          </div>
+        ))}
+      </div>
+    </section>
+  )
 }
 
 function ApplyModeToggle({ dryRun, onChange }: { dryRun: boolean; onChange: (value: boolean) => void }) {

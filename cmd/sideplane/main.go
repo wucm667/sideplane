@@ -117,6 +117,12 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		if len(args) >= 2 && args[1] == "set" {
 			return runConfigSet(args[2:], stdout, stderr)
 		}
+		if len(args) >= 2 && args[1] == "history" {
+			return runConfigHistory(args[2:], stdout, stderr)
+		}
+		if len(args) >= 2 && args[1] == "revert" {
+			return runConfigRevert(args[2:], stdout, stderr)
+		}
 	case "node":
 		if len(args) >= 2 && args[1] == "inspect" {
 			return runNodeInspect(args[2:], stdout, stderr)
@@ -163,6 +169,8 @@ Commands:
   config preview <id> Preview effective node configuration
   config get          Show desired configuration
   config set          Update global desired configuration
+  config history      List desired configuration history
+  config revert <id>  Revert desired configuration
   node inspect <id>   Show full node detail
   node label <id>     Set or remove node labels
   node remove <id>    Remove a node from the fleet
@@ -1212,6 +1220,90 @@ func runConfigSet(args []string, stdout io.Writer, stderr io.Writer) int {
 	return 0
 }
 
+func runConfigHistory(args []string, stdout io.Writer, stderr io.Writer) int {
+	flags := flag.NewFlagSet("sideplane config history", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+
+	serverURL := flags.String("server", "", "Sideplane server URL; can also be set with SIDEPLANE_SERVER_URL")
+	operatorTokenFlag := flags.String("operator-token", "", "operator bearer token; can also be set with SIDEPLANE_OPERATOR_TOKEN")
+	limit := flags.Int("limit", 50, "maximum number of history entries")
+	offset := flags.Int("offset", 0, "history page offset")
+	jsonOutput := flags.Bool("json", false, "print raw JSON response")
+	usage := "sideplane config history [--server URL] [--operator-token TOKEN] [--limit N] [--offset N] [--json]"
+	if commandHelpRequested(args) {
+		printCommandHelp(stdout, usage, flags)
+		return 0
+	}
+	if err := parseCommandFlags(flags, args, "json"); err != nil {
+		return 2
+	}
+	if flags.NArg() != 0 {
+		fmt.Fprintln(stderr, "usage: "+usage)
+		return 1
+	}
+	if *limit <= 0 {
+		fmt.Fprintln(stderr, "config history: --limit must be positive")
+		return 1
+	}
+	if *offset < 0 {
+		fmt.Fprintln(stderr, "config history: --offset must be non-negative")
+		return 1
+	}
+	params := url.Values{}
+	params.Set("limit", strconv.Itoa(*limit))
+	params.Set("offset", strconv.Itoa(*offset))
+	resp, body, err := getJSON[protocol.ListDesiredConfigHistoryResponse](context.Background(), serverURLValue(*serverURL), "/api/config/desired/history?"+params.Encode(), operatorTokenValue(*operatorTokenFlag))
+	if err != nil {
+		fmt.Fprintf(stderr, "config history: %v\n", err)
+		return 1
+	}
+	if *jsonOutput {
+		writeRawJSON(stdout, body)
+		return 0
+	}
+	printDesiredConfigHistoryTable(stdout, resp.History)
+	return 0
+}
+
+func runConfigRevert(args []string, stdout io.Writer, stderr io.Writer) int {
+	flags := flag.NewFlagSet("sideplane config revert", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+
+	serverURL := flags.String("server", "", "Sideplane server URL; can also be set with SIDEPLANE_SERVER_URL")
+	operatorTokenFlag := flags.String("operator-token", "", "operator bearer token; can also be set with SIDEPLANE_OPERATOR_TOKEN")
+	yes := flags.Bool("yes", false, "confirm desired config revert")
+	usage := "sideplane config revert <historyId> --yes [--server URL] [--operator-token TOKEN]"
+	if commandHelpRequested(args) {
+		printCommandHelp(stdout, usage, flags)
+		return 0
+	}
+	if err := parseCommandFlags(flags, args, "yes"); err != nil {
+		return 2
+	}
+	if flags.NArg() != 1 {
+		fmt.Fprintln(stderr, "usage: "+usage)
+		return 1
+	}
+	historyID := strings.TrimSpace(flags.Arg(0))
+	if historyID == "" {
+		fmt.Fprintln(stderr, "config revert: historyId is required")
+		return 1
+	}
+	if !*yes {
+		fmt.Fprintln(stderr, "config revert: --yes is required")
+		return 1
+	}
+
+	resp, _, err := postJSON[protocol.RevertDesiredConfigResponse](context.Background(), serverURLValue(*serverURL), "/api/config/desired/revert", protocol.RevertDesiredConfigRequest{HistoryID: historyID}, operatorTokenValue(*operatorTokenFlag))
+	if err != nil {
+		fmt.Fprintf(stderr, "config revert: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "Reverted desired config to history %s.\n", historyID)
+	printDesiredConfigSummary(stdout, resp.Desired)
+	return 0
+}
+
 func runProbe(args []string, stdout io.Writer, stderr io.Writer) int {
 	flags := flag.NewFlagSet("sideplane probe", flag.ContinueOnError)
 	flags.SetOutput(stderr)
@@ -1656,6 +1748,23 @@ func printDesiredConfigSummary(w io.Writer, desired protocol.DesiredConfig) {
 	printConfigMapSummary(w, "Node overrides", desired.NodeOverrides)
 	printConfigMapSummary(w, "Runtime profile overrides", desired.RuntimeProfileOverrides)
 	printConfigMapSummary(w, "Node runtime profile overrides", desired.NodeRuntimeProfileOverrides)
+}
+
+func printDesiredConfigHistoryTable(w io.Writer, history []protocol.DesiredConfigHistoryEntry) {
+	table := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(table, "ID\tUPDATED\tACTOR\tHASH\tGLOBAL")
+	for _, entry := range history {
+		fmt.Fprintf(
+			table,
+			"%s\t%s\t%s\t%s\t%s\n",
+			entry.ID,
+			timeLabel(entry.UpdatedAt),
+			valueOrDash(entry.Actor),
+			valueOrDash(entry.DesiredHash),
+			providerModelLabel(entry.Config.Global),
+		)
+	}
+	table.Flush()
 }
 
 func printEffectiveConfigPreview(w io.Writer, effective protocol.EffectiveConfigResponse, actualHashOverride string) {

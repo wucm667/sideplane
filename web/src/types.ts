@@ -1,4 +1,4 @@
-import type { NodeStatusWithDrift, ProviderModelConfig } from './generated/api.ts'
+import type { DesiredConfig, NodeStatusWithDrift, ProviderModelConfig } from './generated/api.ts'
 
 export type {
   APIError,
@@ -151,6 +151,30 @@ export interface RevokeOperatorTokenResponse {
   operatorToken: OperatorToken
 }
 
+export interface DesiredConfigHistoryEntry {
+  id: string
+  config: DesiredConfig
+  desiredHash?: string
+  updatedAt: string
+  actor: string
+}
+
+export interface ListDesiredConfigHistoryResponse {
+  history: DesiredConfigHistoryEntry[]
+  total: number
+  limit: number
+  offset: number
+}
+
+export interface RevertDesiredConfigRequest {
+  historyId: string
+}
+
+export interface RevertDesiredConfigResponse {
+  desired: DesiredConfig
+  history: DesiredConfigHistoryEntry
+}
+
 export type AuditAction =
   | 'enrollment.token.create'
   | 'operator.token.create'
@@ -170,6 +194,7 @@ export type AuditAction =
   | 'rollout.resume'
   | 'rollout.abort'
   | 'config.desired.update'
+  | 'config.desired.revert'
 
 export interface AuditFilters {
   nodeId: string
