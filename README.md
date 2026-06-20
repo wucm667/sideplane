@@ -31,7 +31,7 @@ Production operators should still treat it as pre-1.0 infrastructure. Run it on 
 - Server-sent events for live Web refresh, with polling fallback when SSE is unavailable.
 - Compact infrastructure-console Web UI served directly by `sideplane-server`.
 - Docker Compose, server and sidecar systemd units, and a Linux install script for local systemd setup.
-- Server hardening with security response headers and structured request logging.
+- Server hardening with optional built-in TLS, security response headers, and structured request logging.
 
 Sideplane is not a chat UI, prompt workspace, autonomous task board, marketplace, or generic multi-agent collaboration product.
 
@@ -137,6 +137,9 @@ Server flags can be configured with environment variables. Explicit CLI flags ta
 | --- | --- | --- |
 | `SIDEPLANE_ADDR` | `:8080` | HTTP listen address. |
 | `SIDEPLANE_DB_PATH` | `sideplane.db` | SQLite database path. |
+| `SIDEPLANE_TLS_CERT` | empty | TLS certificate file. Set together with `SIDEPLANE_TLS_KEY` to serve HTTPS directly. |
+| `SIDEPLANE_TLS_KEY` | empty | TLS private key file. Set together with `SIDEPLANE_TLS_CERT`. |
+| `SIDEPLANE_TLS_REDIRECT_ADDR` | empty | Optional plain-HTTP listener that sends 301 redirects to the HTTPS address. Requires cert/key. |
 | `SIDEPLANE_WEB_DIR` | empty | Built Web UI directory to serve instead of embedded assets. Empty uses embedded assets. |
 | `SIDEPLANE_OPERATOR_TOKEN` | empty | Bearer token required for mutating operator APIs. |
 | `SIDEPLANE_SIGNING_KEY` | empty | Ed25519 config-plan signing key path. Empty uses ephemeral in-memory key. |
@@ -152,7 +155,8 @@ Server flags can be configured with environment variables. Explicit CLI flags ta
 | `SIDEPLANE_ALLOW_UNAUTHENTICATED_OPERATOR_API` | false | Development-only escape hatch for mutating operator APIs. |
 
 Matching flags are available on `sideplane-server`: `--addr`, `--db`,
-`--web-dir`, `--operator-token`, `--signing-key`, `--stale-after`,
+`--tls-cert`, `--tls-key`, `--tls-redirect-addr`, `--web-dir`,
+`--operator-token`, `--signing-key`, `--stale-after`,
 `--offline-after`, `--heartbeat-retention`, `--job-retention`,
 `--audit-retention`, `--rollout-interval`, `--backup-dir`,
 `--backup-interval`, `--backup-retention`, `--enrollment-rate-limit`,
@@ -237,6 +241,41 @@ flag. Operator tokens carry a scope: `admin` (full access) or `readonly`
 bootstrap token is always `admin`. Enrollment and failed operator-auth attempts
 are rate limited by remote address and return `429` with `Retry-After` when the
 fixed window is exhausted.
+
+### TLS Deployment
+
+Sideplane serves plain HTTP by default. To have `sideplane-server` terminate TLS
+directly, set both a certificate and private key:
+
+```bash
+sideplane-server \
+  --addr :8443 \
+  --tls-cert /etc/sideplane/tls/server.crt \
+  --tls-key /etc/sideplane/tls/server.key
+```
+
+If only one of `--tls-cert` or `--tls-key` is set, startup fails before the
+database is opened. Sideplane validates that both files are readable and that
+the pair can be loaded. It does not request certificates or run ACME/auto-cert.
+
+An optional redirect listener can send plain HTTP clients to the HTTPS address:
+
+```bash
+sideplane-server \
+  --addr :8443 \
+  --tls-cert /etc/sideplane/tls/server.crt \
+  --tls-key /etc/sideplane/tls/server.key \
+  --tls-redirect-addr :8080
+```
+
+The redirect listener only returns `301` redirects and shuts down with the main
+server. It requires the TLS cert/key pair so it cannot accidentally point users
+at an HTTPS endpoint the server is not serving.
+
+Running Sideplane behind Caddy, nginx, Traefik, or another reverse proxy is also
+supported: terminate TLS at the proxy and keep `sideplane-server` on plain HTTP
+bound to localhost or a private interface. Health, readiness, metrics, REST API,
+SSE, and Web UI traffic can all be proxied to the same server address.
 
 ### Database Backup And Restore
 

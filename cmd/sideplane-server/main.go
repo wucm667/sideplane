@@ -154,6 +154,11 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "invalid TLS configuration: %v\n", err)
 		return 1
 	}
+	tlsRedirectAddrValue := strings.TrimSpace(*tlsRedirectAddr)
+	if tlsRedirectAddrValue != "" && !tlsConfig.Enabled() {
+		fmt.Fprintln(stderr, "invalid TLS redirect configuration: tls-redirect-addr requires tls-cert and tls-key")
+		return 1
+	}
 
 	logger := slog.New(slog.NewTextHandler(stderr, nil))
 	operatorToken := strings.TrimSpace(*operatorTokenFlag)
@@ -241,6 +246,10 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		Addr:    *addr,
 		Handler: handler,
 	}
+	var redirectServer *http.Server
+	if tlsRedirectAddrValue != "" {
+		redirectServer = newTLSRedirectServer(tlsRedirectAddrValue, *addr)
+	}
 	scheme := "http"
 	if tlsConfig.Enabled() {
 		scheme = "https"
@@ -265,6 +274,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		"starting sideplane-server",
 		"addr", *addr,
 		"scheme", scheme,
+		"tls_redirect_addr", tlsRedirectAddrValue,
 		"db", *dbPath,
 		"web", webMode,
 		"stale_after", staleAfter.String(),
@@ -281,7 +291,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		"schema_version", schemaVersion,
 	)
 
-	if err := serveHTTPServer(ctx, httpServer, tlsConfig, logger); err != nil {
+	if err := serveHTTPServer(ctx, httpServer, redirectServer, tlsConfig, logger); err != nil {
 		return 1
 	}
 	logger.Info("sideplane-server stopped")
@@ -558,8 +568,8 @@ func validateServerTLS(certFile string, keyFile string) (serverTLSConfig, error)
 	return serverTLSConfig{CertFile: certFile, KeyFile: keyFile}, nil
 }
 
-func serveHTTPServer(ctx context.Context, httpServer *http.Server, tlsConfig serverTLSConfig, logger *slog.Logger) error {
-	errCh := make(chan error, 1)
+func serveHTTPServer(ctx context.Context, httpServer *http.Server, redirectServer *http.Server, tlsConfig serverTLSConfig, logger *slog.Logger) error {
+	errCh := make(chan error, 2)
 	go func() {
 		if tlsConfig.Enabled() {
 			errCh <- httpServer.ListenAndServeTLS(tlsConfig.CertFile, tlsConfig.KeyFile)
@@ -567,11 +577,22 @@ func serveHTTPServer(ctx context.Context, httpServer *http.Server, tlsConfig ser
 		}
 		errCh <- httpServer.ListenAndServe()
 	}()
+	if redirectServer != nil {
+		go func() {
+			errCh <- redirectServer.ListenAndServe()
+		}()
+	}
 
 	select {
 	case err := <-errCh:
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Error("sideplane-server stopped", "error", err)
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+			defer cancel()
+			_ = httpServer.Shutdown(shutdownCtx)
+			if redirectServer != nil {
+				_ = redirectServer.Shutdown(shutdownCtx)
+			}
 			return err
 		}
 	case <-ctx.Done():
@@ -582,12 +603,59 @@ func serveHTTPServer(ctx context.Context, httpServer *http.Server, tlsConfig ser
 			logger.Error("shutdown sideplane-server", "error", err)
 			return err
 		}
+		if redirectServer != nil {
+			if err := redirectServer.Shutdown(shutdownCtx); err != nil {
+				logger.Error("shutdown sideplane-server redirector", "error", err)
+				return err
+			}
+		}
 		if err := <-errCh; err != nil && !errors.Is(err, http.ErrServerClosed) {
 			logger.Error("sideplane-server stopped", "error", err)
 			return err
 		}
+		if redirectServer != nil {
+			if err := <-errCh; err != nil && !errors.Is(err, http.ErrServerClosed) {
+				logger.Error("sideplane-server redirector stopped", "error", err)
+				return err
+			}
+		}
 	}
 	return nil
+}
+
+func newTLSRedirectServer(addr string, httpsAddr string) *http.Server {
+	return &http.Server{
+		Addr: addr,
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			target := *r.URL
+			target.Scheme = "https"
+			target.Host = redirectHost(r.Host, httpsAddr)
+			http.Redirect(w, r, target.String(), http.StatusMovedPermanently)
+		}),
+	}
+}
+
+func redirectHost(requestHost string, httpsAddr string) string {
+	httpsAddr = strings.TrimSpace(httpsAddr)
+	host, port, err := net.SplitHostPort(httpsAddr)
+	if err != nil {
+		if strings.HasPrefix(httpsAddr, ":") {
+			port = strings.TrimPrefix(httpsAddr, ":")
+		} else if httpsAddr != "" {
+			return httpsAddr
+		}
+	}
+	if host != "" && host != "0.0.0.0" && host != "::" && host != "[::]" {
+		return net.JoinHostPort(host, port)
+	}
+	requestHostname := requestHost
+	if parsedHost, _, err := net.SplitHostPort(requestHost); err == nil {
+		requestHostname = parsedHost
+	}
+	if port == "" {
+		return requestHost
+	}
+	return net.JoinHostPort(requestHostname, port)
 }
 
 func freeTCPAddr() (string, error) {

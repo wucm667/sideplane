@@ -220,7 +220,7 @@ func TestServeHTTPServerWithTLS(t *testing.T) {
 	}
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- serveHTTPServer(ctx, httpServer, tlsConfig, discardServerLogger())
+		errCh <- serveHTTPServer(ctx, httpServer, nil, tlsConfig, discardServerLogger())
 	}()
 
 	client := &http.Client{
@@ -242,6 +242,86 @@ func TestServeHTTPServerWithTLS(t *testing.T) {
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("https request did not succeed before deadline: %v", err)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+
+	cancel()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("serveHTTPServer returned error: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("serveHTTPServer did not shut down")
+	}
+}
+
+func TestRunRejectsTLSRedirectWithoutTLS(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"--tls-redirect-addr", "127.0.0.1:0"}, &stdout, &stderr)
+
+	if code == 0 {
+		t.Fatalf("exit code = 0, want non-zero")
+	}
+	if !strings.Contains(stderr.String(), "tls-redirect-addr requires tls-cert and tls-key") {
+		t.Fatalf("stderr = %q, want redirect TLS validation error", stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout = %q, want empty", stdout.String())
+	}
+}
+
+func TestServeHTTPServerStartsTLSRedirector(t *testing.T) {
+	certFile, keyFile := writeTestCertificate(t)
+	tlsConfig, err := validateServerTLS(certFile, keyFile)
+	if err != nil {
+		t.Fatalf("validate tls: %v", err)
+	}
+	httpsAddr, err := freeTCPAddr()
+	if err != nil {
+		t.Fatalf("allocate https addr: %v", err)
+	}
+	redirectAddr, err := freeTCPAddr()
+	if err != nil {
+		t.Fatalf("allocate redirect addr: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	httpServer := &http.Server{
+		Addr:    httpsAddr,
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) }),
+	}
+	redirectServer := newTLSRedirectServer(redirectAddr, httpsAddr)
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- serveHTTPServer(ctx, httpServer, redirectServer, tlsConfig, discardServerLogger())
+	}()
+
+	client := &http.Client{
+		Timeout: 250 * time.Millisecond,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		resp, err := client.Get("http://" + redirectAddr + "/nodes/worker-a?tab=jobs")
+		if err == nil {
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusMovedPermanently {
+				t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusMovedPermanently)
+			}
+			want := "https://" + httpsAddr + "/nodes/worker-a?tab=jobs"
+			if got := resp.Header.Get("Location"); got != want {
+				t.Fatalf("Location = %q, want %q", got, want)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("redirect request did not succeed before deadline: %v", err)
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
