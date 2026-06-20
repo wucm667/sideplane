@@ -305,6 +305,7 @@ func TestJobPollerDeepProbeIncludesConfigSnapshots(t *testing.T) {
 					Provider:    "openai",
 					Model:       "gpt-5",
 					ConfigHash:  "sha256:config",
+					Health:      protocol.RuntimeHealth{State: protocol.RuntimeHealthHealthy, Reason: "test healthy"},
 				},
 			},
 		},
@@ -335,6 +336,9 @@ func TestJobPollerDeepProbeIncludesConfigSnapshots(t *testing.T) {
 	}
 	if result.ConfigSnapshots[0].Provider != "openai" || result.ConfigSnapshots[0].Model != "gpt-5" {
 		t.Fatalf("config snapshot = %#v, want provider/model", result.ConfigSnapshots[0])
+	}
+	if result.ConfigSnapshots[0].Health.State != protocol.RuntimeHealthHealthy || result.ConfigSnapshots[0].Health.Reason != "test healthy" {
+		t.Fatalf("snapshot health = %#v, want healthy test reason", result.ConfigSnapshots[0].Health)
 	}
 }
 

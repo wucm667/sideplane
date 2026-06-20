@@ -47,6 +47,18 @@ func (f *fakeControllerAdapter) HealthCheck(context.Context) error {
 
 var _ adapters.ServiceController = (*fakeControllerAdapter)(nil)
 
+type fakeHealthAdapter struct {
+	fakeAdapter
+	health    protocol.RuntimeHealth
+	healthErr error
+}
+
+func (f *fakeHealthAdapter) RuntimeHealth(context.Context) (protocol.RuntimeHealth, error) {
+	return f.health, f.healthErr
+}
+
+var _ adapters.HealthChecker = (*fakeHealthAdapter)(nil)
+
 func TestRegistryReturnsServiceControllerByRuntimeType(t *testing.T) {
 	hermesController := &fakeControllerAdapter{fakeAdapter: fakeAdapter{name: "hermes", typ: "hermes"}}
 	openclawController := &fakeControllerAdapter{fakeAdapter: fakeAdapter{name: "openclaw", typ: "openclaw"}}
@@ -182,6 +194,9 @@ func TestRegistryCollectsConfigSnapshots(t *testing.T) {
 	if snapshots[0].RuntimeName != "hermes" {
 		t.Fatalf("snapshots[0].RuntimeName = %q, want hermes", snapshots[0].RuntimeName)
 	}
+	if snapshots[0].Health.State != protocol.RuntimeHealthUnknown {
+		t.Fatalf("snapshot health = %#v, want unknown for adapter without check", snapshots[0].Health)
+	}
 }
 
 func TestRegistrySurfacesConfigSnapshotError(t *testing.T) {
@@ -198,6 +213,43 @@ func TestRegistrySurfacesConfigSnapshotError(t *testing.T) {
 	}
 	if len(snapshots[0].Warnings) != 1 || snapshots[0].Warnings[0] != "snapshot failed" {
 		t.Fatalf("warnings = %#v, want snapshot failed", snapshots[0].Warnings)
+	}
+	if snapshots[0].Health.State != protocol.RuntimeHealthDegraded {
+		t.Fatalf("snapshot health = %#v, want degraded", snapshots[0].Health)
+	}
+}
+
+func TestRegistryAttachesRuntimeHealth(t *testing.T) {
+	reg := New(
+		&fakeHealthAdapter{
+			fakeAdapter: fakeAdapter{
+				name:      "hermes",
+				typ:       "hermes",
+				detected:  true,
+				snapshots: []protocol.RuntimeConfigSnapshot{{RuntimeName: "hermes", RuntimeType: "hermes"}},
+			},
+			health: protocol.RuntimeHealth{State: protocol.RuntimeHealthHealthy, Reason: "container running"},
+		},
+		&fakeHealthAdapter{
+			fakeAdapter: fakeAdapter{
+				name:      "openclaw",
+				typ:       "openclaw",
+				detected:  true,
+				snapshots: []protocol.RuntimeConfigSnapshot{{RuntimeName: "openclaw", RuntimeType: "openclaw"}},
+			},
+			healthErr: errors.New("health probe failed"),
+		},
+	)
+
+	snapshots := reg.CollectConfigSnapshots(context.Background())
+	if len(snapshots) != 2 {
+		t.Fatalf("len(snapshots) = %d, want 2", len(snapshots))
+	}
+	if snapshots[0].Health.State != protocol.RuntimeHealthHealthy || snapshots[0].Health.Reason != "container running" {
+		t.Fatalf("hermes health = %#v, want healthy container running", snapshots[0].Health)
+	}
+	if snapshots[1].Health.State != protocol.RuntimeHealthDegraded || !strings.Contains(snapshots[1].Health.Reason, "health probe failed") {
+		t.Fatalf("openclaw health = %#v, want degraded health probe failed", snapshots[1].Health)
 	}
 }
 

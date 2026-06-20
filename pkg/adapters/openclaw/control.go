@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/wucm667/sideplane/pkg/adapters"
+	"github.com/wucm667/sideplane/pkg/protocol"
 )
 
 // WithAllowLiveApply permits the adapter to restart the managed runtime.
@@ -73,6 +74,47 @@ func (a *Adapter) HealthCheck(ctx context.Context) error {
 		return nil
 	}
 	return errors.New("no allowlisted openclaw health target configured (set a docker container or service unit)")
+}
+
+// RuntimeHealth reports OpenClaw local liveness using read-only checks only.
+func (a *Adapter) RuntimeHealth(ctx context.Context) (protocol.RuntimeHealth, error) {
+	reasons := []string{}
+	path, err := a.findConfigPath()
+	if err != nil {
+		return protocol.RuntimeHealth{}, err
+	}
+	if path != "" {
+		contents, err := os.ReadFile(path)
+		if err != nil {
+			return adapters.RuntimeHealthDegraded("read openclaw config: " + err.Error()), nil
+		}
+		if err := validateConfigSyntax(path, contents); err != nil {
+			return adapters.RuntimeHealthDegraded(err.Error()), nil
+		}
+		reasons = append(reasons, "config readable")
+	} else {
+		reasons = append(reasons, "config path not found")
+	}
+	if container := a.dockerContainer(); container != "" {
+		out, err := a.runDocker(ctx, "inspect", "--format", "{{.State.Running}}", container)
+		if err != nil {
+			return adapters.RuntimeHealthDegraded("inspect openclaw container: " + err.Error()), nil
+		}
+		if strings.TrimSpace(string(out)) != "true" {
+			return adapters.RuntimeHealthDegraded("openclaw container " + container + " is not running"), nil
+		}
+		reasons = append(reasons, "container running")
+		return adapters.RuntimeHealthHealthy(strings.Join(reasons, "; ")), nil
+	}
+	if unit := a.serviceUnit(); unit != "" {
+		out, _ := a.runControl(ctx, "systemctl", "is-active", unit)
+		if strings.TrimSpace(string(out)) != "active" {
+			return adapters.RuntimeHealthDegraded("openclaw service " + unit + " is not active"), nil
+		}
+		reasons = append(reasons, "service active")
+		return adapters.RuntimeHealthHealthy(strings.Join(reasons, "; ")), nil
+	}
+	return adapters.RuntimeHealthUnknown(strings.Join(append(reasons, "no service or container target configured"), "; ")), nil
 }
 
 func (a *Adapter) serviceUnit() string {

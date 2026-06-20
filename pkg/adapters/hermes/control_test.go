@@ -3,10 +3,13 @@ package hermes
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/wucm667/sideplane/pkg/adapters"
+	"github.com/wucm667/sideplane/pkg/protocol"
 )
 
 type recordingRunner struct {
@@ -32,6 +35,7 @@ func (r *recordingRunner) joined() []string {
 
 // assertVerifies that the adapter implements the optional ServiceController.
 var _ adapters.ServiceController = (*Adapter)(nil)
+var _ adapters.HealthChecker = (*Adapter)(nil)
 
 func TestRestartDisabledIsNoOp(t *testing.T) {
 	runner := &recordingRunner{}
@@ -165,5 +169,62 @@ func TestHealthCheckSystemdInactive(t *testing.T) {
 
 	if err := a.HealthCheck(context.Background()); err == nil {
 		t.Fatal("expected inactive error, got nil")
+	}
+}
+
+func TestRuntimeHealthDockerRunningReadOnly(t *testing.T) {
+	runner := &recordingRunner{fn: func(_ string, args []string) ([]byte, error) {
+		if strings.Join(args, " ") == "inspect --format {{.State.Running}} hermes" {
+			return []byte("true\n"), nil
+		}
+		return nil, errors.New("unexpected call")
+	}}
+	a := NewAdapter(WithDockerContainer("hermes"), WithAllowLiveApply(false))
+	a.runCommand = runner.run
+	a.getenv = func(string) string { return "" }
+
+	health, err := a.RuntimeHealth(context.Background())
+	if err != nil {
+		t.Fatalf("RuntimeHealth error = %v", err)
+	}
+	if health.State != protocol.RuntimeHealthHealthy || !strings.Contains(health.Reason, "container running") {
+		t.Fatalf("health = %#v, want healthy container running", health)
+	}
+	if got := runner.joined(); len(got) != 1 || got[0] != "docker inspect --format {{.State.Running}} hermes" {
+		t.Fatalf("calls = %v, want read-only docker inspect", got)
+	}
+}
+
+func TestRuntimeHealthMalformedConfigDegraded(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hermes.json")
+	if err := os.WriteFile(path, []byte("{"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	a := NewAdapter(WithConfigPaths(path))
+	a.getenv = func(string) string { return "" }
+
+	health, err := a.RuntimeHealth(context.Background())
+	if err != nil {
+		t.Fatalf("RuntimeHealth error = %v", err)
+	}
+	if health.State != protocol.RuntimeHealthDegraded || !strings.Contains(health.Reason, "parse hermes JSON config") {
+		t.Fatalf("health = %#v, want degraded malformed config", health)
+	}
+}
+
+func TestRuntimeHealthNoTargetUnknown(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hermes.json")
+	if err := os.WriteFile(path, []byte(`{"model":{"provider":"openai","default":"gpt-5"}}`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	a := NewAdapter(WithConfigPaths(path))
+	a.getenv = func(string) string { return "" }
+
+	health, err := a.RuntimeHealth(context.Background())
+	if err != nil {
+		t.Fatalf("RuntimeHealth error = %v", err)
+	}
+	if health.State != protocol.RuntimeHealthUnknown || !strings.Contains(health.Reason, "no service or container target configured") {
+		t.Fatalf("health = %#v, want unknown without target", health)
 	}
 }

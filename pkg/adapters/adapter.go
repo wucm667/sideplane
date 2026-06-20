@@ -26,6 +26,13 @@ type ServiceController interface {
 	HealthCheck(ctx context.Context) error
 }
 
+// HealthChecker is an optional adapter capability for local, read-only runtime
+// liveness checks. Implementations must not mutate runtime state, contact
+// provider APIs, or reach external networks.
+type HealthChecker interface {
+	RuntimeHealth(ctx context.Context) (protocol.RuntimeHealth, error)
+}
+
 // RuntimeAdapter discovers and reports the status of a managed runtime.
 type RuntimeAdapter interface {
 	// Name returns the human-readable runtime name.
@@ -73,8 +80,24 @@ func ConfigSnapshotFromError(name, typ string, err error) protocol.RuntimeConfig
 	return protocol.RuntimeConfigSnapshot{
 		RuntimeName: name,
 		RuntimeType: typ,
+		Health:      RuntimeHealthDegraded(msg),
 		Warnings:    []string{msg},
 	}
+}
+
+// RuntimeHealthUnknown returns an explicit unknown health result.
+func RuntimeHealthUnknown(reason string) protocol.RuntimeHealth {
+	return protocol.RuntimeHealth{State: protocol.RuntimeHealthUnknown, Reason: reason}
+}
+
+// RuntimeHealthDegraded returns an explicit degraded health result.
+func RuntimeHealthDegraded(reason string) protocol.RuntimeHealth {
+	return protocol.RuntimeHealth{State: protocol.RuntimeHealthDegraded, Reason: reason}
+}
+
+// RuntimeHealthHealthy returns an explicit healthy health result.
+func RuntimeHealthHealthy(reason string) protocol.RuntimeHealth {
+	return protocol.RuntimeHealth{State: protocol.RuntimeHealthHealthy, Reason: reason}
 }
 
 // RuntimeCollector is the minimal interface needed by the heartbeat client to

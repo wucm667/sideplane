@@ -15,6 +15,7 @@ func TestRuntimeConfigSnapshotJSONShape(t *testing.T) {
 		Provider:    "openai",
 		Model:       "gpt-5",
 		ConfigHash:  "sha256:abc",
+		Health:      RuntimeHealth{State: RuntimeHealthHealthy, Reason: "container running"},
 		Warnings:    []string{"provider key redacted"},
 	}
 
@@ -37,6 +38,7 @@ func TestRuntimeConfigSnapshotJSONShape(t *testing.T) {
 		"provider",
 		"model",
 		"configHash",
+		"health",
 		"warnings",
 	} {
 		if _, ok := got[key]; !ok {
@@ -45,6 +47,10 @@ func TestRuntimeConfigSnapshotJSONShape(t *testing.T) {
 	}
 	if _, ok := got["redactedValues"]; ok {
 		t.Fatalf("snapshot JSON includes broad config values: %s", payload)
+	}
+	health, ok := got["health"].(map[string]any)
+	if !ok || health["state"] != string(RuntimeHealthHealthy) || health["reason"] != "container running" {
+		t.Fatalf("snapshot health JSON = %#v, want healthy container running", got["health"])
 	}
 }
 

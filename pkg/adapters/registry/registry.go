@@ -124,7 +124,28 @@ func (r *Registry) CollectConfigSnapshots(ctx context.Context) []protocol.Runtim
 			out = append(out, adapters.ConfigSnapshotFromError(a.Name(), a.Type(), err))
 			continue
 		}
+		health := r.runtimeHealth(ctx, a)
+		for i := range snapshots {
+			if snapshots[i].Health.State == "" {
+				snapshots[i].Health = health
+			}
+		}
 		out = append(out, snapshots...)
 	}
 	return out
+}
+
+func (r *Registry) runtimeHealth(ctx context.Context, a adapters.RuntimeAdapter) protocol.RuntimeHealth {
+	checker, ok := a.(adapters.HealthChecker)
+	if !ok {
+		return adapters.RuntimeHealthUnknown("adapter does not implement runtime health checks")
+	}
+	health, err := checker.RuntimeHealth(ctx)
+	if err != nil {
+		return adapters.RuntimeHealthDegraded(err.Error())
+	}
+	if health.State == "" {
+		return adapters.RuntimeHealthUnknown("adapter returned no runtime health state")
+	}
+	return health
 }
