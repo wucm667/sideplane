@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -32,6 +33,8 @@ const (
 	largeJSONBodyLimit        = int64(4 << 20)
 	defaultBackupListLimit    = 50
 	maxBackupListLimit        = 500
+	// maxAuditExportLimit matches the store's filtered audit listing cap.
+	maxAuditExportLimit = 500
 )
 
 // NewHandler returns the Sideplane server HTTP handler.
@@ -131,6 +134,7 @@ func NewHandlerWithConfig(cfg HandlerConfig) (http.Handler, error) {
 	mux.HandleFunc("/api/events", handler.eventsStream)
 	mux.HandleFunc("/api/events/tickets", handler.createEventTicket)
 	mux.HandleFunc("/api/audit", handler.auditEvents)
+	mux.HandleFunc("/api/audit/export", handler.exportAuditEvents)
 	mux.HandleFunc("/api/operator-tokens", handler.operatorTokens)
 	mux.HandleFunc("/api/operator-tokens/", handler.operatorTokenRouter)
 	mux.HandleFunc("/api/webhooks", handler.alertWebhooks)
@@ -2256,6 +2260,87 @@ func (h *handler) auditEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	events = redactAuditEvents(events)
 	writeJSON(w, http.StatusOK, protocol.ListAuditEventsResponse{Events: events})
+}
+
+func (h *handler) exportAuditEvents(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		writeAPIError(w, http.StatusMethodNotAllowed, http.StatusText(http.StatusMethodNotAllowed))
+		return
+	}
+	if !h.authorizeOperator(w, r) {
+		return
+	}
+	format := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("format")))
+	if format == "" {
+		format = "ndjson"
+	}
+	if format != "ndjson" && format != "csv" {
+		writeAPIError(w, http.StatusBadRequest, "format must be ndjson or csv")
+		return
+	}
+
+	limit := maxAuditExportLimit
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed <= 0 {
+			writeAPIError(w, http.StatusBadRequest, "invalid limit query parameter")
+			return
+		}
+		limit = parsed
+	}
+
+	events, err := h.store.ListAuditEventsFiltered(r.Context(), store.AuditFilter{
+		NodeID: strings.TrimSpace(r.URL.Query().Get("nodeId")),
+		Action: strings.TrimSpace(r.URL.Query().Get("action")),
+		Limit:  limit,
+	})
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "list audit events")
+		return
+	}
+	events = redactAuditEvents(events)
+
+	controller := http.NewResponseController(w)
+	if format == "csv" {
+		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+		w.Header().Set("Content-Disposition", `attachment; filename="sideplane-audit.csv"`)
+		w.WriteHeader(http.StatusOK)
+		writer := csv.NewWriter(w)
+		_ = writer.Write([]string{"id", "actor", "action", "targetNode", "detail", "createdAt"})
+		for _, event := range events {
+			_ = writer.Write([]string{
+				event.ID,
+				event.Actor,
+				event.Action,
+				event.TargetNode,
+				event.Detail,
+				formatExportTime(event.CreatedAt),
+			})
+			writer.Flush()
+			_ = controller.Flush()
+		}
+		writer.Flush()
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/x-ndjson; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="sideplane-audit.ndjson"`)
+	w.WriteHeader(http.StatusOK)
+	encoder := json.NewEncoder(w)
+	for _, event := range events {
+		if err := encoder.Encode(event); err != nil {
+			return
+		}
+		_ = controller.Flush()
+	}
+}
+
+func formatExportTime(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339Nano)
 }
 
 func (h *handler) publicSigningKey(w http.ResponseWriter, r *http.Request) {

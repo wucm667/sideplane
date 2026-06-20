@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"io"
@@ -1114,6 +1115,128 @@ func TestBulkJobCreationBySelectorAndNodeIDs(t *testing.T) {
 	}
 	if !sawBulk {
 		t.Fatalf("audit events missing %s; events=%#v", audit.ActionJobBulkCreate, events)
+	}
+}
+
+func TestAuditExportFormatsAndFilter(t *testing.T) {
+	ctx := context.Background()
+	nodeStore := store.NewMemoryNodeStore()
+	now := time.Date(2026, 6, 18, 12, 0, 0, 0, time.UTC)
+	if _, err := nodeStore.AppendAuditEvent(ctx, protocol.AuditEvent{Actor: "operator", Action: "job.create", TargetNode: "node-a", Detail: "deep_probe", CreatedAt: now}); err != nil {
+		t.Fatalf("append audit a: %v", err)
+	}
+	if _, err := nodeStore.AppendAuditEvent(ctx, protocol.AuditEvent{Actor: "operator", Action: "restart", TargetNode: "node-b", Detail: "token=supersecret", CreatedAt: now.Add(time.Minute)}); err != nil {
+		t.Fatalf("append audit b: %v", err)
+	}
+	handler, err := NewHandlerWithConfig(HandlerConfig{
+		Store:         nodeStore,
+		Freshness:     DefaultFreshnessPolicy(),
+		OperatorToken: "dev-token",
+	})
+	if err != nil {
+		t.Fatalf("build handler: %v", err)
+	}
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	getExport := func(query string) (*http.Response, string) {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodGet, server.URL+"/api/audit/export"+query, nil)
+		if err != nil {
+			t.Fatalf("build request: %v", err)
+		}
+		req.Header.Set("Authorization", "Bearer dev-token")
+		res, err := server.Client().Do(req)
+		if err != nil {
+			t.Fatalf("export request: %v", err)
+		}
+		body, _ := io.ReadAll(res.Body)
+		res.Body.Close()
+		return res, string(body)
+	}
+
+	// ndjson: one JSON object per line, secret redacted.
+	res, body := getExport("?format=ndjson")
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("ndjson status = %d, body=%s", res.StatusCode, body)
+	}
+	if ct := res.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/x-ndjson") {
+		t.Fatalf("ndjson content-type = %q", ct)
+	}
+	lines := strings.Split(strings.TrimSpace(body), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("ndjson lines = %d, want 2; body=%s", len(lines), body)
+	}
+	for _, line := range lines {
+		var event protocol.AuditEvent
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatalf("decode ndjson line %q: %v", line, err)
+		}
+	}
+	if strings.Contains(body, "supersecret") {
+		t.Fatalf("ndjson export leaked secret: %s", body)
+	}
+
+	// csv: header + rows, secret redacted.
+	res, body = getExport("?format=csv")
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("csv status = %d, body=%s", res.StatusCode, body)
+	}
+	if ct := res.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/csv") {
+		t.Fatalf("csv content-type = %q", ct)
+	}
+	records, err := csv.NewReader(strings.NewReader(body)).ReadAll()
+	if err != nil {
+		t.Fatalf("parse csv: %v", err)
+	}
+	if len(records) != 3 || records[0][0] != "id" {
+		t.Fatalf("csv records = %+v, want header + 2 rows", records)
+	}
+	if strings.Contains(body, "supersecret") {
+		t.Fatalf("csv export leaked secret: %s", body)
+	}
+
+	// filter passthrough: only node-a action job.create.
+	_, filtered := getExport("?format=ndjson&action=job.create&nodeId=node-a")
+	filteredLines := strings.Split(strings.TrimSpace(filtered), "\n")
+	if len(filteredLines) != 1 {
+		t.Fatalf("filtered lines = %d, want 1; body=%s", len(filteredLines), filtered)
+	}
+	var filteredEvent protocol.AuditEvent
+	if err := json.Unmarshal([]byte(filteredLines[0]), &filteredEvent); err != nil {
+		t.Fatalf("decode filtered: %v", err)
+	}
+	if filteredEvent.Action != "job.create" || filteredEvent.TargetNode != "node-a" {
+		t.Fatalf("filtered event = %+v, want node-a job.create", filteredEvent)
+	}
+
+	// invalid format -> 400.
+	res, _ = getExport("?format=xml")
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("invalid format status = %d, want 400", res.StatusCode)
+	}
+}
+
+func TestAuditExportRequiresOperatorAuth(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	handler, err := NewHandlerWithConfig(HandlerConfig{
+		Store:         nodeStore,
+		Freshness:     DefaultFreshnessPolicy(),
+		OperatorToken: "dev-token",
+	})
+	if err != nil {
+		t.Fatalf("build handler: %v", err)
+	}
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	res, err := server.Client().Get(server.URL + "/api/audit/export?format=ndjson")
+	if err != nil {
+		t.Fatalf("export request: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated export status = %d, want 401", res.StatusCode)
 	}
 }
 
