@@ -56,6 +56,11 @@ type RolloutSpec struct {
 	BatchSize     int                 `json:"batchSize,omitempty"`
 	Live          bool                `json:"live"`
 	HealthTimeout time.Duration       `json:"healthTimeout,omitempty"`
+	// AutoRollbackOnFailure opts a live rollout into per-node rollback of the
+	// failed batch's already-applied nodes before the rollout pauses. Default
+	// false preserves the existing pause-only behavior. Never applies to
+	// dry-run rollouts.
+	AutoRollbackOnFailure bool `json:"autoRollbackOnFailure,omitempty"`
 }
 
 // RolloutNodeProgress tracks one node's rollout job and health state.
@@ -66,6 +71,12 @@ type RolloutNodeProgress struct {
 	LastError  string           `json:"lastError,omitempty"`
 	StartedAt  time.Time        `json:"startedAt,omitzero"`
 	FinishedAt time.Time        `json:"finishedAt,omitzero"`
+	// RollbackJobID references the per-node rollback job dispatched by an
+	// auto-rollback when the node's batch failed. Empty when no rollback was
+	// attempted for this node.
+	RollbackJobID string `json:"rollbackJobId,omitempty"`
+	// RolledBack reports whether an auto-rollback was dispatched for this node.
+	RolledBack bool `json:"rolledBack,omitempty"`
 }
 
 // RolloutBatch is one sequential batch in a staged rollout.

@@ -19,9 +19,10 @@ func TestRolloutJSONRoundTrip(t *testing.T) {
 			RuntimeType:   "hermes",
 			Profile:       "default",
 			Target:        ProviderModelConfig{Provider: "openai", Model: "gpt-5"},
-			BatchSize:     1,
-			Live:          false,
-			HealthTimeout: 5 * time.Minute,
+			BatchSize:             1,
+			Live:                  true,
+			HealthTimeout:         5 * time.Minute,
+			AutoRollbackOnFailure: true,
 		},
 		Batches: []RolloutBatch{{
 			Index:   0,
@@ -29,10 +30,12 @@ func TestRolloutJSONRoundTrip(t *testing.T) {
 			State:   RolloutBatchStateRunning,
 			Nodes: map[string]RolloutNodeProgress{
 				"node-a": {
-					NodeID:    "node-a",
-					JobID:     "job_apply",
-					State:     RolloutNodeStateDispatched,
-					StartedAt: createdAt.Add(time.Minute),
+					NodeID:        "node-a",
+					JobID:         "job_apply",
+					State:         RolloutNodeStateFailed,
+					StartedAt:     createdAt.Add(time.Minute),
+					RollbackJobID: "job_rollback",
+					RolledBack:    true,
 				},
 			},
 		}},
@@ -54,8 +57,15 @@ func TestRolloutJSONRoundTrip(t *testing.T) {
 	if decoded.Spec.Target.Provider != "openai" || decoded.Spec.HealthTimeout != 5*time.Minute {
 		t.Fatalf("decoded spec = %#v, want target and timeout preserved", decoded.Spec)
 	}
-	if decoded.Batches[0].Nodes["node-a"].JobID != "job_apply" {
-		t.Fatalf("decoded node progress = %#v, want job_apply", decoded.Batches[0].Nodes["node-a"])
+	if !decoded.Spec.AutoRollbackOnFailure {
+		t.Fatalf("decoded spec = %#v, want autoRollbackOnFailure preserved", decoded.Spec)
+	}
+	node := decoded.Batches[0].Nodes["node-a"]
+	if node.JobID != "job_apply" {
+		t.Fatalf("decoded node progress = %#v, want job_apply", node)
+	}
+	if node.RollbackJobID != "job_rollback" || !node.RolledBack {
+		t.Fatalf("decoded node progress = %#v, want rollback fields preserved", node)
 	}
 }
 
