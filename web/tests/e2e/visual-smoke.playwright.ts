@@ -156,6 +156,9 @@ for (const viewport of viewports) {
     await expectView(page, 'Rollouts')
     await expect(page.getByText('New rollout')).toBeVisible()
     await expect(page.getByRole('heading', { name: 'rollout-a' })).toBeVisible()
+    // New-rollout form template controls.
+    await expect(page.getByRole('button', { name: 'Save as template' })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Create from template' })).toBeVisible()
 
     await page.getByRole('button', { name: 'Activity' }).click()
     await expectView(page, 'Activity')
@@ -165,6 +168,20 @@ for (const viewport of viewports) {
     await expectView(page, 'Enrollment')
     await expect(page.getByText('Enrollment token', { exact: true })).toBeVisible()
     await expect(page.getByText('Operator tokens', { exact: true })).toBeVisible()
+    // Token scope column, webhooks, and server settings management surfaces.
+    await expect(page.getByRole('columnheader', { name: 'Scope' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Alert webhooks' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Server settings' })).toBeVisible()
+    await expect(page.getByText('https://hooks.example.com/fixture')).toBeVisible()
+
+    // Command palette opens with Ctrl/Cmd-K and is keyboard dismissable.
+    await page.keyboard.press('Control+k')
+    const paletteInput = page.getByPlaceholder(/Search nodes/)
+    await expect(paletteInput).toBeVisible()
+    await paletteInput.fill('node-a')
+    await expect(page.getByRole('button', { name: /Open node node-a/ })).toBeVisible()
+    await page.keyboard.press('Escape')
+    await expect(paletteInput).toHaveCount(0)
   })
 }
 
@@ -217,6 +234,42 @@ async function installFixtureApi(page: Page) {
           {
             id: 'operator-token-a',
             name: 'fixture operator',
+            scope: 'admin',
+            createdAt: now,
+          },
+        ],
+      })
+    }
+    if (method === 'GET' && path === '/api/webhooks') {
+      return json(route, {
+        webhooks: [
+          {
+            id: 'webhook-a',
+            url: 'https://hooks.example.com/fixture',
+            events: ['rollout.paused', 'rollout.failed'],
+            hasSecret: true,
+            disabled: false,
+            createdAt: now,
+          },
+        ],
+      })
+    }
+    if (method === 'GET' && path === '/api/settings') {
+      return json(route, { expectedSidecarVersion: 'v1.0.0' })
+    }
+    if (method === 'GET' && path === '/api/rollout-templates') {
+      return json(route, {
+        templates: [
+          {
+            id: 'template-a',
+            name: 'fixture canary',
+            spec: {
+              selector: { role: 'canary' },
+              runtimeType: 'hermes',
+              target: { provider: 'openai', model: 'gpt-4o' },
+              batchSize: 1,
+              live: false,
+            },
             createdAt: now,
           },
         ],
