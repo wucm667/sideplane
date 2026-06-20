@@ -1117,6 +1117,123 @@ func TestBulkJobCreationBySelectorAndNodeIDs(t *testing.T) {
 	}
 }
 
+func TestAlertWebhookCRUDEndpoints(t *testing.T) {
+	ctx := context.Background()
+	nodeStore := store.NewMemoryNodeStore()
+	handler, err := NewHandlerWithConfig(HandlerConfig{
+		Store:         nodeStore,
+		Freshness:     DefaultFreshnessPolicy(),
+		OperatorToken: "dev-token",
+	})
+	if err != nil {
+		t.Fatalf("build handler: %v", err)
+	}
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	created := doJSONRequest[protocol.CreateAlertWebhookResponse](t, server.Client(), http.MethodPost, server.URL+"/api/webhooks", "dev-token", protocol.CreateAlertWebhookRequest{
+		URL:    "https://hooks.example.com/sp",
+		Events: []protocol.AlertEventType{protocol.AlertEventRolloutPaused, protocol.AlertEventRolloutFailed},
+		Sign:   true,
+	})
+	if created.Webhook.ID == "" || !created.Webhook.HasSecret {
+		t.Fatalf("created webhook = %+v, want id and hasSecret", created.Webhook)
+	}
+	if created.Secret == "" {
+		t.Fatalf("create response missing one-time signing secret")
+	}
+
+	// List never exposes the secret.
+	listed := doJSONRequest[protocol.ListAlertWebhooksResponse](t, server.Client(), http.MethodGet, server.URL+"/api/webhooks", "dev-token", nil)
+	if len(listed.Webhooks) != 1 || listed.Webhooks[0].ID != created.Webhook.ID {
+		t.Fatalf("listed webhooks = %+v, want created webhook", listed.Webhooks)
+	}
+
+	// Verify the secret never leaks via the list endpoint body.
+	req, err := http.NewRequest(http.MethodGet, server.URL+"/api/webhooks", nil)
+	if err != nil {
+		t.Fatalf("build list request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer dev-token")
+	res, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatalf("list webhooks: %v", err)
+	}
+	listBody, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+	if bytes.Contains(listBody, []byte(created.Secret)) {
+		t.Fatalf("list webhooks leaked signing secret")
+	}
+
+	// Delete.
+	delReq, err := http.NewRequest(http.MethodDelete, server.URL+"/api/webhooks/"+created.Webhook.ID, nil)
+	if err != nil {
+		t.Fatalf("build delete request: %v", err)
+	}
+	delReq.Header.Set("Authorization", "Bearer dev-token")
+	delRes, err := server.Client().Do(delReq)
+	if err != nil {
+		t.Fatalf("delete webhook: %v", err)
+	}
+	delRes.Body.Close()
+	if delRes.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete status = %d, want 204", delRes.StatusCode)
+	}
+
+	events, err := nodeStore.ListAuditEventsFiltered(ctx, store.AuditFilter{Limit: 50})
+	if err != nil {
+		t.Fatalf("list audit events: %v", err)
+	}
+	var sawCreate, sawDelete bool
+	for _, event := range events {
+		if bytes.Contains([]byte(event.Detail), []byte(created.Secret)) {
+			t.Fatalf("audit event leaked signing secret: %#v", event)
+		}
+		switch event.Action {
+		case audit.ActionAlertWebhookCreate:
+			sawCreate = true
+		case audit.ActionAlertWebhookDelete:
+			sawDelete = true
+		}
+	}
+	if !sawCreate || !sawDelete {
+		t.Fatalf("audit actions create=%t delete=%t", sawCreate, sawDelete)
+	}
+}
+
+func TestAlertWebhookCreateRejectsBadURL(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	handler, err := NewHandlerWithConfig(HandlerConfig{
+		Store:         nodeStore,
+		Freshness:     DefaultFreshnessPolicy(),
+		OperatorToken: "dev-token",
+	})
+	if err != nil {
+		t.Fatalf("build handler: %v", err)
+	}
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	var payload bytes.Buffer
+	if err := json.NewEncoder(&payload).Encode(protocol.CreateAlertWebhookRequest{URL: "ftp://x", Events: []protocol.AlertEventType{protocol.AlertEventNodeOffline}}); err != nil {
+		t.Fatalf("encode body: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/api/webhooks", &payload)
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer dev-token")
+	req.Header.Set("Content-Type", "application/json")
+	res, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatalf("do request: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", res.StatusCode)
+	}
+}
+
 func TestBulkNodeLabelAssignmentMergesAndAudits(t *testing.T) {
 	ctx := context.Background()
 	nodeStore := store.NewMemoryNodeStore()

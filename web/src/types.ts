@@ -145,6 +145,26 @@ export interface BulkNodeLabelsResponse {
   updated: number
 }
 
+export type AlertEventType = 'node.offline' | 'node.drift' | 'rollout.paused' | 'rollout.failed'
+
+export interface AlertWebhook {
+  id: string
+  url: string
+  events: AlertEventType[]
+  hasSecret: boolean
+  disabled: boolean
+  createdAt: string
+}
+
+export interface CreateAlertWebhookResponse {
+  webhook: AlertWebhook
+  secret?: string
+}
+
+export interface ListAlertWebhooksResponse {
+  webhooks: AlertWebhook[]
+}
+
 export type OperatorTokenScope = 'admin' | 'readonly'
 
 export interface OperatorToken {

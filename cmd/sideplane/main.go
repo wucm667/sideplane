@@ -57,6 +57,7 @@ var completionCommands = []completionCommand{
 	{Name: "config", Description: "manage desired configuration", Subcommands: []string{"apply", "preview", "get", "set", "history", "revert"}},
 	{Name: "node", Description: "inspect and manage nodes", Subcommands: []string{"inspect", "label", "remove"}},
 	{Name: "enrollment", Description: "create enrollment tokens", Subcommands: []string{"create"}},
+	{Name: "webhook", Description: "manage alert webhooks", Subcommands: []string{"create", "list", "delete"}},
 	{Name: "config-file", Description: "show CLI config file information", Subcommands: []string{"path"}},
 	{Name: "completion", Description: "print shell completion scripts", Subcommands: []string{"bash", "zsh"}},
 	{Name: "version", Description: "print version"},
@@ -180,6 +181,17 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		if len(args) >= 2 && args[1] == "create" {
 			return runEnrollmentCreate(args[2:], stdout, stderr)
 		}
+	case "webhook":
+		if len(args) >= 2 {
+			switch args[1] {
+			case "create":
+				return runWebhookCreate(args[2:], stdout, stderr)
+			case "list":
+				return runWebhookList(args[2:], stdout, stderr)
+			case "delete":
+				return runWebhookDelete(args[2:], stdout, stderr)
+			}
+		}
 	}
 
 	fmt.Fprintf(stderr, "unknown command: %s\n\n", strings.Join(args, " "))
@@ -218,6 +230,9 @@ Commands:
   node label <id>     Set or remove node labels
   node remove <id>    Remove a node from the fleet
   enrollment create   Create a one-time enrollment token
+  webhook create      Create an alert webhook
+  webhook list        List alert webhooks
+  webhook delete <id> Delete an alert webhook
   config-file path    Print resolved CLI config path
   completion <shell>  Print shell completion script
   version             Print version
@@ -1358,6 +1373,155 @@ func runTokenRevoke(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stdout, "Operator token %s revoked.\n", resp.OperatorToken.ID)
 	return 0
+}
+
+func runWebhookCreate(args []string, stdout io.Writer, stderr io.Writer) int {
+	flags := flag.NewFlagSet("sideplane webhook create", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+
+	serverURL := flags.String("server", "", "Sideplane server URL; can also be set with SIDEPLANE_SERVER_URL")
+	operatorTokenFlag := flags.String("operator-token", "", "operator bearer token; can also be set with SIDEPLANE_OPERATOR_TOKEN")
+	urlFlag := flags.String("url", "", "webhook receiver URL (http or https)")
+	var events stringList
+	flags.Var(&events, "event", "alert event to subscribe to (node.offline, node.drift, rollout.paused, rollout.failed); may be repeated")
+	sign := flags.Bool("sign", false, "generate an HMAC signing secret and return it once")
+	jsonOutput := flags.Bool("json", false, "print raw JSON response")
+	usage := "sideplane webhook create --url URL --event EVENT [--event EVENT...] [--sign] [--server URL] [--operator-token TOKEN] [--json]"
+	if commandHelpRequested(args) {
+		printCommandHelp(stdout, usage, flags)
+		return 0
+	}
+	if err := parseCommandFlags(flags, args, "sign", "json"); err != nil {
+		return 2
+	}
+	if flags.NArg() != 0 {
+		fmt.Fprintln(stderr, "usage: "+usage)
+		return 1
+	}
+	if strings.TrimSpace(*urlFlag) == "" {
+		fmt.Fprintln(stderr, "webhook create: --url is required")
+		return 1
+	}
+	if len(events) == 0 {
+		fmt.Fprintln(stderr, "webhook create: at least one --event is required")
+		return 1
+	}
+	eventTypes := make([]protocol.AlertEventType, 0, len(events))
+	for _, event := range events {
+		eventTypes = append(eventTypes, protocol.AlertEventType(strings.TrimSpace(event)))
+	}
+
+	resp, body, err := postJSON[protocol.CreateAlertWebhookResponse](context.Background(), serverURLValue(*serverURL), "/api/webhooks", protocol.CreateAlertWebhookRequest{
+		URL:    strings.TrimSpace(*urlFlag),
+		Events: eventTypes,
+		Sign:   *sign,
+	}, operatorTokenValue(*operatorTokenFlag))
+	if err != nil {
+		fmt.Fprintf(stderr, "webhook create: %v\n", err)
+		return 1
+	}
+	if *jsonOutput {
+		writeRawJSON(stdout, body)
+		return 0
+	}
+	fmt.Fprintf(stdout, "webhook: %s\n", resp.Webhook.ID)
+	fmt.Fprintf(stdout, "url: %s\n", resp.Webhook.URL)
+	fmt.Fprintf(stdout, "events: %s\n", alertEventsLabel(resp.Webhook.Events))
+	if resp.Secret != "" {
+		fmt.Fprintf(stdout, "signing secret (shown once): %s\n", resp.Secret)
+	}
+	return 0
+}
+
+func runWebhookList(args []string, stdout io.Writer, stderr io.Writer) int {
+	flags := flag.NewFlagSet("sideplane webhook list", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+
+	serverURL := flags.String("server", "", "Sideplane server URL; can also be set with SIDEPLANE_SERVER_URL")
+	operatorTokenFlag := flags.String("operator-token", "", "operator bearer token; can also be set with SIDEPLANE_OPERATOR_TOKEN")
+	jsonOutput := flags.Bool("json", false, "print raw JSON response")
+	usage := "sideplane webhook list [--server URL] [--operator-token TOKEN] [--json]"
+	if commandHelpRequested(args) {
+		printCommandHelp(stdout, usage, flags)
+		return 0
+	}
+	if err := parseCommandFlags(flags, args, "json"); err != nil {
+		return 2
+	}
+	if flags.NArg() != 0 {
+		fmt.Fprintln(stderr, "usage: "+usage)
+		return 1
+	}
+
+	resp, body, err := getJSON[protocol.ListAlertWebhooksResponse](context.Background(), serverURLValue(*serverURL), "/api/webhooks", operatorTokenValue(*operatorTokenFlag))
+	if err != nil {
+		fmt.Fprintf(stderr, "webhook list: %v\n", err)
+		return 1
+	}
+	if *jsonOutput {
+		writeRawJSON(stdout, body)
+		return 0
+	}
+	printAlertWebhooksTable(stdout, resp.Webhooks)
+	return 0
+}
+
+func runWebhookDelete(args []string, stdout io.Writer, stderr io.Writer) int {
+	flags := flag.NewFlagSet("sideplane webhook delete", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+
+	serverURL := flags.String("server", "", "Sideplane server URL; can also be set with SIDEPLANE_SERVER_URL")
+	operatorTokenFlag := flags.String("operator-token", "", "operator bearer token; can also be set with SIDEPLANE_OPERATOR_TOKEN")
+	usage := "sideplane webhook delete <id> [--server URL] [--operator-token TOKEN]"
+	if commandHelpRequested(args) {
+		printCommandHelp(stdout, usage, flags)
+		return 0
+	}
+	if err := parseCommandFlags(flags, args); err != nil {
+		return 2
+	}
+	if flags.NArg() != 1 {
+		fmt.Fprintln(stderr, "usage: "+usage)
+		return 1
+	}
+	webhookID := strings.TrimSpace(flags.Arg(0))
+	if webhookID == "" {
+		fmt.Fprintln(stderr, "webhook delete: id is required")
+		return 1
+	}
+
+	if _, err := apiJSONRequest(context.Background(), http.MethodDelete, serverURLValue(*serverURL), "/api/webhooks/"+url.PathEscape(webhookID), nil, operatorTokenValue(*operatorTokenFlag)); err != nil {
+		fmt.Fprintf(stderr, "webhook delete: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "Alert webhook %s deleted.\n", webhookID)
+	return 0
+}
+
+func alertEventsLabel(events []protocol.AlertEventType) string {
+	parts := make([]string, 0, len(events))
+	for _, event := range events {
+		parts = append(parts, string(event))
+	}
+	return strings.Join(parts, ",")
+}
+
+func printAlertWebhooksTable(w io.Writer, webhooks []protocol.AlertWebhook) {
+	table := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(table, "ID\tURL\tEVENTS\tSIGNED\tDISABLED\tCREATED")
+	for _, webhook := range webhooks {
+		fmt.Fprintf(
+			table,
+			"%s\t%s\t%s\t%t\t%t\t%s\n",
+			webhook.ID,
+			webhook.URL,
+			valueOrDash(alertEventsLabel(webhook.Events)),
+			webhook.HasSecret,
+			webhook.Disabled,
+			timeLabel(webhook.CreatedAt),
+		)
+	}
+	table.Flush()
 }
 
 func confirmNodeRemoval(stdout io.Writer, stdin io.Reader, nodeID string) (bool, error) {

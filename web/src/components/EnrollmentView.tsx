@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import { apiErrorMessage, formatDate } from '../helpers.ts'
-import type { CreateEnrollmentTokenResponse, CreateOperatorTokenResponse, ListOperatorTokensResponse, OperatorToken, OperatorTokenScope, RevokeOperatorTokenResponse } from '../types.ts'
+import type { AlertEventType, AlertWebhook, CreateAlertWebhookResponse, CreateEnrollmentTokenResponse, CreateOperatorTokenResponse, ListAlertWebhooksResponse, ListOperatorTokensResponse, OperatorToken, OperatorTokenScope, RevokeOperatorTokenResponse } from '../types.ts'
+
+const ALERT_EVENT_TYPES: AlertEventType[] = ['node.offline', 'node.drift', 'rollout.paused', 'rollout.failed']
 
 export function EnrollmentView({ operatorToken }: { operatorToken: string }) {
   const [creating, setCreating] = useState(false)
@@ -365,6 +367,193 @@ export function EnrollmentView({ operatorToken }: { operatorToken: string }) {
           </div>
         </div>
       </section>
+
+      <AlertWebhooksSection operatorToken={operatorToken} />
     </div>
+  )
+}
+
+function AlertWebhooksSection({ operatorToken }: { operatorToken: string }) {
+  const [webhooks, setWebhooks] = useState<AlertWebhook[]>([])
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [url, setUrl] = useState('')
+  const [events, setEvents] = useState<Set<AlertEventType>>(new Set())
+  const [sign, setSign] = useState(false)
+  const [creating, setCreating] = useState(false)
+  const [createdSecret, setCreatedSecret] = useState<string | null>(null)
+  const [deletingId, setDeletingId] = useState<string | null>(null)
+  const tokenReady = operatorToken.trim().length > 0
+
+  const authHeaders = useCallback((): HeadersInit => {
+    const headers: HeadersInit = { 'Content-Type': 'application/json' }
+    const token = operatorToken.trim()
+    if (token) headers.Authorization = `Bearer ${token}`
+    return headers
+  }, [operatorToken])
+
+  const loadWebhooks = useCallback(async () => {
+    if (!tokenReady) {
+      setWebhooks([])
+      return
+    }
+    setLoading(true)
+    setError(null)
+    try {
+      const res = await fetch('/api/webhooks', { headers: authHeaders() })
+      if (!res.ok) throw new Error(await apiErrorMessage(res))
+      const data = (await res.json()) as ListAlertWebhooksResponse
+      setWebhooks(data.webhooks ?? [])
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Unknown error')
+    } finally {
+      setLoading(false)
+    }
+  }, [authHeaders, tokenReady])
+
+  useEffect(() => {
+    void loadWebhooks()
+  }, [loadWebhooks])
+
+  const toggleEvent = (event: AlertEventType) => {
+    setEvents((current) => {
+      const next = new Set(current)
+      if (next.has(event)) next.delete(event)
+      else next.add(event)
+      return next
+    })
+  }
+
+  const createWebhook = async () => {
+    if (!tokenReady || creating) return
+    if (url.trim() === '' || events.size === 0) {
+      setError('url and at least one event are required')
+      return
+    }
+    setCreating(true)
+    setError(null)
+    setCreatedSecret(null)
+    try {
+      const res = await fetch('/api/webhooks', {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({ url: url.trim(), events: Array.from(events), sign }),
+      })
+      if (!res.ok) {
+        if (res.status === 401) throw new Error('Operator token required or invalid')
+        if (res.status === 403) throw new Error('Operator token is read-only')
+        throw new Error(await apiErrorMessage(res))
+      }
+      const data = (await res.json()) as CreateAlertWebhookResponse
+      setCreatedSecret(data.secret ?? null)
+      setUrl('')
+      setEvents(new Set())
+      setSign(false)
+      setWebhooks((current) => [data.webhook, ...current.filter((item) => item.id !== data.webhook.id)])
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Unknown error')
+    } finally {
+      setCreating(false)
+    }
+  }
+
+  const deleteWebhook = async (id: string) => {
+    if (!tokenReady || deletingId) return
+    setDeletingId(id)
+    setError(null)
+    try {
+      const res = await fetch(`/api/webhooks/${encodeURIComponent(id)}`, { method: 'DELETE', headers: authHeaders() })
+      if (!res.ok && res.status !== 204) throw new Error(await apiErrorMessage(res))
+      setWebhooks((current) => current.filter((item) => item.id !== id))
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Unknown error')
+    } finally {
+      setDeletingId(null)
+    }
+  }
+
+  return (
+    <section className="rounded-xl border border-[var(--sp-border)] bg-[var(--sp-surface)] p-5 shadow-sm">
+      <h2 className="text-sm font-semibold">Alert webhooks</h2>
+      <p className="mt-1 text-xs text-[var(--sp-muted)]">Receive a small JSON payload when a node goes offline or drifts, or a rollout pauses or fails.</p>
+
+      {!tokenReady && <div className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-700">Operator token required to manage webhooks.</div>}
+      {error && <div className="mt-3 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-600">{error}</div>}
+      {createdSecret && (
+        <div className="mt-3 rounded-lg border border-emerald-500/25 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-700">
+          Signing secret (shown once): <span className="font-mono break-all">{createdSecret}</span>
+        </div>
+      )}
+
+      <div className="mt-4 grid gap-2">
+        <input
+          className="h-10 rounded-lg border border-[var(--sp-border)] bg-[var(--sp-surface-2)] px-3 text-sm text-[var(--sp-text)] outline-none focus:border-[var(--sp-accent)]"
+          value={url}
+          placeholder="https://hooks.example.com/sideplane"
+          onChange={(event) => setUrl(event.target.value)}
+        />
+        <div className="flex flex-wrap gap-3">
+          {ALERT_EVENT_TYPES.map((event) => (
+            <label key={event} className="flex items-center gap-1.5 text-xs text-[var(--sp-muted)]">
+              <input type="checkbox" checked={events.has(event)} onChange={() => toggleEvent(event)} />
+              {event}
+            </label>
+          ))}
+        </div>
+        <div className="flex flex-wrap items-center gap-3">
+          <label className="flex items-center gap-1.5 text-xs text-[var(--sp-muted)]">
+            <input type="checkbox" checked={sign} onChange={(event) => setSign(event.target.checked)} />
+            sign deliveries (HMAC-SHA256)
+          </label>
+          <button
+            type="button"
+            className="h-9 rounded-lg bg-[var(--sp-accent)] px-3 text-sm font-medium text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-55"
+            disabled={!tokenReady || creating || url.trim() === '' || events.size === 0}
+            onClick={createWebhook}
+          >
+            {creating ? 'Creating…' : 'Create webhook'}
+          </button>
+        </div>
+      </div>
+
+      <div className="mt-4 overflow-x-auto rounded-lg border border-[var(--sp-border)]">
+        <table className="min-w-full divide-y divide-[var(--sp-border)] text-left text-sm">
+          <thead className="bg-[var(--sp-surface-2)] text-[11px] uppercase tracking-[0.12em] text-[var(--sp-faint)]">
+            <tr>
+              <th className="px-3 py-2 font-semibold">URL</th>
+              <th className="px-3 py-2 font-semibold">Events</th>
+              <th className="px-3 py-2 font-semibold">Signed</th>
+              <th className="px-3 py-2 text-right font-semibold">Action</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-[var(--sp-border)]">
+            {webhooks.length === 0 && (
+              <tr>
+                <td colSpan={4} className="px-3 py-5 text-center text-sm text-[var(--sp-muted)]">
+                  {loading ? 'Loading webhooks…' : 'No alert webhooks'}
+                </td>
+              </tr>
+            )}
+            {webhooks.map((webhook) => (
+              <tr key={webhook.id}>
+                <td className="px-3 py-2 font-mono text-xs text-[var(--sp-text)] break-all">{webhook.url}</td>
+                <td className="px-3 py-2 font-mono text-[11px] text-[var(--sp-muted)]">{(webhook.events ?? []).join(', ')}</td>
+                <td className="px-3 py-2 text-xs">{webhook.hasSecret ? 'yes' : 'no'}</td>
+                <td className="px-3 py-2 text-right">
+                  <button
+                    type="button"
+                    className="h-8 rounded-lg border border-[var(--sp-border-strong)] px-3 text-xs font-medium hover:bg-[var(--sp-surface-2)] disabled:cursor-not-allowed disabled:opacity-55"
+                    disabled={!tokenReady || deletingId === webhook.id}
+                    onClick={() => deleteWebhook(webhook.id)}
+                  >
+                    {deletingId === webhook.id ? 'Deleting…' : 'Delete'}
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
   )
 }

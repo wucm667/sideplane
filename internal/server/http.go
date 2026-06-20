@@ -133,6 +133,8 @@ func NewHandlerWithConfig(cfg HandlerConfig) (http.Handler, error) {
 	mux.HandleFunc("/api/audit", handler.auditEvents)
 	mux.HandleFunc("/api/operator-tokens", handler.operatorTokens)
 	mux.HandleFunc("/api/operator-tokens/", handler.operatorTokenRouter)
+	mux.HandleFunc("/api/webhooks", handler.alertWebhooks)
+	mux.HandleFunc("/api/webhooks/", handler.alertWebhookRouter)
 	mux.HandleFunc("/api/signing-key", handler.publicSigningKey)
 	mux.HandleFunc("/api/config/desired/history", handler.desiredConfigHistory)
 	mux.HandleFunc("/api/config/desired/revert", handler.revertDesiredConfig)
@@ -400,6 +402,105 @@ func (h *handler) operatorTokenRouter(w http.ResponseWriter, r *http.Request) {
 		CreatedAt: now,
 	})
 	writeJSON(w, http.StatusOK, protocol.RevokeOperatorTokenResponse{OperatorToken: token})
+}
+
+func (h *handler) alertWebhooks(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodPost:
+		h.createAlertWebhook(w, r)
+	case http.MethodGet:
+		h.listAlertWebhooks(w, r)
+	default:
+		w.Header().Set("Allow", "GET, POST")
+		writeAPIError(w, http.StatusMethodNotAllowed, http.StatusText(http.StatusMethodNotAllowed))
+	}
+}
+
+func (h *handler) createAlertWebhook(w http.ResponseWriter, r *http.Request) {
+	if !h.authorizeOperator(w, r) {
+		return
+	}
+	var req protocol.CreateAlertWebhookRequest
+	if err := decodeJSONRequest(w, r, defaultJSONBodyLimit, &req); err != nil {
+		writeJSONDecodeError(w, err, "invalid webhook JSON")
+		return
+	}
+	req.Secret = strings.TrimSpace(req.Secret)
+	if req.Secret == "" && req.Sign {
+		secret, err := newAlertWebhookSecret()
+		if err != nil {
+			writeAPIError(w, http.StatusInternalServerError, "generate webhook secret")
+			return
+		}
+		req.Secret = secret
+	}
+
+	now := time.Now().UTC()
+	webhook, err := h.store.CreateAlertWebhook(r.Context(), req, now)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	h.audit(r.Context(), protocol.AuditEvent{
+		Actor:     audit.ActorOperator,
+		Action:    audit.ActionAlertWebhookCreate,
+		Detail:    fmt.Sprintf("alert webhook created id=%s url=%s events=%d signed=%t", webhook.ID, webhook.URL, len(webhook.Events), webhook.HasSecret),
+		CreatedAt: now,
+	})
+	// The signing secret is returned exactly once, here at creation time.
+	writeJSON(w, http.StatusCreated, protocol.CreateAlertWebhookResponse{Webhook: webhook, Secret: req.Secret})
+}
+
+func (h *handler) listAlertWebhooks(w http.ResponseWriter, r *http.Request) {
+	if !h.authorizeOperator(w, r) {
+		return
+	}
+	webhooks, err := h.store.ListAlertWebhooks(r.Context())
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "list webhooks")
+		return
+	}
+	writeJSON(w, http.StatusOK, protocol.ListAlertWebhooksResponse{Webhooks: webhooks})
+}
+
+func (h *handler) alertWebhookRouter(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		w.Header().Set("Allow", http.MethodDelete)
+		writeAPIError(w, http.StatusMethodNotAllowed, http.StatusText(http.StatusMethodNotAllowed))
+		return
+	}
+	if !h.authorizeOperator(w, r) {
+		return
+	}
+	webhookID := strings.TrimSpace(strings.TrimPrefix(r.URL.Path, "/api/webhooks/"))
+	if webhookID == "" || strings.Contains(webhookID, "/") {
+		writeAPIError(w, http.StatusNotFound, "alert webhook not found")
+		return
+	}
+	if err := h.store.DeleteAlertWebhook(r.Context(), webhookID); err != nil {
+		if errors.Is(err, store.ErrAlertWebhookNotFound) {
+			writeAPIError(w, http.StatusNotFound, "alert webhook not found")
+			return
+		}
+		writeAPIError(w, http.StatusInternalServerError, "delete webhook")
+		return
+	}
+	now := time.Now().UTC()
+	h.audit(r.Context(), protocol.AuditEvent{
+		Actor:     audit.ActorOperator,
+		Action:    audit.ActionAlertWebhookDelete,
+		Detail:    "alert webhook deleted id=" + webhookID,
+		CreatedAt: now,
+	})
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func newAlertWebhookSecret() (string, error) {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(buf), nil
 }
 
 func (h *handler) enrollNode(w http.ResponseWriter, r *http.Request) {

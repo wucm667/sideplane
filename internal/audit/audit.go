@@ -51,4 +51,8 @@ const (
 	ActionDesiredConfigUpdate = "config.desired.update"
 	// ActionDesiredConfigRevert records operator reverts to desired config.
 	ActionDesiredConfigRevert = "config.desired.revert"
+	// ActionAlertWebhookCreate records operator creation of an alert webhook.
+	ActionAlertWebhookCreate = "alert.webhook.create"
+	// ActionAlertWebhookDelete records operator deletion of an alert webhook.
+	ActionAlertWebhookDelete = "alert.webhook.delete"
 )

@@ -49,17 +49,22 @@ type AlertWebhook struct {
 	CreatedAt time.Time        `json:"createdAt"`
 }
 
-// CreateAlertWebhookRequest registers an outbound alert webhook. Secret is
-// optional; when set, deliveries carry an HMAC-SHA256 signature header.
+// CreateAlertWebhookRequest registers an outbound alert webhook. When Sign is
+// true and no Secret is provided, the server generates a signing secret and
+// returns it once. Secret may also be supplied directly; either way, when a
+// secret is set, deliveries carry an HMAC-SHA256 signature header.
 type CreateAlertWebhookRequest struct {
 	URL    string           `json:"url"`
 	Events []AlertEventType `json:"events"`
+	Sign   bool             `json:"sign,omitempty"`
 	Secret string           `json:"secret,omitempty"`
 }
 
-// CreateAlertWebhookResponse returns the created webhook metadata.
+// CreateAlertWebhookResponse returns the created webhook metadata. Secret is the
+// signing secret and is returned only once, at creation time.
 type CreateAlertWebhookResponse struct {
 	Webhook AlertWebhook `json:"webhook"`
+	Secret  string       `json:"secret,omitempty"`
 }
 
 // ListAlertWebhooksResponse returns alert webhook metadata without secrets.
