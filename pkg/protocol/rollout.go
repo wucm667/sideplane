@@ -7,6 +7,7 @@ type RolloutState string
 
 const (
 	RolloutStatePending   RolloutState = "pending"
+	RolloutStateScheduled RolloutState = "scheduled"
 	RolloutStateRunning   RolloutState = "running"
 	RolloutStatePaused    RolloutState = "paused"
 	RolloutStateCompleted RolloutState = "completed"
@@ -56,6 +57,9 @@ type RolloutSpec struct {
 	BatchSize     int                 `json:"batchSize,omitempty"`
 	Live          bool                `json:"live"`
 	HealthTimeout time.Duration       `json:"healthTimeout,omitempty"`
+	// StartAt schedules a rollout for a future RFC3339 time. Empty or past
+	// values run immediately; future values remain scheduled until reached.
+	StartAt time.Time `json:"startAt,omitzero"`
 	// IncludeMaintenance allows explicit operator opt-in to target nodes marked
 	// maintenance. By default maintenance nodes are excluded from new rollouts.
 	IncludeMaintenance bool `json:"includeMaintenance,omitempty"`

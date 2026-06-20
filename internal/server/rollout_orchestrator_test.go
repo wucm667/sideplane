@@ -186,6 +186,53 @@ func TestRolloutOrchestratorDispatchesExistingConfigApplyPipeline(t *testing.T) 
 	}
 }
 
+func TestRolloutOrchestratorWaitsForScheduledStart(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 6, 18, 10, 0, 0, 0, time.UTC)
+	startAt := now.Add(time.Hour)
+	clock := newRolloutTestClock(now)
+	nodeStore := store.NewMemoryNodeStore()
+	enrollRolloutNode(t, nodeStore, "node-scheduled", now)
+	seedRolloutProbe(t, nodeStore, "node-scheduled", "hermes", "default", "/etc/sideplane-test/scheduled.json", now)
+	created := createTestRollout(t, nodeStore, protocol.RolloutSpec{
+		NodeIDs:       []string{"node-scheduled"},
+		RuntimeType:   "hermes",
+		Profile:       "default",
+		Target:        protocol.ProviderModelConfig{Provider: "openai", Model: "gpt-4o"},
+		BatchSize:     1,
+		HealthTimeout: time.Minute,
+		StartAt:       startAt,
+	}, now)
+	orchestrator := NewRolloutOrchestrator(RolloutOrchestratorConfig{
+		Store: nodeStore,
+		Freshness: FreshnessPolicy{
+			StaleAfter:   2 * time.Hour,
+			OfflineAfter: 3 * time.Hour,
+			Now:          clock.Now,
+		},
+		SigningKey: generateRolloutSigningKey(t),
+		Now:        clock.Now,
+	})
+
+	if err := orchestrator.ReconcileOnce(ctx); err != nil {
+		t.Fatalf("reconcile before start: %v", err)
+	}
+	waiting := getRolloutForOrchestratorTest(t, nodeStore, created.ID)
+	if waiting.State != protocol.RolloutStateScheduled || waiting.Batches[0].Nodes["node-scheduled"].JobID != "" {
+		t.Fatalf("waiting rollout = %+v, want scheduled without dispatched job", waiting)
+	}
+
+	clock.Set(startAt)
+	if err := orchestrator.ReconcileOnce(ctx); err != nil {
+		t.Fatalf("reconcile at start: %v", err)
+	}
+	started := getRolloutForOrchestratorTest(t, nodeStore, created.ID)
+	progress := started.Batches[0].Nodes["node-scheduled"]
+	if started.State != protocol.RolloutStateRunning || progress.State != protocol.RolloutNodeStateDispatched || progress.JobID == "" {
+		t.Fatalf("started rollout = %+v progress=%+v, want running dispatched", started, progress)
+	}
+}
+
 func TestRolloutOrchestratorPausesOnApplyFailureAndStopsDispatch(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 6, 18, 11, 0, 0, 0, time.UTC)

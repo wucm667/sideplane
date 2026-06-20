@@ -87,16 +87,23 @@ func (e Engine) Step(ctx context.Context, rollout protocol.Rollout) (protocol.Ro
 	if rollout.CreatedAt.IsZero() {
 		rollout.CreatedAt = now
 	}
-	rollout.UpdatedAt = now
 	if terminal(rollout.State) || rollout.State == protocol.RolloutStatePaused {
 		return rollout, nil
 	}
+	if rolloutScheduledForFuture(rollout, now) {
+		if rollout.State != protocol.RolloutStateScheduled {
+			rollout.State = protocol.RolloutStateScheduled
+			rollout.UpdatedAt = now
+		}
+		return rollout, nil
+	}
+	rollout.UpdatedAt = now
 	if len(rollout.Batches) == 0 {
 		rollout.State = protocol.RolloutStateCompleted
 		rollout.FinishedAt = now
 		return rollout, nil
 	}
-	if rollout.State == "" || rollout.State == protocol.RolloutStatePending {
+	if rollout.State == "" || rollout.State == protocol.RolloutStatePending || rollout.State == protocol.RolloutStateScheduled {
 		rollout.State = protocol.RolloutStateRunning
 	}
 	if rollout.State != protocol.RolloutStateRunning {
@@ -343,6 +350,13 @@ func batchComplete(batch protocol.RolloutBatch) bool {
 
 func terminal(state protocol.RolloutState) bool {
 	return state == protocol.RolloutStateCompleted || state == protocol.RolloutStateAborted || state == protocol.RolloutStateFailed
+}
+
+func rolloutScheduledForFuture(rollout protocol.Rollout, now time.Time) bool {
+	if rollout.Spec.StartAt.IsZero() {
+		return false
+	}
+	return now.Before(rollout.Spec.StartAt.UTC())
 }
 
 func (e Engine) now() time.Time {

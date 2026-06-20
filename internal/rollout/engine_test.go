@@ -58,6 +58,65 @@ func TestEngineDryRunCompletesSequentialBatches(t *testing.T) {
 	}
 }
 
+func TestEngineScheduledRolloutWaitsThenRuns(t *testing.T) {
+	clock := &fakeClock{now: time.Date(2026, 6, 19, 12, 0, 0, 0, time.UTC)}
+	dispatcher := &fakeDispatcher{}
+	health := &fakeHealth{byJob: map[string]NodeHealth{}}
+	engine := Engine{Clock: clock, Dispatcher: dispatcher, Health: health}
+	rollout := rolloutForEngineTest([]string{"node-a"}, 1, false, clock.Now())
+	rollout.Spec.StartAt = clock.Now().Add(time.Minute)
+
+	var err error
+	rollout, err = engine.Step(context.Background(), rollout)
+	if err != nil {
+		t.Fatalf("scheduled step: %v", err)
+	}
+	if rollout.State != protocol.RolloutStateScheduled || len(dispatcher.jobs) != 0 {
+		t.Fatalf("scheduled rollout=%#v jobs=%#v, want scheduled with no jobs", rollout, dispatcher.jobs)
+	}
+
+	clock.advance(59 * time.Second)
+	rollout, err = engine.Step(context.Background(), rollout)
+	if err != nil {
+		t.Fatalf("pre-start step: %v", err)
+	}
+	if rollout.State != protocol.RolloutStateScheduled || len(dispatcher.jobs) != 0 {
+		t.Fatalf("pre-start rollout=%#v jobs=%#v, want still scheduled with no jobs", rollout, dispatcher.jobs)
+	}
+
+	clock.advance(time.Second)
+	rollout, err = engine.Step(context.Background(), rollout)
+	if err != nil {
+		t.Fatalf("start step: %v", err)
+	}
+	if rollout.State != protocol.RolloutStateRunning || len(dispatcher.jobs) != 1 {
+		t.Fatalf("started rollout=%#v jobs=%#v, want running with one job", rollout, dispatcher.jobs)
+	}
+}
+
+func TestEngineScheduledRolloutCanAbort(t *testing.T) {
+	clock := &fakeClock{now: time.Date(2026, 6, 19, 12, 0, 0, 0, time.UTC)}
+	dispatcher := &fakeDispatcher{}
+	engine := Engine{Clock: clock, Dispatcher: dispatcher, Health: &fakeHealth{byJob: map[string]NodeHealth{}}}
+	rollout := rolloutForEngineTest([]string{"node-a"}, 1, false, clock.Now())
+	rollout.Spec.StartAt = clock.Now().Add(time.Hour)
+
+	var err error
+	rollout, err = engine.Step(context.Background(), rollout)
+	if err != nil {
+		t.Fatalf("scheduled step: %v", err)
+	}
+	rollout = Abort(rollout, clock.Now())
+	clock.advance(time.Hour)
+	rollout, err = engine.Step(context.Background(), rollout)
+	if err != nil {
+		t.Fatalf("aborted step: %v", err)
+	}
+	if rollout.State != protocol.RolloutStateAborted || len(dispatcher.jobs) != 0 {
+		t.Fatalf("aborted rollout=%#v jobs=%#v, want aborted with no jobs", rollout, dispatcher.jobs)
+	}
+}
+
 func TestEnginePausesOnFailureOfflineAndTimeout(t *testing.T) {
 	tests := []struct {
 		name       string
