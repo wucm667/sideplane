@@ -108,10 +108,26 @@ export interface Rollout {
 
 export interface CreateRolloutRequest {
   spec: RolloutSpec
+  templateId?: string
 }
 
 export interface CreateRolloutResponse {
   rollout: Rollout
+}
+
+export interface RolloutTemplate {
+  id: string
+  name: string
+  spec: RolloutSpec
+  createdAt: string
+}
+
+export interface CreateRolloutTemplateResponse {
+  template: RolloutTemplate
+}
+
+export interface ListRolloutTemplatesResponse {
+  templates: RolloutTemplate[]
 }
 
 export interface ListRolloutsResponse {

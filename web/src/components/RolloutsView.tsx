@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react'
 import { formatDate, formatRelativeTime, rolloutBadgeClasses } from '../helpers.ts'
-import type { CreateRolloutRequest, NodeStatus, Rollout, RolloutAction, RolloutBatch, RolloutNodeProgress } from '../types.ts'
+import type { CreateRolloutRequest, ListRolloutTemplatesResponse, NodeStatus, Rollout, RolloutAction, RolloutBatch, RolloutNodeProgress, RolloutTemplate } from '../types.ts'
 import { TableMessage } from './FleetOverview.tsx'
 
 interface RolloutsViewProps {
@@ -71,6 +71,7 @@ export function RolloutsView({
       <RolloutCreateForm
         creating={creating}
         tokenReady={tokenReady}
+        operatorToken={operatorToken}
         onCreate={async (request) => {
           const rollout = await onCreate(request)
           if (rollout) {
@@ -135,10 +136,12 @@ export function RolloutsView({
 function RolloutCreateForm({
   creating,
   tokenReady,
+  operatorToken,
   onCreate,
 }: {
   creating: boolean
   tokenReady: boolean
+  operatorToken: string
   onCreate: (request: CreateRolloutRequest) => Promise<Rollout | null>
 }) {
   const [selector, setSelector] = useState('')
@@ -152,6 +155,96 @@ function RolloutCreateForm({
   const [confirmedLive, setConfirmedLive] = useState(false)
   const [autoRollback, setAutoRollback] = useState(false)
   const [formError, setFormError] = useState<string | null>(null)
+  const [templates, setTemplates] = useState<RolloutTemplate[]>([])
+  const [selectedTemplate, setSelectedTemplate] = useState('')
+  const [templateName, setTemplateName] = useState('')
+  const [templateMessage, setTemplateMessage] = useState<string | null>(null)
+
+  const authHeaders = (): HeadersInit => {
+    const headers: HeadersInit = { 'Content-Type': 'application/json' }
+    const token = operatorToken.trim()
+    if (token) headers.Authorization = `Bearer ${token}`
+    return headers
+  }
+
+  const loadTemplates = async () => {
+    if (operatorToken.trim() === '') {
+      setTemplates([])
+      return
+    }
+    try {
+      const res = await fetch('/api/rollout-templates', { headers: authHeaders() })
+      if (!res.ok) return
+      const data = (await res.json()) as ListRolloutTemplatesResponse
+      setTemplates(data.templates ?? [])
+    } catch {
+      // best-effort; templates are optional
+    }
+  }
+
+  useEffect(() => {
+    void loadTemplates()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [operatorToken])
+
+  const buildSpec = (): CreateRolloutRequest['spec'] | string => {
+    const parsedSelector = parseSelector(selector)
+    if (typeof parsedSelector === 'string') return parsedSelector
+    const nodes = parseNodeIds(nodeIds)
+    if (Object.keys(parsedSelector).length === 0 && nodes.length === 0) return 'selector or node required'
+    if (Object.keys(parsedSelector).length > 0 && nodes.length > 0) return 'selector and nodes conflict'
+    if (!provider.trim() || !model.trim()) return 'provider and model required'
+    if (batchSize <= 0) return 'batch size must be positive'
+    return {
+      selector: Object.keys(parsedSelector).length > 0 ? parsedSelector : undefined,
+      nodeIds: nodes.length > 0 ? nodes : undefined,
+      runtimeType: runtimeType.trim() || 'hermes',
+      profile: profile.trim(),
+      target: { provider: provider.trim(), model: model.trim() },
+      batchSize,
+      live,
+      autoRollbackOnFailure: live ? autoRollback : undefined,
+    }
+  }
+
+  const saveAsTemplate = async () => {
+    if (!tokenReady) return
+    const name = templateName.trim()
+    if (name === '') {
+      setFormError('template name required')
+      return
+    }
+    const spec = buildSpec()
+    if (typeof spec === 'string') {
+      setFormError(spec)
+      return
+    }
+    setFormError(null)
+    setTemplateMessage(null)
+    try {
+      const res = await fetch('/api/rollout-templates', {
+        method: 'POST',
+        headers: authHeaders(),
+        body: JSON.stringify({ name, spec }),
+      })
+      if (!res.ok) {
+        if (res.status === 403) throw new Error('Operator token is read-only')
+        throw new Error('save template failed')
+      }
+      setTemplateName('')
+      setTemplateMessage('Template saved')
+      await loadTemplates()
+    } catch (e) {
+      setFormError(e instanceof Error ? e.message : 'Unknown error')
+    }
+  }
+
+  const createFromTemplate = async () => {
+    if (!tokenReady || selectedTemplate === '') return
+    setFormError(null)
+    setTemplateMessage(null)
+    await onCreate({ templateId: selectedTemplate, spec: { runtimeType: 'hermes', target: { provider: '', model: '' }, live: false } })
+  }
 
   const submit = async (event: FormEvent) => {
     event.preventDefault()
@@ -258,6 +351,42 @@ function RolloutCreateForm({
           )}
         </div>
       </div>
+      <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-[var(--sp-border)] pt-3">
+        <select
+          className={inputClassName + ' max-w-xs'}
+          value={selectedTemplate}
+          aria-label="rollout template"
+          onChange={(event) => setSelectedTemplate(event.target.value)}
+        >
+          <option value="">Use a template…</option>
+          {templates.map((template) => (
+            <option key={template.id} value={template.id}>{template.name}</option>
+          ))}
+        </select>
+        <button
+          type="button"
+          className="h-9 rounded-lg border border-[var(--sp-border-strong)] px-3 text-sm font-medium hover:bg-[var(--sp-surface-2)] disabled:cursor-not-allowed disabled:opacity-55"
+          disabled={!tokenReady || creating || selectedTemplate === ''}
+          onClick={createFromTemplate}
+        >
+          Create from template
+        </button>
+        <input
+          className={inputClassName + ' max-w-[12rem]'}
+          value={templateName}
+          placeholder="save as template name"
+          onChange={(event) => setTemplateName(event.target.value)}
+        />
+        <button
+          type="button"
+          className="h-9 rounded-lg border border-[var(--sp-border-strong)] px-3 text-sm font-medium hover:bg-[var(--sp-surface-2)] disabled:cursor-not-allowed disabled:opacity-55"
+          disabled={!tokenReady || templateName.trim() === ''}
+          onClick={saveAsTemplate}
+        >
+          Save as template
+        </button>
+      </div>
+      {templateMessage && <div className="mt-2 text-xs text-emerald-600">{templateMessage}</div>}
       {formError && <div className="mt-3 text-xs text-rose-600">{formError}</div>}
     </form>
   )

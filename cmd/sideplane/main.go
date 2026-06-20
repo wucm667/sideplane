@@ -50,7 +50,7 @@ var completionCommands = []completionCommand{
 	{Name: "restart", Description: "create a standalone restart job"},
 	{Name: "rollback", Description: "create a rollback job from a backup ref"},
 	{Name: "backups", Description: "list rollback backups", Subcommands: []string{"list"}},
-	{Name: "rollout", Description: "manage staged fleet rollouts", Subcommands: []string{"create", "list", "status", "pause", "resume", "abort"}},
+	{Name: "rollout", Description: "manage staged fleet rollouts", Subcommands: []string{"create", "list", "status", "pause", "resume", "abort", "template"}},
 	{Name: "jobs", Description: "list node jobs", Subcommands: []string{"list"}},
 	{Name: "audit", Description: "list audit events", Subcommands: []string{"list", "export"}},
 	{Name: "token", Description: "manage operator tokens", Subcommands: []string{"create", "list", "revoke"}},
@@ -129,6 +129,17 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 				return runRolloutAction(args[2:], stdout, stderr, protocol.RolloutActionResume)
 			case "abort":
 				return runRolloutAction(args[2:], stdout, stderr, protocol.RolloutActionAbort)
+			case "template":
+				if len(args) >= 3 {
+					switch args[2] {
+					case "create":
+						return runRolloutTemplateCreate(args[3:], stdout, stderr)
+					case "list":
+						return runRolloutTemplateList(args[3:], stdout, stderr)
+					case "delete":
+						return runRolloutTemplateDelete(args[3:], stdout, stderr)
+					}
+				}
 			}
 		}
 	case "jobs":
@@ -413,8 +424,9 @@ func runRolloutCreate(args []string, stdout io.Writer, stderr io.Writer) int {
 	yes := flags.Bool("yes", false, "confirm live rollout")
 	autoRollback := flags.Bool("auto-rollback", false, "on a live batch failure, roll back already-applied nodes before pausing")
 	healthTimeout := flags.Duration("health-timeout", 0, "batch health timeout; server default is used when omitted")
+	template := flags.String("template", "", "rollout template id to prefill the spec; other spec flags are ignored")
 	jsonOutput := flags.Bool("json", false, "print raw JSON response")
-	usage := "sideplane rollout create (--selector key=value[,key2=value2] | --node NODE [--node NODE...]) --provider PROVIDER --model MODEL [--runtime-type TYPE] [--profile PROFILE] [--batch-size N] [--live --yes] [--auto-rollback] [--health-timeout DURATION] [--server URL] [--operator-token TOKEN] [--json]"
+	usage := "sideplane rollout create (--template ID | (--selector key=value[,key2=value2] | --node NODE [--node NODE...]) --provider PROVIDER --model MODEL) [--runtime-type TYPE] [--profile PROFILE] [--batch-size N] [--live --yes] [--auto-rollback] [--health-timeout DURATION] [--server URL] [--operator-token TOKEN] [--json]"
 	if commandHelpRequested(args) {
 		printCommandHelp(stdout, usage, flags)
 		return 0
@@ -425,6 +437,19 @@ func runRolloutCreate(args []string, stdout io.Writer, stderr io.Writer) int {
 	if flags.NArg() != 0 {
 		fmt.Fprintln(stderr, "sideplane rollout create: unexpected positional arguments")
 		return 1
+	}
+	if templateID := strings.TrimSpace(*template); templateID != "" {
+		resp, body, err := postJSON[protocol.CreateRolloutResponse](context.Background(), serverURLValue(*serverURL), "/api/rollouts", protocol.CreateRolloutRequest{TemplateID: templateID}, operatorTokenValue(*operatorTokenFlag))
+		if err != nil {
+			fmt.Fprintf(stderr, "rollout create: %v\n", err)
+			return 1
+		}
+		if *jsonOutput {
+			writeRawJSON(stdout, body)
+			return 0
+		}
+		printRolloutSummary(stdout, resp.Rollout)
+		return 0
 	}
 	if *live && !*yes {
 		fmt.Fprintln(stderr, "rollout create: --live requires --yes")
@@ -483,6 +508,174 @@ func runRolloutCreate(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 	printRolloutSummary(stdout, resp.Rollout)
 	return 0
+}
+
+func runRolloutTemplateCreate(args []string, stdout io.Writer, stderr io.Writer) int {
+	cfg := loadCLIConfig()
+	flags := flag.NewFlagSet("sideplane rollout template create", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+
+	serverURL := flags.String("server", "", "Sideplane server URL; can also be set with SIDEPLANE_SERVER_URL")
+	operatorTokenFlag := flags.String("operator-token", "", "operator bearer token; can also be set with SIDEPLANE_OPERATOR_TOKEN")
+	name := flags.String("name", "", "template name")
+	selector := flags.String("selector", "", "label selector with AND semantics, for example role=canary,zone=lab")
+	var nodeIDs stringList
+	flags.Var(&nodeIDs, "node", "target node ID; may be repeated")
+	provider := flags.String("provider", "", "target provider")
+	model := flags.String("model", "", "target model")
+	runtimeType := flags.String("runtime-type", runtimeTypeDefault(cfg), "runtime type")
+	profile := flags.String("profile", profileDefault(cfg), "runtime profile")
+	batchSize := flags.Int("batch-size", 1, "sequential rollout batch size")
+	live := flags.Bool("live", false, "save the template as a live rollout")
+	autoRollback := flags.Bool("auto-rollback", false, "save the template with auto-rollback enabled")
+	healthTimeout := flags.Duration("health-timeout", 0, "batch health timeout")
+	jsonOutput := flags.Bool("json", false, "print raw JSON response")
+	usage := "sideplane rollout template create --name NAME (--selector ... | --node NODE ...) --provider PROVIDER --model MODEL [--runtime-type TYPE] [--profile PROFILE] [--batch-size N] [--live] [--auto-rollback] [--health-timeout DURATION] [--server URL] [--operator-token TOKEN] [--json]"
+	if commandHelpRequested(args) {
+		printCommandHelp(stdout, usage, flags)
+		return 0
+	}
+	if err := parseCommandFlags(flags, args, "live", "auto-rollback", "json"); err != nil {
+		return 2
+	}
+	if flags.NArg() != 0 {
+		fmt.Fprintln(stderr, "usage: "+usage)
+		return 1
+	}
+	if strings.TrimSpace(*name) == "" {
+		fmt.Fprintln(stderr, "rollout template create: --name is required")
+		return 1
+	}
+	if strings.TrimSpace(*provider) == "" || strings.TrimSpace(*model) == "" {
+		fmt.Fprintln(stderr, "rollout template create: --provider and --model are required")
+		return 1
+	}
+	if *batchSize <= 0 {
+		fmt.Fprintln(stderr, "rollout template create: --batch-size must be positive")
+		return 1
+	}
+	selectorMap, err := parseCLISelector(*selector)
+	if err != nil {
+		fmt.Fprintf(stderr, "rollout template create: %v\n", err)
+		return 1
+	}
+	trimmedNodes := uniqueTrimmedCLIStrings(nodeIDs)
+	if len(selectorMap) == 0 && len(trimmedNodes) == 0 {
+		fmt.Fprintln(stderr, "rollout template create: --selector or --node is required")
+		return 1
+	}
+	if len(selectorMap) > 0 && len(trimmedNodes) > 0 {
+		fmt.Fprintln(stderr, "rollout template create: --selector and --node are mutually exclusive")
+		return 1
+	}
+
+	req := protocol.CreateRolloutTemplateRequest{
+		Name: strings.TrimSpace(*name),
+		Spec: protocol.RolloutSpec{
+			Selector:              selectorMap,
+			NodeIDs:               trimmedNodes,
+			RuntimeType:           strings.TrimSpace(*runtimeType),
+			Profile:               strings.TrimSpace(*profile),
+			Target:                protocol.ProviderModelConfig{Provider: strings.TrimSpace(*provider), Model: strings.TrimSpace(*model)},
+			BatchSize:             *batchSize,
+			Live:                  *live,
+			AutoRollbackOnFailure: *autoRollback,
+			HealthTimeout:         *healthTimeout,
+		},
+	}
+	resp, body, err := postJSON[protocol.CreateRolloutTemplateResponse](context.Background(), serverURLValue(*serverURL), "/api/rollout-templates", req, operatorTokenValue(*operatorTokenFlag))
+	if err != nil {
+		fmt.Fprintf(stderr, "rollout template create: %v\n", err)
+		return 1
+	}
+	if *jsonOutput {
+		writeRawJSON(stdout, body)
+		return 0
+	}
+	fmt.Fprintf(stdout, "template: %s\n", resp.Template.ID)
+	fmt.Fprintf(stdout, "name: %s\n", resp.Template.Name)
+	fmt.Fprintf(stdout, "target: %s\n", providerModelLabel(resp.Template.Spec.Target))
+	return 0
+}
+
+func runRolloutTemplateList(args []string, stdout io.Writer, stderr io.Writer) int {
+	flags := flag.NewFlagSet("sideplane rollout template list", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	serverURL := flags.String("server", "", "Sideplane server URL; can also be set with SIDEPLANE_SERVER_URL")
+	operatorTokenFlag := flags.String("operator-token", "", "operator bearer token; can also be set with SIDEPLANE_OPERATOR_TOKEN")
+	jsonOutput := flags.Bool("json", false, "print raw JSON response")
+	usage := "sideplane rollout template list [--server URL] [--operator-token TOKEN] [--json]"
+	if commandHelpRequested(args) {
+		printCommandHelp(stdout, usage, flags)
+		return 0
+	}
+	if err := parseCommandFlags(flags, args, "json"); err != nil {
+		return 2
+	}
+	if flags.NArg() != 0 {
+		fmt.Fprintln(stderr, "usage: "+usage)
+		return 1
+	}
+	resp, body, err := getJSON[protocol.ListRolloutTemplatesResponse](context.Background(), serverURLValue(*serverURL), "/api/rollout-templates", operatorTokenValue(*operatorTokenFlag))
+	if err != nil {
+		fmt.Fprintf(stderr, "rollout template list: %v\n", err)
+		return 1
+	}
+	if *jsonOutput {
+		writeRawJSON(stdout, body)
+		return 0
+	}
+	printRolloutTemplatesTable(stdout, resp.Templates)
+	return 0
+}
+
+func runRolloutTemplateDelete(args []string, stdout io.Writer, stderr io.Writer) int {
+	flags := flag.NewFlagSet("sideplane rollout template delete", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	serverURL := flags.String("server", "", "Sideplane server URL; can also be set with SIDEPLANE_SERVER_URL")
+	operatorTokenFlag := flags.String("operator-token", "", "operator bearer token; can also be set with SIDEPLANE_OPERATOR_TOKEN")
+	usage := "sideplane rollout template delete <id> [--server URL] [--operator-token TOKEN]"
+	if commandHelpRequested(args) {
+		printCommandHelp(stdout, usage, flags)
+		return 0
+	}
+	if err := parseCommandFlags(flags, args); err != nil {
+		return 2
+	}
+	if flags.NArg() != 1 {
+		fmt.Fprintln(stderr, "usage: "+usage)
+		return 1
+	}
+	templateID := strings.TrimSpace(flags.Arg(0))
+	if templateID == "" {
+		fmt.Fprintln(stderr, "rollout template delete: id is required")
+		return 1
+	}
+	if _, err := apiJSONRequest(context.Background(), http.MethodDelete, serverURLValue(*serverURL), "/api/rollout-templates/"+url.PathEscape(templateID), nil, operatorTokenValue(*operatorTokenFlag)); err != nil {
+		fmt.Fprintf(stderr, "rollout template delete: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "Rollout template %s deleted.\n", templateID)
+	return 0
+}
+
+func printRolloutTemplatesTable(w io.Writer, templates []protocol.RolloutTemplate) {
+	table := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(table, "ID\tNAME\tTARGET\tRUNTIME\tBATCH\tLIVE\tCREATED")
+	for _, template := range templates {
+		fmt.Fprintf(
+			table,
+			"%s\t%s\t%s\t%s\t%d\t%t\t%s\n",
+			template.ID,
+			template.Name,
+			providerModelLabel(template.Spec.Target),
+			valueOrDash(template.Spec.RuntimeType),
+			template.Spec.BatchSize,
+			template.Spec.Live,
+			timeLabel(template.CreatedAt),
+		)
+	}
+	table.Flush()
 }
 
 func runRolloutList(args []string, stdout io.Writer, stderr io.Writer) int {
