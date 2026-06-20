@@ -241,6 +241,12 @@ type OperatorTokenStore interface {
 	UpdateOperatorTokenLastUsed(ctx context.Context, tokenID string, usedAt time.Time) error
 }
 
+// OnlineBackupStore can snapshot itself to a destination path while serving.
+// Only durable stores (SQLite) implement it; the in-memory store does not.
+type OnlineBackupStore interface {
+	BackupTo(ctx context.Context, destPath string) error
+}
+
 // JobStore persists server-assigned jobs and their lifecycle.
 type JobStore interface {
 	CreateJob(ctx context.Context, req protocol.CreateJobRequest, nodeID string, now time.Time) (protocol.Job, error)

@@ -80,6 +80,26 @@ func (s *SQLiteNodeStore) SchemaVersion(ctx context.Context) (int, error) {
 	return version, nil
 }
 
+// BackupTo writes a transactionally consistent copy of the database to destPath
+// using SQLite's online `VACUUM INTO`. It does not block writers for long and
+// requires destPath to not already exist.
+func (s *SQLiteNodeStore) BackupTo(ctx context.Context, destPath string) error {
+	if s == nil || s.db == nil {
+		return errors.New("sqlite node store is closed")
+	}
+	destPath = strings.TrimSpace(destPath)
+	if destPath == "" {
+		return errors.New("backup destination path is required")
+	}
+	// VACUUM INTO does not accept bind parameters, so the path is embedded as a
+	// quoted SQL string literal with single quotes escaped.
+	escaped := strings.ReplaceAll(destPath, "'", "''")
+	if _, err := s.db.ExecContext(ctx, "VACUUM INTO '"+escaped+"'"); err != nil {
+		return fmt.Errorf("sqlite vacuum into backup: %w", err)
+	}
+	return nil
+}
+
 // RecordHeartbeat stores the latest heartbeat-derived status for a node.
 func (s *SQLiteNodeStore) RecordHeartbeat(ctx context.Context, req protocol.HeartbeatRequest, observedAt time.Time) (protocol.NodeStatus, error) {
 	if s == nil || s.db == nil {

@@ -337,6 +337,67 @@ func TestSQLiteReliabilityPragmas(t *testing.T) {
 	}
 }
 
+func TestSQLiteNodeStoreBackupToProducesConsistentCopy(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "sideplane.db")
+	source, err := OpenSQLiteNodeStore(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("open source store: %v", err)
+	}
+	defer source.Close()
+
+	now := time.Date(2026, 6, 18, 12, 0, 0, 0, time.UTC)
+	if _, err := source.RecordHeartbeat(ctx, protocol.HeartbeatRequest{NodeID: "node-a", Hostname: "host-a"}, now); err != nil {
+		t.Fatalf("seed node: %v", err)
+	}
+	if _, err := source.CreateOperatorToken(ctx, "ops", protocol.OperatorTokenScopeReadonly, now); err != nil {
+		t.Fatalf("seed operator token: %v", err)
+	}
+
+	if err := source.BackupTo(ctx, "   "); err == nil {
+		t.Fatalf("expected error for empty backup destination")
+	}
+
+	backupPath := filepath.Join(dir, "backup.db")
+	if err := source.BackupTo(ctx, backupPath); err != nil {
+		t.Fatalf("backup: %v", err)
+	}
+
+	restored, err := OpenSQLiteNodeStore(ctx, backupPath)
+	if err != nil {
+		t.Fatalf("open backup store: %v", err)
+	}
+	defer restored.Close()
+
+	srcVer, err := source.SchemaVersion(ctx)
+	if err != nil {
+		t.Fatalf("source schema version: %v", err)
+	}
+	dstVer, err := restored.SchemaVersion(ctx)
+	if err != nil {
+		t.Fatalf("backup schema version: %v", err)
+	}
+	if srcVer != dstVer || dstVer != LatestSQLiteSchemaVersion() {
+		t.Fatalf("schema versions src=%d backup=%d latest=%d", srcVer, dstVer, LatestSQLiteSchemaVersion())
+	}
+
+	nodes, err := restored.ListNodes(ctx)
+	if err != nil {
+		t.Fatalf("list nodes from backup: %v", err)
+	}
+	if len(nodes) != 1 || nodes[0].NodeID != "node-a" {
+		t.Fatalf("backup nodes = %+v, want one node-a", nodes)
+	}
+	tokens, err := restored.ListOperatorTokens(ctx)
+	if err != nil {
+		t.Fatalf("list operator tokens from backup: %v", err)
+	}
+	if len(tokens) != 1 || tokens[0].Name != "ops" || tokens[0].Scope != protocol.OperatorTokenScopeReadonly {
+		t.Fatalf("backup operator tokens = %+v, want readonly ops", tokens)
+	}
+}
+
 func TestSQLiteSchemaVersionReportsLatestAfterIdempotentMigration(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "sideplane.db")
