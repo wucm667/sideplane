@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { apiErrorMessage, apiURL, formatDate, sideplaneServerURL } from '../helpers.ts'
-import type { AlertEventType, AlertWebhook, CreateAlertWebhookResponse, CreateEnrollmentTokenResponse, CreateOperatorTokenResponse, ListAlertWebhooksResponse, ListOperatorTokensResponse, OperatorToken, OperatorTokenScope, RevokeOperatorTokenResponse, ServerSettings } from '../types.ts'
+import type { AlertEventType, AlertWebhook, AlertWebhookKind, CreateAlertWebhookResponse, CreateEnrollmentTokenResponse, CreateOperatorTokenResponse, ListAlertWebhooksResponse, ListOperatorTokensResponse, OperatorToken, OperatorTokenScope, RevokeOperatorTokenResponse, ServerSettings } from '../types.ts'
 
 const ALERT_EVENT_TYPES: AlertEventType[] = ['node.offline', 'node.drift', 'rollout.paused', 'rollout.failed']
 
@@ -462,6 +462,7 @@ function AlertWebhooksSection({ operatorToken }: { operatorToken: string }) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [url, setUrl] = useState('')
+  const [kind, setKind] = useState<AlertWebhookKind>('generic')
   const [events, setEvents] = useState<Set<AlertEventType>>(new Set())
   const [sign, setSign] = useState(false)
   const [creating, setCreating] = useState(false)
@@ -521,7 +522,7 @@ function AlertWebhooksSection({ operatorToken }: { operatorToken: string }) {
       const res = await fetch(apiURL('/api/webhooks'), {
         method: 'POST',
         headers: authHeaders(),
-        body: JSON.stringify({ url: url.trim(), events: Array.from(events), sign }),
+        body: JSON.stringify({ url: url.trim(), kind, events: Array.from(events), sign: kind === 'generic' ? sign : false }),
       })
       if (!res.ok) {
         if (res.status === 401) throw new Error('Operator token required or invalid')
@@ -531,6 +532,7 @@ function AlertWebhooksSection({ operatorToken }: { operatorToken: string }) {
       const data = (await res.json()) as CreateAlertWebhookResponse
       setCreatedSecret(data.secret ?? null)
       setUrl('')
+      setKind('generic')
       setEvents(new Set())
       setSign(false)
       setWebhooks((current) => [data.webhook, ...current.filter((item) => item.id !== data.webhook.id)])
@@ -559,7 +561,7 @@ function AlertWebhooksSection({ operatorToken }: { operatorToken: string }) {
   return (
     <section className="rounded-xl border border-[var(--sp-border)] bg-[var(--sp-surface)] p-5 shadow-sm">
       <h2 className="text-sm font-semibold">Alert webhooks</h2>
-      <p className="mt-1 text-xs text-[var(--sp-muted)]">Receive a small JSON payload when a node goes offline or drifts, or a rollout pauses or fails.</p>
+      <p className="mt-1 text-xs text-[var(--sp-muted)]">Receive generic JSON or Slack-compatible alerts when a node goes offline or drifts, or a rollout pauses or fails.</p>
 
       {!tokenReady && <div className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-700">Operator token required to manage webhooks.</div>}
       {error && <div className="mt-3 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-600">{error}</div>}
@@ -576,6 +578,18 @@ function AlertWebhooksSection({ operatorToken }: { operatorToken: string }) {
           placeholder="https://hooks.example.com/sideplane"
           onChange={(event) => setUrl(event.target.value)}
         />
+        <select
+          className="h-10 rounded-lg border border-[var(--sp-border)] bg-[var(--sp-surface-2)] px-3 text-sm text-[var(--sp-text)] outline-none focus:border-[var(--sp-accent)]"
+          value={kind}
+          onChange={(event) => {
+            const next = event.target.value as AlertWebhookKind
+            setKind(next)
+            if (next === 'slack') setSign(false)
+          }}
+        >
+          <option value="generic">generic</option>
+          <option value="slack">slack</option>
+        </select>
         <div className="flex flex-wrap gap-3">
           {ALERT_EVENT_TYPES.map((event) => (
             <label key={event} className="flex items-center gap-1.5 text-xs text-[var(--sp-muted)]">
@@ -586,7 +600,7 @@ function AlertWebhooksSection({ operatorToken }: { operatorToken: string }) {
         </div>
         <div className="flex flex-wrap items-center gap-3">
           <label className="flex items-center gap-1.5 text-xs text-[var(--sp-muted)]">
-            <input type="checkbox" checked={sign} onChange={(event) => setSign(event.target.checked)} />
+            <input type="checkbox" checked={kind === 'generic' && sign} disabled={kind !== 'generic'} onChange={(event) => setSign(event.target.checked)} />
             sign deliveries (HMAC-SHA256)
           </label>
           <button
@@ -605,6 +619,7 @@ function AlertWebhooksSection({ operatorToken }: { operatorToken: string }) {
           <thead className="bg-[var(--sp-surface-2)] text-[11px] uppercase tracking-[0.12em] text-[var(--sp-faint)]">
             <tr>
               <th className="px-3 py-2 font-semibold">URL</th>
+              <th className="px-3 py-2 font-semibold">Kind</th>
               <th className="px-3 py-2 font-semibold">Events</th>
               <th className="px-3 py-2 font-semibold">Signed</th>
               <th className="px-3 py-2 text-right font-semibold">Action</th>
@@ -613,7 +628,7 @@ function AlertWebhooksSection({ operatorToken }: { operatorToken: string }) {
           <tbody className="divide-y divide-[var(--sp-border)]">
             {webhooks.length === 0 && (
               <tr>
-                <td colSpan={4} className="px-3 py-5 text-center text-sm text-[var(--sp-muted)]">
+                <td colSpan={5} className="px-3 py-5 text-center text-sm text-[var(--sp-muted)]">
                   {loading ? 'Loading webhooks…' : 'No alert webhooks'}
                 </td>
               </tr>
@@ -621,6 +636,7 @@ function AlertWebhooksSection({ operatorToken }: { operatorToken: string }) {
             {webhooks.map((webhook) => (
               <tr key={webhook.id}>
                 <td className="px-3 py-2 font-mono text-xs text-[var(--sp-text)] break-all">{webhook.url}</td>
+                <td className="px-3 py-2 text-xs">{webhook.kind ?? 'generic'}</td>
                 <td className="px-3 py-2 font-mono text-[11px] text-[var(--sp-muted)]">{(webhook.events ?? []).join(', ')}</td>
                 <td className="px-3 py-2 text-xs">{webhook.hasSecret ? 'yes' : 'no'}</td>
                 <td className="px-3 py-2 text-right">

@@ -1579,6 +1579,110 @@ func TestTokenRevokeDeletesByID(t *testing.T) {
 	}
 }
 
+func TestWebhookCreatePostsKindAndPrintsSummary(t *testing.T) {
+	created := protocol.AlertWebhook{
+		ID:        "whk_slack",
+		Kind:      protocol.AlertWebhookKindSlack,
+		URL:       "https://hooks.example.com/slack",
+		Events:    []protocol.AlertEventType{protocol.AlertEventNodeOffline},
+		CreatedAt: time.Now().UTC(),
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/webhooks" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		var req protocol.CreateAlertWebhookRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if req.Kind != protocol.AlertWebhookKindSlack {
+			t.Fatalf("kind = %q, want slack", req.Kind)
+		}
+		if req.Sign {
+			t.Fatalf("sign = true, want unsigned slack request")
+		}
+		if len(req.Events) != 1 || req.Events[0] != protocol.AlertEventNodeOffline {
+			t.Fatalf("events = %+v, want node.offline", req.Events)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		if err := json.NewEncoder(w).Encode(protocol.CreateAlertWebhookResponse{Webhook: created}); err != nil {
+			t.Fatalf("encode response: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{
+		"webhook", "create",
+		"--server", server.URL,
+		"--url", "https://hooks.example.com/slack",
+		"--event", "node.offline",
+		"--kind", "slack",
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("run returned %d, stderr=%q", code, stderr.String())
+	}
+	for _, want := range []string{"webhook: whk_slack", "kind: slack", "url: https://hooks.example.com/slack", "events: node.offline"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("stdout missing %q:\n%s", want, stdout.String())
+		}
+	}
+}
+
+func TestWebhookCreateRejectsSignedSlack(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{
+		"webhook", "create",
+		"--url", "https://hooks.example.com/slack",
+		"--event", "node.offline",
+		"--kind", "slack",
+		"--sign",
+	}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatal("run returned 0, want signed slack validation failure")
+	}
+	if !strings.Contains(stderr.String(), "--sign is only supported for --kind generic") {
+		t.Fatalf("stderr = %q, want signed slack validation", stderr.String())
+	}
+}
+
+func TestWebhookListShowsKind(t *testing.T) {
+	resp := protocol.ListAlertWebhooksResponse{Webhooks: []protocol.AlertWebhook{
+		{
+			ID:        "whk_generic",
+			Kind:      protocol.AlertWebhookKindGeneric,
+			URL:       "https://hooks.example.com/generic",
+			Events:    []protocol.AlertEventType{protocol.AlertEventRolloutPaused},
+			HasSecret: true,
+			CreatedAt: time.Now().UTC(),
+		},
+		{
+			ID:        "whk_slack",
+			Kind:      protocol.AlertWebhookKindSlack,
+			URL:       "https://hooks.example.com/slack",
+			Events:    []protocol.AlertEventType{protocol.AlertEventNodeOffline},
+			CreatedAt: time.Now().UTC(),
+		},
+	}}
+	server := httptest.NewServer(jsonHandler(t, http.MethodGet, "/api/webhooks", resp))
+	defer server.Close()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"webhook", "list", "--server", server.URL}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("run returned %d, stderr=%q", code, stderr.String())
+	}
+	for _, want := range []string{"ID", "KIND", "whk_generic", "generic", "whk_slack", "slack"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("stdout missing %q:\n%s", want, stdout.String())
+		}
+	}
+}
+
 func TestConfigPreviewPrintsSummary(t *testing.T) {
 	effective := protocol.EffectiveConfigResponse{
 		NodeID:      "node-a",

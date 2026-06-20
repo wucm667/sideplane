@@ -178,9 +178,11 @@ export interface BulkNodeLabelsResponse {
 }
 
 export type AlertEventType = 'node.offline' | 'node.drift' | 'rollout.paused' | 'rollout.failed'
+export type AlertWebhookKind = 'generic' | 'slack'
 
 export interface AlertWebhook {
   id: string
+  kind: AlertWebhookKind
   url: string
   events: AlertEventType[]
   hasSecret: boolean

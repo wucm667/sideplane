@@ -1791,11 +1791,12 @@ func runWebhookCreate(args []string, stdout io.Writer, stderr io.Writer) int {
 	serverURL := flags.String("server", "", "Sideplane server URL; can also be set with SIDEPLANE_SERVER_URL")
 	operatorTokenFlag := flags.String("operator-token", "", "operator bearer token; can also be set with SIDEPLANE_OPERATOR_TOKEN")
 	urlFlag := flags.String("url", "", "webhook receiver URL (http or https)")
+	kindFlag := flags.String("kind", string(protocol.AlertWebhookKindGeneric), "webhook channel kind (generic or slack)")
 	var events stringList
 	flags.Var(&events, "event", "alert event to subscribe to (node.offline, node.drift, rollout.paused, rollout.failed); may be repeated")
 	sign := flags.Bool("sign", false, "generate an HMAC signing secret and return it once")
 	jsonOutput := flags.Bool("json", false, "print raw JSON response")
-	usage := "sideplane webhook create --url URL --event EVENT [--event EVENT...] [--sign] [--server URL] [--operator-token TOKEN] [--json]"
+	usage := "sideplane webhook create --url URL --event EVENT [--event EVENT...] [--kind generic|slack] [--sign] [--server URL] [--operator-token TOKEN] [--json]"
 	if commandHelpRequested(args) {
 		printCommandHelp(stdout, usage, flags)
 		return 0
@@ -1815,6 +1816,15 @@ func runWebhookCreate(args []string, stdout io.Writer, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "webhook create: at least one --event is required")
 		return 1
 	}
+	kind, ok := protocol.NormalizeAlertWebhookKind(protocol.AlertWebhookKind(strings.TrimSpace(*kindFlag)))
+	if !ok {
+		fmt.Fprintln(stderr, "webhook create: --kind must be generic or slack")
+		return 1
+	}
+	if kind == protocol.AlertWebhookKindSlack && *sign {
+		fmt.Fprintln(stderr, "webhook create: --sign is only supported for --kind generic")
+		return 1
+	}
 	eventTypes := make([]protocol.AlertEventType, 0, len(events))
 	for _, event := range events {
 		eventTypes = append(eventTypes, protocol.AlertEventType(strings.TrimSpace(event)))
@@ -1822,6 +1832,7 @@ func runWebhookCreate(args []string, stdout io.Writer, stderr io.Writer) int {
 
 	resp, body, err := postJSON[protocol.CreateAlertWebhookResponse](context.Background(), serverURLValue(*serverURL), "/api/webhooks", protocol.CreateAlertWebhookRequest{
 		URL:    strings.TrimSpace(*urlFlag),
+		Kind:   kind,
 		Events: eventTypes,
 		Sign:   *sign,
 	}, operatorTokenValue(*operatorTokenFlag))
@@ -1834,6 +1845,7 @@ func runWebhookCreate(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 0
 	}
 	fmt.Fprintf(stdout, "webhook: %s\n", resp.Webhook.ID)
+	fmt.Fprintf(stdout, "kind: %s\n", alertWebhookKindLabel(resp.Webhook.Kind))
 	fmt.Fprintf(stdout, "url: %s\n", resp.Webhook.URL)
 	fmt.Fprintf(stdout, "events: %s\n", alertEventsLabel(resp.Webhook.Events))
 	if resp.Secret != "" {
@@ -1982,12 +1994,13 @@ func alertEventsLabel(events []protocol.AlertEventType) string {
 
 func printAlertWebhooksTable(w io.Writer, webhooks []protocol.AlertWebhook) {
 	table := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(table, "ID\tURL\tEVENTS\tSIGNED\tDISABLED\tCREATED")
+	fmt.Fprintln(table, "ID\tKIND\tURL\tEVENTS\tSIGNED\tDISABLED\tCREATED")
 	for _, webhook := range webhooks {
 		fmt.Fprintf(
 			table,
-			"%s\t%s\t%s\t%t\t%t\t%s\n",
+			"%s\t%s\t%s\t%s\t%t\t%t\t%s\n",
 			webhook.ID,
+			alertWebhookKindLabel(webhook.Kind),
 			webhook.URL,
 			valueOrDash(alertEventsLabel(webhook.Events)),
 			webhook.HasSecret,
@@ -1996,6 +2009,14 @@ func printAlertWebhooksTable(w io.Writer, webhooks []protocol.AlertWebhook) {
 		)
 	}
 	table.Flush()
+}
+
+func alertWebhookKindLabel(kind protocol.AlertWebhookKind) string {
+	normalized, ok := protocol.NormalizeAlertWebhookKind(kind)
+	if !ok {
+		return string(kind)
+	}
+	return string(normalized)
 }
 
 func confirmNodeRemoval(stdout io.Writer, stdin io.Reader, nodeID string) (bool, error) {
