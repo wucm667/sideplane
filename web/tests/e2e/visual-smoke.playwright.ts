@@ -18,11 +18,13 @@ const nodes = [
         provider: 'openai',
         model: 'gpt-4o',
         configHash: 'sha256:actual-node-a',
+        health: { state: 'degraded', reason: 'fixture degraded runtime' },
       },
     ],
     configHash: 'sha256:actual-node-a',
     drift: true,
     labels: { role: 'canary', zone: 'lab' },
+    maintenance: true,
   },
   {
     nodeId: 'node-b',
@@ -38,6 +40,7 @@ const nodes = [
         provider: 'anthropic',
         model: 'claude-3-5-sonnet',
         configHash: 'sha256:actual-node-b',
+        health: { state: 'healthy' },
       },
     ],
     configHash: 'sha256:actual-node-b',
@@ -66,6 +69,7 @@ const nodeAJobs = [
           provider: 'openai',
           model: 'gpt-4o',
           configHash: 'sha256:actual-node-a',
+          health: { state: 'degraded', reason: 'fixture degraded runtime' },
         },
       ],
     }),
@@ -142,9 +146,17 @@ for (const viewport of viewports) {
     await expectView(page, 'Fleet')
     await expect(page.getByText('Fleet nodes')).toBeVisible()
     await expect(page.getByRole('button', { name: /node-a/ })).toBeVisible()
+    await expect(page.getByRole('button', { name: /node-a maint/ })).toBeVisible()
+    await page.waitForFunction(() => {
+      return ((window as unknown as { __sideplaneEventSources?: unknown[] }).__sideplaneEventSources ?? []).length >= 1
+    })
 
     await page.getByRole('button', { name: /node-a/ }).click()
     await expectView(page, 'node-a')
+    await expect(page.getByText('maintenance', { exact: true })).toBeVisible()
+    await expect(page.getByText('degraded', { exact: true })).toBeVisible()
+    await page.getByRole('button', { name: 'Exit maintenance' }).click()
+    await expect(page.getByRole('button', { name: 'Enter maintenance' })).toBeVisible()
     await expect(page.getByText('Desired configuration')).toBeVisible()
     await page.getByRole('button', { name: 'Edit config' }).click()
     await expect(page.getByRole('dialog')).toBeVisible()
@@ -155,6 +167,7 @@ for (const viewport of viewports) {
     await page.getByRole('button', { name: 'Rollouts' }).click()
     await expectView(page, 'Rollouts')
     await expect(page.getByText('New rollout')).toBeVisible()
+    await expect(page.getByLabel('Start')).toBeVisible()
     await expect(page.getByRole('heading', { name: 'rollout-a' })).toBeVisible()
     // New-rollout form template controls.
     await expect(page.getByRole('button', { name: 'Save as template' })).toBeVisible()
@@ -163,6 +176,7 @@ for (const viewport of viewports) {
     await page.getByRole('button', { name: 'Activity' }).click()
     await expectView(page, 'Activity')
     await expect(page.getByText('created fixture rollout')).toBeVisible()
+    await expect(page.getByText('operator (fixture operator)')).toBeVisible()
 
     await page.getByRole('button', { name: 'Enrollment' }).click()
     await expectView(page, 'Enrollment')
@@ -182,6 +196,12 @@ for (const viewport of viewports) {
     await expect(page.getByRole('button', { name: /Open node node-a/ })).toBeVisible()
     await page.keyboard.press('Escape')
     await expect(paletteInput).toHaveCount(0)
+
+    await page.waitForFunction(() => {
+      return ((window as unknown as { __sideplaneEventSources?: unknown[] }).__sideplaneEventSources ?? []).length >= 2
+    }, undefined, { timeout: 7000 })
+    await expect(page.getByText('Operator tokens', { exact: true })).toBeVisible()
+    await expect(page.getByText('live', { exact: true })).toBeVisible()
   })
 }
 
@@ -196,18 +216,55 @@ async function expectView(page: Page, heading: string) {
 async function installFixtureApi(page: Page) {
   await page.addInitScript((token) => {
     window.localStorage.setItem('sideplane.operatorToken', token)
+    window.__sideplaneEventSources = []
+    let openedSources = 0
+    class FixtureEventSource extends EventTarget {
+      url: string
+      onopen: ((event: Event) => void) | null = null
+      onerror: ((event: Event) => void) | null = null
+      closed = false
+
+      constructor(url: string) {
+        super()
+        this.url = url
+        window.__sideplaneEventSources.push(this)
+        window.setTimeout(() => {
+          if (this.closed) return
+          this.onopen?.(new Event('open'))
+          if (openedSources === 0) {
+            openedSources += 1
+            window.setTimeout(() => {
+              if (!this.closed) {
+                this.onerror?.(new Event('error'))
+              }
+            }, 0)
+            return
+          }
+          openedSources += 1
+        }, 0)
+      }
+
+      close() {
+        this.closed = true
+      }
+    }
     Object.defineProperty(window, 'EventSource', {
       configurable: true,
-      value: undefined,
+      value: FixtureEventSource,
     })
   }, operatorToken)
 
+  let ticketSequence = 0
   await page.route('**/api/**', async (route) => {
     const request = route.request()
     const url = new URL(request.url())
     const path = url.pathname
     const method = request.method()
 
+    if (method === 'POST' && path === '/api/events/tickets') {
+      ticketSequence += 1
+      return json(route, { ticket: `fixture-ticket-${ticketSequence}`, expiresAt: now })
+    }
     if (method === 'GET' && path === '/api/nodes') {
       return json(route, { nodes, total: nodes.length, limit: nodes.length, offset: 0 })
     }
@@ -217,6 +274,7 @@ async function installFixtureApi(page: Page) {
           {
             id: 'audit-a',
             actor: 'operator',
+            actorName: 'fixture operator',
             action: 'rollout.create',
             targetNode: 'node-a',
             detail: 'created fixture rollout',
@@ -295,6 +353,13 @@ async function installFixtureApi(page: Page) {
         limit: 8,
         offset: 0,
       })
+    }
+
+    const maintenanceMatch = path.match(/^\/api\/nodes\/([^/]+)\/maintenance$/)
+    if (method === 'PUT' && maintenanceMatch) {
+      const nodeId = decodeURIComponent(maintenanceMatch[1])
+      const payload = request.postDataJSON() as { maintenance?: boolean }
+      return json(route, { nodeId, maintenance: Boolean(payload.maintenance) })
     }
 
     const jobMatch = path.match(/^\/api\/nodes\/([^/]+)\/jobs$/)
