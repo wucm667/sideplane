@@ -29,7 +29,11 @@ export type {
 } from './generated/api.ts'
 
 export type NodeLabels = Record<string, string>
-export type NodeStatus = NodeStatusWithDrift & { labels?: NodeLabels }
+export type NodeStatus = NodeStatusWithDrift & { labels?: NodeLabels; sidecarOutdated?: boolean }
+
+export interface ServerSettings {
+  expectedSidecarVersion: string
+}
 
 export interface NodeLabelsRequest {
   labels: NodeLabels

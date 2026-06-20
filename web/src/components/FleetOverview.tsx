@@ -349,8 +349,8 @@ function FleetMetricsPanel({ metrics }: { metrics: FleetOverviewMetrics }) {
           value={metrics.totalNodes}
         />
         <MetricCell
-          accentClass={metrics.driftedNodes > 0 ? 'bg-amber-500' : 'bg-emerald-500'}
-          detail={`${metrics.runtimeCount} runtimes observed`}
+          accentClass={metrics.driftedNodes > 0 || metrics.outdatedSidecars > 0 ? 'bg-amber-500' : 'bg-emerald-500'}
+          detail={`${metrics.outdatedSidecars} sidecars outdated · ${metrics.runtimeCount} runtimes`}
           label="Config drift"
           value={metrics.driftedNodes}
         />
@@ -417,6 +417,7 @@ function FleetRow({ activeProbe, node, selected, onToggleSelect, onOpen }: { act
         <div className="flex min-w-0 items-center gap-2">
           <span className="truncate font-mono text-sm font-semibold">{node.nodeId}</span>
           {activeProbe && <span className="rounded bg-sky-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-sky-600">probe</span>}
+          {node.sidecarOutdated && <span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-amber-600" title="sidecar version differs from expected">outdated</span>}
         </div>
         <div className="mt-1 truncate font-mono text-xs text-[var(--sp-faint)]">{node.hostname || '-'}</div>
         {Object.keys(node.labels ?? {}).length > 0 && (

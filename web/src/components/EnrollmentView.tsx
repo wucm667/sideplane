@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { apiErrorMessage, formatDate } from '../helpers.ts'
-import type { AlertEventType, AlertWebhook, CreateAlertWebhookResponse, CreateEnrollmentTokenResponse, CreateOperatorTokenResponse, ListAlertWebhooksResponse, ListOperatorTokensResponse, OperatorToken, OperatorTokenScope, RevokeOperatorTokenResponse } from '../types.ts'
+import type { AlertEventType, AlertWebhook, CreateAlertWebhookResponse, CreateEnrollmentTokenResponse, CreateOperatorTokenResponse, ListAlertWebhooksResponse, ListOperatorTokensResponse, OperatorToken, OperatorTokenScope, RevokeOperatorTokenResponse, ServerSettings } from '../types.ts'
 
 const ALERT_EVENT_TYPES: AlertEventType[] = ['node.offline', 'node.drift', 'rollout.paused', 'rollout.failed']
 
@@ -368,8 +368,92 @@ export function EnrollmentView({ operatorToken }: { operatorToken: string }) {
         </div>
       </section>
 
+      <ServerSettingsSection operatorToken={operatorToken} />
+
       <AlertWebhooksSection operatorToken={operatorToken} />
     </div>
+  )
+}
+
+function ServerSettingsSection({ operatorToken }: { operatorToken: string }) {
+  const [expectedVersion, setExpectedVersion] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [message, setMessage] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const tokenReady = operatorToken.trim().length > 0
+
+  const authHeaders = useCallback((): HeadersInit => {
+    const headers: HeadersInit = { 'Content-Type': 'application/json' }
+    const token = operatorToken.trim()
+    if (token) headers.Authorization = `Bearer ${token}`
+    return headers
+  }, [operatorToken])
+
+  const loadSettings = useCallback(async () => {
+    try {
+      const res = await fetch('/api/settings', { headers: authHeaders() })
+      if (!res.ok) throw new Error(await apiErrorMessage(res))
+      const data = (await res.json()) as ServerSettings
+      setExpectedVersion(data.expectedSidecarVersion ?? '')
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Unknown error')
+    }
+  }, [authHeaders])
+
+  useEffect(() => {
+    void loadSettings()
+  }, [loadSettings])
+
+  const save = async () => {
+    if (!tokenReady || saving) return
+    setSaving(true)
+    setError(null)
+    setMessage(null)
+    try {
+      const res = await fetch('/api/settings', {
+        method: 'PUT',
+        headers: authHeaders(),
+        body: JSON.stringify({ expectedSidecarVersion: expectedVersion.trim() }),
+      })
+      if (!res.ok) {
+        if (res.status === 401) throw new Error('Operator token required or invalid')
+        if (res.status === 403) throw new Error('Operator token is read-only')
+        throw new Error(await apiErrorMessage(res))
+      }
+      const data = (await res.json()) as ServerSettings
+      setExpectedVersion(data.expectedSidecarVersion ?? '')
+      setMessage('Saved')
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Unknown error')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <section className="rounded-xl border border-[var(--sp-border)] bg-[var(--sp-surface)] p-5 shadow-sm">
+      <h2 className="text-sm font-semibold">Server settings</h2>
+      <p className="mt-1 text-xs text-[var(--sp-muted)]">Set the expected sidecar version to flag nodes running a different version. Leave empty to disable the check.</p>
+      {!tokenReady && <div className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-700">Operator token required to change settings.</div>}
+      {error && <div className="mt-3 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-600">{error}</div>}
+      {message && <div className="mt-3 rounded-lg border border-emerald-500/25 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-700">{message}</div>}
+      <div className="mt-4 grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
+        <input
+          className="h-10 rounded-lg border border-[var(--sp-border)] bg-[var(--sp-surface-2)] px-3 text-sm text-[var(--sp-text)] outline-none focus:border-[var(--sp-accent)]"
+          value={expectedVersion}
+          placeholder="expected sidecar version, e.g. v1.2.0"
+          onChange={(event) => setExpectedVersion(event.target.value)}
+        />
+        <button
+          type="button"
+          className="h-10 rounded-lg bg-[var(--sp-accent)] px-3 text-sm font-medium text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-55"
+          disabled={!tokenReady || saving}
+          onClick={save}
+        >
+          {saving ? 'Saving…' : 'Save'}
+        </button>
+      </div>
+    </section>
   )
 }
 

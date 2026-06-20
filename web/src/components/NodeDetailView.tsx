@@ -170,6 +170,11 @@ export function NodeDetailView({
                 config drift
               </span>
             )}
+            {node.sidecarOutdated && (
+              <span className="inline-flex items-center rounded-full border border-amber-500/30 bg-amber-500/10 px-2.5 py-1 text-xs font-semibold text-amber-600" title="sidecar version differs from expected">
+                sidecar outdated
+              </span>
+            )}
           </div>
           <div className="mt-2 font-mono text-sm text-[var(--sp-muted)]">{node.hostname || '-'} · sidecar {node.sidecarVersion || 'dev'}</div>
           <LabelEditor

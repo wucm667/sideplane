@@ -29,6 +29,7 @@ export interface FleetOverviewMetrics {
   staleNodes: number
   offlineNodes: number
   driftedNodes: number
+  outdatedSidecars: number
   runtimeCount: number
   activeJobs: number
   activeRollouts: number
@@ -291,6 +292,7 @@ export function fleetOverviewMetrics(nodes: NodeStatus[], jobsByNode: Record<str
     staleNodes: nodes.filter((node) => node.state === 'stale').length,
     offlineNodes: nodes.filter((node) => node.state === 'offline').length,
     driftedNodes: nodes.filter((node) => node.drift).length,
+    outdatedSidecars: nodes.filter((node) => node.sidecarOutdated).length,
     runtimeCount: nodes.reduce((total, node) => total + (node.runtimes?.length ?? 0), 0),
     activeJobs: Object.values(jobsByNode).reduce((total, jobs) => total + jobs.filter(isActiveJob).length, 0),
     activeRollouts: rollouts.filter(isActiveRollout).length,

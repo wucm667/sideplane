@@ -159,6 +159,7 @@ describe('fleet helper summaries', () => {
       staleNodes: 1,
       offlineNodes: 1,
       driftedNodes: 1,
+      outdatedSidecars: 0,
       runtimeCount: 3,
       activeJobs: 2,
       activeRollouts: 2,
