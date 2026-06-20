@@ -21,6 +21,9 @@ This project follows the spirit of Keep a Changelog and will use semantic versio
 - Added bulk job creation (`/api/jobs/bulk`) and bulk label assignment (`/api/nodes/labels`) by selector or node set.
 - Added outbound alert webhooks with a non-blocking, retry/timeout dispatcher and optional HMAC-SHA256 signing, plus webhook CRUD endpoints.
 - Added audit-log export (`/api/audit/export`) streaming ndjson or csv with redaction, expected-sidecar-version settings with an outdated gauge, and reusable rollout templates with `templateId` prefill.
+- Added in-process TLS serving with cert/key validation and an optional HTTP→HTTPS redirector, plus reverse-proxy/base-path serving with probes kept at the root.
+- Added node maintenance mode (excluded from rollout/bulk targeting with suppressed offline/drift alerts) and scheduled rollouts via an optional `startAt` time.
+- Added read-only runtime health checks, rollout and webhook Prometheus metrics, `whoami`/`status` endpoints, and acting-token-name attribution in audit events and rollout alerts.
 
 ### Sidecar
 
@@ -28,6 +31,7 @@ This project follows the spirit of Keep a Changelog and will use semantic versio
 - Added signed config plan verification, dry-run/live config apply gates, backup metadata, rollback execution, restart execution, and health-check/rollback reporting.
 - Added allowlisted OpenClaw service restart controller parity with Hermes.
 - Added sidecar `doctor` diagnostics and read-only local smoke coverage.
+- Added read-only runtime health checks (healthy/degraded/unknown) reported in heartbeat snapshots without contacting external networks or restarting anything.
 
 ### CLI
 
@@ -35,6 +39,7 @@ This project follows the spirit of Keep a Changelog and will use semantic versio
 - Added node label management, backup listing, rollout create/list/status/pause/resume/abort, named operator token create/list/revoke, desired config history/revert, config file loading, and shell completion generation.
 - Added table and JSON output paths, wait/poll flows for operator jobs, bounded list flags, and compatibility with legacy and paginated node-list responses.
 - Added bulk `probe --selector` and `node label --selector`, operator token `--scope`, rollout `--auto-rollback` and `--template`, `rollout template` create/list/delete, `audit export`, `webhook` create/list/delete, and `settings` get/set.
+- Added `node maintenance --on|--off`, rollout `--start-at`, `whoami`, `status`, runtime health in `node inspect`, and acting-token-name display in audit output.
 
 ### Web UI
 
@@ -44,6 +49,7 @@ This project follows the spirit of Keep a Changelog and will use semantic versio
 - Added OpenAPI-generated TypeScript API types.
 - Added Playwright visual smoke coverage for Fleet, Node detail, Activity, Enrollment, Config wizard, and Rollouts at desktop and mobile widths.
 - Added operator token scope controls, alert webhook management, server settings, fleet multi-select bulk probe/label actions, sidecar-outdated badges, rollout template save/picker, and a Cmd/Ctrl-K command palette.
+- Added node maintenance toggles and badges, scheduled-rollout start time input, runtime health badges, acting-token-name in the audit view, and server base-path awareness for API/SSE/asset URLs.
 
 ### Infrastructure
 
@@ -55,3 +61,4 @@ This project follows the spirit of Keep a Changelog and will use semantic versio
 
 - Added read-only Hermes and OpenClaw adapters with runtime discovery, config hash/provider/model snapshots, provider/model validation, JSON syntax validation, and warning reporting.
 - Added OpenClaw allowlisted service controller support for dry-run/live restart jobs.
+- Added a read-only runtime health-check contract with local, allowlisted Hermes and OpenClaw implementations.

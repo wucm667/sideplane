@@ -24,6 +24,7 @@ The current repository includes these foundations:
 - Production-ops surface: scoped operator tokens (admin/readonly), online SQLite backup with on-demand and scheduled retention, bulk deep probes and label assignment by selector, outbound alert webhooks with optional HMAC signing, audit-log export (ndjson/csv), and expected-sidecar-version drift flagging.
 - Compact React/Vite Web UI for fleet overview metrics, node detail, labels, backup discovery, config diff/apply wizard, desired config history/revert, rollouts, audit history, enrollment, named tokens with scopes, alert webhooks, server settings, fleet multi-select bulk actions, a Cmd/Ctrl-K command palette, keyboard navigation, node removal, and job expansion.
 - CLI coverage for fleet status, labels, bulk probe/label, rollouts and rollout templates, backups, named tokens with scopes, audit list/export, alert webhooks, server settings, desired config history/revert, config files, and shell completion.
+- Edge-deployment surface: in-process TLS with an optional HTTP→HTTPS redirector, reverse-proxy/base-path serving, node maintenance mode (excluded from rollouts/bulk ops with suppressed alerts), scheduled rollouts via `startAt`, read-only runtime health checks (healthy/degraded/unknown), rollout and webhook Prometheus metrics, `whoami`/`status` endpoints, and acting-token-name attribution in audit and alerts.
 - Docker Compose deployment, optional Prometheus/Grafana observability assets, Linux systemd units, install script, and server-embedded Web assets.
 
 ## MVP Hardening Next
@@ -57,3 +58,4 @@ to verify:
 - Marketplace/plugin ecosystem
 - Kubernetes-first deployment or operator
 - Sidecar binary self-update (the server flags version drift; it never downloads or runs new binaries)
+- Built-in ACME/automatic certificate issuance (bring your own cert/key or terminate TLS at a reverse proxy)
