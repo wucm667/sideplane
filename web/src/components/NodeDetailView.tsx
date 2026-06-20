@@ -20,6 +20,8 @@ export function NodeDetailView({
   effectiveError,
   labelError,
   labelsSaving,
+  maintenanceError,
+  maintenanceSaving,
   operatorToken,
   onBack,
   onDeepProbe,
@@ -27,6 +29,7 @@ export function NodeDetailView({
   onRestart,
   onJobStatusFilterChange,
   onLoadMoreJobs,
+  onMaintenanceChange,
   onSaveLabels,
   onApplied,
 }: {
@@ -46,6 +49,8 @@ export function NodeDetailView({
   effectiveError?: string
   labelError?: string
   labelsSaving: boolean
+  maintenanceError?: string
+  maintenanceSaving: boolean
   operatorToken: string
   onBack: () => void
   onDeepProbe: () => void
@@ -53,6 +58,7 @@ export function NodeDetailView({
   onRestart: (request: RestartRequest) => void
   onJobStatusFilterChange: (status: JobStatus | '') => void
   onLoadMoreJobs: () => void
+  onMaintenanceChange: (maintenance: boolean) => void
   onSaveLabels: (labels: NodeLabels) => void
   onApplied: () => void
 }) {
@@ -74,6 +80,7 @@ export function NodeDetailView({
   const canRollback = tokenReady && !rollingBack && !activeRollback && Boolean(rollbackBackup)
   const canEditConfig = tokenReady && Boolean(primarySnapshot?.configPath)
   const canRemoveNode = tokenReady
+  const canToggleMaintenance = tokenReady && !maintenanceSaving
   const restartRuntimeType = knownRestartRuntime(effective?.runtimeType || primarySnapshot?.runtimeType || 'hermes')
   const restartProfile = effective?.profile || primarySnapshot?.profile || 'default'
 
@@ -170,6 +177,11 @@ export function NodeDetailView({
                 config drift
               </span>
             )}
+            {node.maintenance && (
+              <span className="inline-flex items-center rounded-full border border-amber-500/30 bg-amber-500/10 px-2.5 py-1 text-xs font-semibold text-amber-700">
+                maintenance
+              </span>
+            )}
             {node.sidecarOutdated && (
               <span className="inline-flex items-center rounded-full border border-amber-500/30 bg-amber-500/10 px-2.5 py-1 text-xs font-semibold text-amber-600" title="sidecar version differs from expected">
                 sidecar outdated
@@ -186,6 +198,15 @@ export function NodeDetailView({
           />
         </div>
         <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            className={node.maintenance ? 'h-9 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 text-sm font-medium text-amber-700 hover:bg-amber-500/15 disabled:cursor-not-allowed disabled:opacity-55' : 'h-9 rounded-lg border border-[var(--sp-border-strong)] bg-[var(--sp-surface)] px-3 text-sm font-medium hover:bg-[var(--sp-surface-2)] disabled:cursor-not-allowed disabled:opacity-60'}
+            disabled={!canToggleMaintenance}
+            title={!tokenReady ? 'Set an operator token before changing maintenance mode' : node.maintenance ? 'Exit maintenance mode for this node' : 'Enter maintenance mode for this node'}
+            onClick={() => onMaintenanceChange(!Boolean(node.maintenance))}
+          >
+            {maintenanceSaving ? 'Saving...' : node.maintenance ? 'Exit maintenance' : 'Enter maintenance'}
+          </button>
           <button
             type="button"
             className="h-9 rounded-lg border border-[var(--sp-border-strong)] bg-[var(--sp-surface)] px-3 text-sm font-medium hover:bg-[var(--sp-surface-2)] disabled:cursor-not-allowed disabled:opacity-60"
@@ -271,6 +292,12 @@ export function NodeDetailView({
       {removeError && (
         <div className="mb-5 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-600">
           Failed to remove node: {removeError}
+        </div>
+      )}
+
+      {maintenanceError && (
+        <div className="mb-5 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-600">
+          Failed to update maintenance: {maintenanceError}
         </div>
       )}
 

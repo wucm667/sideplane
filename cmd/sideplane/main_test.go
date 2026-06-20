@@ -23,6 +23,7 @@ func TestFleetStatusPrintsCompactTable(t *testing.T) {
 			NodeStatus: protocol.NodeStatus{
 				NodeID:          "node-a",
 				State:           protocol.NodeStateFresh,
+				Maintenance:     true,
 				LastHeartbeatAt: now.Add(-2 * time.Minute),
 				Runtimes: []protocol.RuntimeStatus{
 					{Name: "hermes", Model: "gpt-4o"},
@@ -67,6 +68,7 @@ func TestFleetStatusPrintsCompactTable(t *testing.T) {
 	for _, want := range []string{
 		"NODE ID",
 		"STATE",
+		"MAINT",
 		"RUNTIMES",
 		"DRIFT",
 		"HEARTBEAT",
@@ -143,6 +145,7 @@ func TestNodeInspectPrintsNodeDetail(t *testing.T) {
 			NodeID:          "node-a",
 			Hostname:        "host-a",
 			State:           protocol.NodeStateFresh,
+			Maintenance:     true,
 			LastHeartbeatAt: now.Add(-time.Minute),
 			SidecarVersion:  "dev",
 			ConfigHash:      "sha256:abc",
@@ -170,7 +173,7 @@ func TestNodeInspectPrintsNodeDetail(t *testing.T) {
 		t.Fatalf("run returned %d, stderr=%q", code, stderr.String())
 	}
 	output := stdout.String()
-	for _, want := range []string{"Node: node-a", "Hostname: host-a", "Drift: yes", "Labels: role=canary,zone=lab", "hermes", "openai", "gpt-4o", "config path unreadable"} {
+	for _, want := range []string{"Node: node-a", "Hostname: host-a", "Maintenance: yes", "Drift: yes", "Labels: role=canary,zone=lab", "hermes", "openai", "gpt-4o", "config path unreadable"} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("output missing %q:\n%s", want, output)
 		}
@@ -232,6 +235,48 @@ func TestNodeLabelSetsRemovesAndPrintsLabels(t *testing.T) {
 	}
 	output := stdout.String()
 	for _, want := range []string{"Node: node-a", "env=dev", "role=canary"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output missing %q:\n%s", want, output)
+		}
+	}
+}
+
+func TestNodeMaintenanceSetsMode(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut {
+			t.Fatalf("method = %s, want PUT", r.Method)
+		}
+		if r.URL.Path != "/api/nodes/node-a/maintenance" {
+			t.Fatalf("path = %s, want /api/nodes/node-a/maintenance", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer dev-token" {
+			t.Fatalf("Authorization = %q, want Bearer dev-token", got)
+		}
+		var req protocol.NodeMaintenanceRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode maintenance request: %v", err)
+		}
+		if !req.Maintenance {
+			t.Fatalf("maintenance request = false, want true")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(protocol.NodeMaintenanceResponse{
+			NodeID:      "node-a",
+			Maintenance: true,
+		}); err != nil {
+			t.Fatalf("encode maintenance response: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"node", "maintenance", "node-a", "--on", "--server", server.URL, "--operator-token", "dev-token"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("run returned %d, stderr=%q", code, stderr.String())
+	}
+	output := stdout.String()
+	for _, want := range []string{"Node: node-a", "Maintenance: yes"} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("output missing %q:\n%s", want, output)
 		}
@@ -333,6 +378,7 @@ func TestHelpListsCommands(t *testing.T) {
 		"config revert <id>",
 		"node inspect <id>",
 		"node label <id>",
+		"node maintenance <id>",
 		"node remove <id>",
 		"enrollment create",
 		"config-file path",
@@ -946,6 +992,7 @@ func TestCommandsRejectMissingRequiredArguments(t *testing.T) {
 		{name: "config preview node", args: []string{"config", "preview"}, want: "usage: sideplane config preview"},
 		{name: "node inspect id", args: []string{"node", "inspect"}, want: "usage: sideplane node inspect"},
 		{name: "node label id", args: []string{"node", "label"}, want: "usage: sideplane node label"},
+		{name: "node maintenance id", args: []string{"node", "maintenance"}, want: "usage: sideplane node maintenance"},
 		{name: "node remove id", args: []string{"node", "remove"}, want: "usage: sideplane node remove"},
 	}
 	for _, tt := range tests {

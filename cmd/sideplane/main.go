@@ -55,7 +55,7 @@ var completionCommands = []completionCommand{
 	{Name: "audit", Description: "list audit events", Subcommands: []string{"list", "export"}},
 	{Name: "token", Description: "manage operator tokens", Subcommands: []string{"create", "list", "revoke"}},
 	{Name: "config", Description: "manage desired configuration", Subcommands: []string{"apply", "preview", "get", "set", "history", "revert"}},
-	{Name: "node", Description: "inspect and manage nodes", Subcommands: []string{"inspect", "label", "remove"}},
+	{Name: "node", Description: "inspect and manage nodes", Subcommands: []string{"inspect", "label", "maintenance", "remove"}},
 	{Name: "enrollment", Description: "create enrollment tokens", Subcommands: []string{"create"}},
 	{Name: "webhook", Description: "manage alert webhooks", Subcommands: []string{"create", "list", "delete"}},
 	{Name: "settings", Description: "manage server settings", Subcommands: []string{"get", "set"}},
@@ -190,6 +190,9 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		if len(args) >= 2 && args[1] == "label" {
 			return runNodeLabel(args[2:], stdout, stderr)
 		}
+		if len(args) >= 2 && args[1] == "maintenance" {
+			return runNodeMaintenance(args[2:], stdout, stderr)
+		}
 		if len(args) >= 2 && args[1] == "remove" {
 			return runNodeRemove(args[2:], stdout, stderr)
 		}
@@ -254,6 +257,7 @@ Commands:
   config revert <id>  Revert desired configuration
   node inspect <id>   Show full node detail
   node label <id>     Set or remove node labels
+  node maintenance <id> Toggle node maintenance mode
   node remove <id>    Remove a node from the fleet
   enrollment create   Create a one-time enrollment token
   webhook create      Create an alert webhook
@@ -1478,6 +1482,54 @@ func runNodeLabel(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 0
 	}
 	printNodeLabels(stdout, updated)
+	return 0
+}
+
+func runNodeMaintenance(args []string, stdout io.Writer, stderr io.Writer) int {
+	flags := flag.NewFlagSet("sideplane node maintenance", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+
+	serverURL := flags.String("server", "", "Sideplane server URL; can also be set with SIDEPLANE_SERVER_URL")
+	operatorTokenFlag := flags.String("operator-token", "", "operator bearer token; can also be set with SIDEPLANE_OPERATOR_TOKEN")
+	on := flags.Bool("on", false, "enter maintenance mode")
+	off := flags.Bool("off", false, "exit maintenance mode")
+	jsonOutput := flags.Bool("json", false, "print raw JSON response")
+	usage := "sideplane node maintenance <nodeId> (--on|--off) [--server URL] [--operator-token TOKEN] [--json]"
+	if commandHelpRequested(args) {
+		printCommandHelp(stdout, usage, flags)
+		return 0
+	}
+	if err := parseCommandFlags(flags, args, "on", "off", "json"); err != nil {
+		return 2
+	}
+	if flags.NArg() != 1 {
+		fmt.Fprintln(stderr, "usage: "+usage)
+		return 1
+	}
+	if *on == *off {
+		fmt.Fprintln(stderr, "node maintenance: choose exactly one of --on or --off")
+		return 1
+	}
+
+	nodeID := strings.TrimSpace(flags.Arg(0))
+	if nodeID == "" {
+		fmt.Fprintln(stderr, "node maintenance: nodeId is required")
+		return 1
+	}
+
+	path := "/api/nodes/" + url.PathEscape(nodeID) + "/maintenance"
+	resp, body, err := putJSON[protocol.NodeMaintenanceResponse](context.Background(), serverURLValue(*serverURL), path, protocol.NodeMaintenanceRequest{
+		Maintenance: *on,
+	}, operatorTokenValue(*operatorTokenFlag))
+	if err != nil {
+		fmt.Fprintf(stderr, "node maintenance: %v\n", err)
+		return 1
+	}
+	if *jsonOutput {
+		writeRawJSON(stdout, body)
+		return 0
+	}
+	printNodeMaintenance(stdout, resp)
 	return 0
 }
 
@@ -3007,13 +3059,14 @@ func rolloutStateTerminal(state protocol.RolloutState) bool {
 
 func printFleetStatusTable(w io.Writer, nodes []cliNodeStatus) {
 	table := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(table, "NODE ID\tSTATE\tRUNTIMES\tDRIFT\tSIDECAR\tHEARTBEAT")
+	fmt.Fprintln(table, "NODE ID\tSTATE\tMAINT\tRUNTIMES\tDRIFT\tSIDECAR\tHEARTBEAT")
 	for _, node := range nodes {
 		fmt.Fprintf(
 			table,
-			"%s\t%s\t%s\t%s\t%s\t%s\n",
+			"%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			node.NodeID,
 			node.State,
+			yesNo(node.Maintenance),
 			runtimeSummary(node.Runtimes),
 			yesNo(node.Drift),
 			sidecarStatusLabel(node),
@@ -3037,6 +3090,7 @@ func sidecarStatusLabel(node cliNodeStatus) string {
 func printNodeInspect(w io.Writer, node cliNodeStatus) {
 	fmt.Fprintf(w, "Node: %s\n", node.NodeID)
 	fmt.Fprintf(w, "State: %s\n", node.State)
+	fmt.Fprintf(w, "Maintenance: %s\n", yesNo(node.Maintenance))
 	fmt.Fprintf(w, "Hostname: %s\n", valueOrDash(node.Hostname))
 	heartbeat := "-"
 	if !node.LastHeartbeatAt.IsZero() {
@@ -3084,6 +3138,11 @@ func printNodeLabels(w io.Writer, resp protocol.NodeLabelsResponse) {
 	for _, key := range sortedLabelKeys(resp.Labels) {
 		fmt.Fprintf(w, "  %s=%s\n", key, resp.Labels[key])
 	}
+}
+
+func printNodeMaintenance(w io.Writer, resp protocol.NodeMaintenanceResponse) {
+	fmt.Fprintf(w, "Node: %s\n", resp.NodeID)
+	fmt.Fprintf(w, "Maintenance: %s\n", yesNo(resp.Maintenance))
 }
 
 func labelsInline(labels map[string]string) string {

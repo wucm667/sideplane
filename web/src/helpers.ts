@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { AuditEvent, AuditFilters, ConfigApplyResult, CreateRolloutRequest, DeepProbeResult, EffectiveConfigResponse, Job, JobStatus, ListAuditEventsResponse, ListNodesResponse, ListRollbackBackupsResponse, ListRolloutsResponse, NodeLabels, NodeLabelsResponse, NodeState, NodeStatus, RestartRequest, RollbackBackupInventoryItem, RollbackRequest, Rollout, RolloutAction, RolloutActionResponse, RolloutState, RuntimeConfigSnapshot, RuntimeStatus } from './types.ts'
+import type { AuditEvent, AuditFilters, ConfigApplyResult, CreateRolloutRequest, DeepProbeResult, EffectiveConfigResponse, Job, JobStatus, ListAuditEventsResponse, ListNodesResponse, ListRollbackBackupsResponse, ListRolloutsResponse, NodeLabels, NodeLabelsResponse, NodeMaintenanceResponse, NodeState, NodeStatus, RestartRequest, RollbackBackupInventoryItem, RollbackRequest, Rollout, RolloutAction, RolloutActionResponse, RolloutState, RuntimeConfigSnapshot, RuntimeStatus } from './types.ts'
 
 const NODE_REFRESH_MS = 10_000
 const ACTIVE_JOB_REFRESH_MS = 2_000
@@ -73,6 +73,7 @@ export interface FleetOverviewMetrics {
   freshNodes: number
   staleNodes: number
   offlineNodes: number
+  maintenanceNodes: number
   driftedNodes: number
   outdatedSidecars: number
   runtimeCount: number
@@ -336,6 +337,7 @@ export function fleetOverviewMetrics(nodes: NodeStatus[], jobsByNode: Record<str
     freshNodes: nodes.filter((node) => node.state === 'fresh').length,
     staleNodes: nodes.filter((node) => node.state === 'stale').length,
     offlineNodes: nodes.filter((node) => node.state === 'offline').length,
+    maintenanceNodes: nodes.filter((node) => node.maintenance).length,
     driftedNodes: nodes.filter((node) => node.drift).length,
     outdatedSidecars: nodes.filter((node) => node.sidecarOutdated).length,
     runtimeCount: nodes.reduce((total, node) => total + (node.runtimes?.length ?? 0), 0),
@@ -375,7 +377,9 @@ export function useFleetPageController() {
   const [restartingByNode, setRestartingByNode] = useState<Record<string, boolean>>({})
   const [rollingBackByNode, setRollingBackByNode] = useState<Record<string, boolean>>({})
   const [savingLabelsByNode, setSavingLabelsByNode] = useState<Record<string, boolean>>({})
+  const [savingMaintenanceByNode, setSavingMaintenanceByNode] = useState<Record<string, boolean>>({})
   const [labelErrorByNode, setLabelErrorByNode] = useState<Record<string, string>>({})
+  const [maintenanceErrorByNode, setMaintenanceErrorByNode] = useState<Record<string, string>>({})
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -765,6 +769,53 @@ export function useFleetPageController() {
     }
   }, [operatorToken])
 
+  const setNodeMaintenance = useCallback(async (nodeId: string, maintenance: boolean) => {
+    if (!mountedRef.current) return
+    setSavingMaintenanceByNode((current) => ({ ...current, [nodeId]: true }))
+    try {
+      const headers: HeadersInit = { 'Content-Type': 'application/json' }
+      const token = operatorToken.trim()
+      if (token) {
+        headers.Authorization = `Bearer ${token}`
+      }
+
+      const res = await fetch(apiURL(`/api/nodes/${encodeURIComponent(nodeId)}/maintenance`), {
+        method: 'PUT',
+        headers,
+        body: JSON.stringify({ maintenance }),
+      })
+      if (!res.ok) {
+        if (res.status === 401) {
+          throw new Error('Operator token required or invalid')
+        }
+        if (res.status === 403) {
+          throw new Error('Operator token is read-only')
+        }
+        throw new Error(await apiErrorMessage(res))
+      }
+      const response = (await res.json()) as NodeMaintenanceResponse
+      if (!mountedRef.current) return
+      setNodes((current) => current?.map((node) => (
+        node.nodeId === nodeId ? { ...node, maintenance: response.maintenance } : node
+      )) ?? current)
+      setMaintenanceErrorByNode((current) => {
+        const next = { ...current }
+        delete next[nodeId]
+        return next
+      })
+    } catch (e) {
+      if (!mountedRef.current) return
+      setMaintenanceErrorByNode((current) => ({
+        ...current,
+        [nodeId]: e instanceof Error ? e.message : 'Unknown error',
+      }))
+    } finally {
+      if (mountedRef.current) {
+        setSavingMaintenanceByNode((current) => ({ ...current, [nodeId]: false }))
+      }
+    }
+  }, [operatorToken])
+
   const loadAuditEvents = useCallback(async () => {
     try {
       const params = new URLSearchParams({ limit: String(auditLimit) })
@@ -1135,6 +1186,7 @@ export function useFleetPageController() {
     loading,
     loadMoreNodeJobs,
     loadRollouts,
+    maintenanceErrorByNode,
     nodes: safeNodes,
     operatorToken,
     openNode,
@@ -1147,6 +1199,7 @@ export function useFleetPageController() {
     rolloutsError,
     rolloutsLoading,
     savingLabelsByNode,
+    savingMaintenanceByNode,
     restartingByNode,
     selectedNode,
     selector,
@@ -1157,6 +1210,7 @@ export function useFleetPageController() {
     setSelector,
     labelErrorByNode,
     saveNodeLabels,
+    setNodeMaintenance,
     stats,
     theme,
     toggleTheme,

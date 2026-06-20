@@ -296,6 +296,7 @@ function nodeSearchText(node: NodeStatus): string {
     node.nodeId,
     node.hostname,
     node.state,
+    node.maintenance ? 'maintenance' : '',
     labelsText(node.labels),
     runtimeText,
   ].filter(Boolean).join(' ').toLowerCase()
@@ -344,7 +345,7 @@ function FleetMetricsPanel({ metrics }: { metrics: FleetOverviewMetrics }) {
       <div className="grid divide-y divide-[var(--sp-border)] sm:grid-cols-2 sm:divide-x sm:divide-y-0 xl:grid-cols-4">
         <MetricCell
           accentClass="bg-emerald-500"
-          detail={`${metrics.freshNodes} fresh · ${metrics.staleNodes} stale · ${metrics.offlineNodes} offline`}
+          detail={`${metrics.freshNodes} fresh · ${metrics.staleNodes} stale · ${metrics.offlineNodes} offline · ${metrics.maintenanceNodes} maint`}
           label="Fleet nodes"
           value={metrics.totalNodes}
         />
@@ -417,6 +418,7 @@ function FleetRow({ activeProbe, node, selected, onToggleSelect, onOpen }: { act
         <div className="flex min-w-0 items-center gap-2">
           <span className="truncate font-mono text-sm font-semibold">{node.nodeId}</span>
           {activeProbe && <span className="rounded bg-sky-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-sky-600">probe</span>}
+          {node.maintenance && <span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700">maint</span>}
           {node.sidecarOutdated && <span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-amber-600" title="sidecar version differs from expected">outdated</span>}
         </div>
         <div className="mt-1 truncate font-mono text-xs text-[var(--sp-faint)]">{node.hostname || '-'}</div>

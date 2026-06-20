@@ -41,6 +41,7 @@ export default function FleetPage() {
     loading,
     loadMoreNodeJobs,
     loadRollouts,
+    maintenanceErrorByNode,
     nodes,
     operatorToken,
     openNode,
@@ -54,12 +55,14 @@ export default function FleetPage() {
     rollingBackByNode,
     saveNodeLabels,
     savingLabelsByNode,
+    savingMaintenanceByNode,
     restartingByNode,
     selectedNode,
     selector,
     setAuditFilters,
     setAuditLimit,
     setNodeJobStatusFilter,
+    setNodeMaintenance,
     setOperatorToken,
     setSelector,
     theme,
@@ -190,6 +193,8 @@ export default function FleetPage() {
               effectiveError={effectiveErrorByNode[selectedNode.nodeId]}
               labelError={labelErrorByNode[selectedNode.nodeId]}
               labelsSaving={Boolean(savingLabelsByNode[selectedNode.nodeId])}
+              maintenanceError={maintenanceErrorByNode[selectedNode.nodeId]}
+              maintenanceSaving={Boolean(savingMaintenanceByNode[selectedNode.nodeId])}
               operatorToken={operatorToken}
               onBack={() => changeView('fleet')}
               onDeepProbe={() => createDeepProbe(selectedNode.nodeId)}
@@ -197,6 +202,7 @@ export default function FleetPage() {
               onRestart={(request) => createRestart(selectedNode.nodeId, request)}
               onJobStatusFilterChange={(status) => setNodeJobStatusFilter(selectedNode.nodeId, status)}
               onLoadMoreJobs={() => loadMoreNodeJobs(selectedNode.nodeId)}
+              onMaintenanceChange={(maintenance) => setNodeMaintenance(selectedNode.nodeId, maintenance)}
               onSaveLabels={(labels) => saveNodeLabels(selectedNode.nodeId, labels)}
               onApplied={refreshSelectedNodeAfterApply}
             />

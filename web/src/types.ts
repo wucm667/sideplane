@@ -29,7 +29,7 @@ export type {
 } from './generated/api.ts'
 
 export type NodeLabels = Record<string, string>
-export type NodeStatus = NodeStatusWithDrift & { labels?: NodeLabels; sidecarOutdated?: boolean }
+export type NodeStatus = NodeStatusWithDrift & { labels?: NodeLabels; maintenance?: boolean; sidecarOutdated?: boolean }
 
 export interface ServerSettings {
   expectedSidecarVersion: string
@@ -42,6 +42,11 @@ export interface NodeLabelsRequest {
 export interface NodeLabelsResponse {
   nodeId: string
   labels: NodeLabels
+}
+
+export interface NodeMaintenanceResponse {
+  nodeId: string
+  maintenance: boolean
 }
 
 export interface RollbackBackupInventoryItem {
