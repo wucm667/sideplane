@@ -483,6 +483,7 @@ workflow.
 - [Operations guide](docs/operations.md)
 - [Fleet rollouts](docs/fleet-rollouts.md)
 - [Signed config apply pipeline](docs/config-apply-pipeline.md)
+- [Operator recovery runbook](docs/recovery.md)
 - [Release runbook](docs/releasing.md)
 - [Pre-release checklist](RELEASE.md)
 - [Live-write preflight](docs/live-write-preflight.md)
