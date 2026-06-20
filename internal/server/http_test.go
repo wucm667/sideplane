@@ -1038,6 +1038,135 @@ func TestOperatorTokenScopeEnforcement(t *testing.T) {
 	}
 }
 
+func TestBulkJobCreationBySelectorAndNodeIDs(t *testing.T) {
+	ctx := context.Background()
+	nodeStore := store.NewMemoryNodeStore()
+	for _, id := range []string{"node-a", "node-b", "node-c"} {
+		enrollTestNode(t, nodeStore, id)
+	}
+	if err := nodeStore.SetNodeLabels(ctx, "node-a", map[string]string{"role": "canary"}); err != nil {
+		t.Fatalf("label node-a: %v", err)
+	}
+	if err := nodeStore.SetNodeLabels(ctx, "node-b", map[string]string{"role": "canary"}); err != nil {
+		t.Fatalf("label node-b: %v", err)
+	}
+	handler, err := NewHandlerWithConfig(HandlerConfig{
+		Store:         nodeStore,
+		Freshness:     DefaultFreshnessPolicy(),
+		OperatorToken: "dev-token",
+	})
+	if err != nil {
+		t.Fatalf("build handler: %v", err)
+	}
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	bySelector := doJSONRequest[protocol.BulkJobResponse](t, server.Client(), http.MethodPost, server.URL+"/api/jobs/bulk", "dev-token", protocol.BulkJobRequest{
+		Selector: map[string]string{"role": "canary"},
+		Type:     protocol.JobTypeDeepProbe,
+	})
+	if bySelector.Created != 2 || len(bySelector.Jobs) != 2 {
+		t.Fatalf("selector bulk = %+v, want 2 created jobs", bySelector)
+	}
+	matched := map[string]bool{}
+	for _, result := range bySelector.Jobs {
+		if result.JobID == "" {
+			t.Fatalf("bulk result missing job id: %+v", result)
+		}
+		matched[result.NodeID] = true
+	}
+	if !matched["node-a"] || !matched["node-b"] || matched["node-c"] {
+		t.Fatalf("selector matched = %+v, want node-a and node-b only", matched)
+	}
+
+	// node-c via explicit nodeIds.
+	byIDs := doJSONRequest[protocol.BulkJobResponse](t, server.Client(), http.MethodPost, server.URL+"/api/jobs/bulk", "dev-token", protocol.BulkJobRequest{
+		NodeIDs: []string{"node-c"},
+		Type:    protocol.JobTypeDeepProbe,
+	})
+	if byIDs.Created != 1 || byIDs.Jobs[0].NodeID != "node-c" || byIDs.Jobs[0].JobID == "" {
+		t.Fatalf("nodeIds bulk = %+v, want node-c job created", byIDs)
+	}
+
+	// Re-running the selector now conflicts with the active probe jobs.
+	conflict := doJSONRequest[protocol.BulkJobResponse](t, server.Client(), http.MethodPost, server.URL+"/api/jobs/bulk", "dev-token", protocol.BulkJobRequest{
+		Selector: map[string]string{"role": "canary"},
+		Type:     protocol.JobTypeDeepProbe,
+	})
+	if conflict.Created != 0 {
+		t.Fatalf("conflicting bulk created = %d, want 0", conflict.Created)
+	}
+	for _, result := range conflict.Jobs {
+		if result.Error == "" {
+			t.Fatalf("conflicting bulk result missing error: %+v", result)
+		}
+	}
+
+	events, err := nodeStore.ListAuditEventsFiltered(ctx, store.AuditFilter{Limit: 50})
+	if err != nil {
+		t.Fatalf("list audit events: %v", err)
+	}
+	sawBulk := false
+	for _, event := range events {
+		if event.Action == audit.ActionJobBulkCreate {
+			sawBulk = true
+		}
+	}
+	if !sawBulk {
+		t.Fatalf("audit events missing %s; events=%#v", audit.ActionJobBulkCreate, events)
+	}
+}
+
+func TestBulkJobCreationValidation(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	enrollTestNode(t, nodeStore, "node-a")
+	handler, err := NewHandlerWithConfig(HandlerConfig{
+		Store:         nodeStore,
+		Freshness:     DefaultFreshnessPolicy(),
+		OperatorToken: "dev-token",
+	})
+	if err != nil {
+		t.Fatalf("build handler: %v", err)
+	}
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	cases := []struct {
+		name string
+		body protocol.BulkJobRequest
+		want int
+	}{
+		{name: "missing type", body: protocol.BulkJobRequest{NodeIDs: []string{"node-a"}}, want: http.StatusBadRequest},
+		{name: "unsupported type", body: protocol.BulkJobRequest{NodeIDs: []string{"node-a"}, Type: protocol.JobTypeRestart}, want: http.StatusBadRequest},
+		{name: "selector and nodeIds", body: protocol.BulkJobRequest{NodeIDs: []string{"node-a"}, Selector: map[string]string{"role": "x"}, Type: protocol.JobTypeDeepProbe}, want: http.StatusBadRequest},
+		{name: "neither selector nor nodeIds", body: protocol.BulkJobRequest{Type: protocol.JobTypeDeepProbe}, want: http.StatusBadRequest},
+		{name: "missing node", body: protocol.BulkJobRequest{NodeIDs: []string{"ghost"}, Type: protocol.JobTypeDeepProbe}, want: http.StatusNotFound},
+		{name: "empty selector match", body: protocol.BulkJobRequest{Selector: map[string]string{"role": "none"}, Type: protocol.JobTypeDeepProbe}, want: http.StatusBadRequest},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var payload bytes.Buffer
+			if err := json.NewEncoder(&payload).Encode(tc.body); err != nil {
+				t.Fatalf("encode body: %v", err)
+			}
+			req, err := http.NewRequest(http.MethodPost, server.URL+"/api/jobs/bulk", &payload)
+			if err != nil {
+				t.Fatalf("build request: %v", err)
+			}
+			req.Header.Set("Authorization", "Bearer dev-token")
+			req.Header.Set("Content-Type", "application/json")
+			res, err := server.Client().Do(req)
+			if err != nil {
+				t.Fatalf("do request: %v", err)
+			}
+			defer res.Body.Close()
+			if res.StatusCode != tc.want {
+				t.Fatalf("status = %d, want %d", res.StatusCode, tc.want)
+			}
+		})
+	}
+}
+
 func TestDesiredConfigPutWritesAuditEvent(t *testing.T) {
 	nodeStore := store.NewMemoryNodeStore()
 	handler, err := NewHandlerWithStoreAndFreshnessPolicyAndOperatorToken(nodeStore, DefaultFreshnessPolicy(), "dev-token")

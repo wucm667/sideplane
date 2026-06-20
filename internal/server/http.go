@@ -144,6 +144,7 @@ func NewHandlerWithConfig(cfg HandlerConfig) (http.Handler, error) {
 	mux.HandleFunc("/api/heartbeat", handler.heartbeat)
 	mux.HandleFunc("/api/rollouts", handler.rollouts)
 	mux.HandleFunc("/api/rollouts/", handler.rolloutRouter)
+	mux.HandleFunc("/api/jobs/bulk", handler.bulkJobs)
 	mux.HandleFunc("/api/nodes", handler.nodes)
 	mux.HandleFunc("/api/nodes/", handler.nodeJobsRouter)
 	mux.HandleFunc("/api/sidecar/jobs/next", handler.claimNextJob)
@@ -777,8 +778,14 @@ func validateRolloutSpec(spec protocol.RolloutSpec) error {
 }
 
 func (h *handler) resolveRolloutNodes(ctx context.Context, spec protocol.RolloutSpec) ([]string, error) {
-	if len(spec.NodeIDs) > 0 {
-		for _, nodeID := range spec.NodeIDs {
+	return h.resolveTargetNodes(ctx, spec.Selector, spec.NodeIDs)
+}
+
+// resolveTargetNodes resolves an operator node selection to node IDs. When
+// nodeIDs is set, each must exist; otherwise the selector matches labels.
+func (h *handler) resolveTargetNodes(ctx context.Context, selector map[string]string, nodeIDs []string) ([]string, error) {
+	if len(nodeIDs) > 0 {
+		for _, nodeID := range nodeIDs {
 			exists, err := h.store.NodeExists(ctx, nodeID)
 			if err != nil {
 				return nil, err
@@ -787,20 +794,20 @@ func (h *handler) resolveRolloutNodes(ctx context.Context, spec protocol.Rollout
 				return nil, store.ErrNodeNotFound
 			}
 		}
-		return append([]string(nil), spec.NodeIDs...), nil
+		return append([]string(nil), nodeIDs...), nil
 	}
 	list, err := h.store.ListNodesFiltered(ctx, store.NodeFilter{
-		Labels: spec.Selector,
+		Labels: selector,
 		Limit:  store.MaxNodeListLimit,
 	})
 	if err != nil {
 		return nil, err
 	}
-	nodeIDs := make([]string, 0, len(list.Nodes))
+	resolved := make([]string, 0, len(list.Nodes))
 	for _, node := range list.Nodes {
-		nodeIDs = append(nodeIDs, node.NodeID)
+		resolved = append(resolved, node.NodeID)
 	}
-	return nodeIDs, nil
+	return resolved, nil
 }
 
 func parseRolloutFilter(r *http.Request) (store.RolloutFilter, error) {
@@ -1375,6 +1382,88 @@ func (h *handler) createNodeJob(w http.ResponseWriter, r *http.Request, nodeID s
 	publishJobEvent(h.events, job)
 
 	writeJSON(w, http.StatusCreated, job)
+}
+
+func (h *handler) bulkJobs(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		writeAPIError(w, http.StatusMethodNotAllowed, http.StatusText(http.StatusMethodNotAllowed))
+		return
+	}
+	if !h.authorizeOperator(w, r) {
+		return
+	}
+	var req protocol.BulkJobRequest
+	if err := decodeJSONRequest(w, r, defaultJSONBodyLimit, &req); err != nil {
+		writeJSONDecodeError(w, err, "invalid bulk job JSON")
+		return
+	}
+	if req.Type == "" {
+		writeAPIError(w, http.StatusBadRequest, "type is required")
+		return
+	}
+	if req.Type != protocol.JobTypeDeepProbe {
+		writeAPIError(w, http.StatusBadRequest, "unsupported job type")
+		return
+	}
+	nodeIDs := uniqueTrimmedStrings(req.NodeIDs)
+	selector, err := store.ValidateNodeLabels(req.Selector)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "invalid selector: "+err.Error())
+		return
+	}
+	if len(nodeIDs) > 0 && len(selector) > 0 {
+		writeAPIError(w, http.StatusBadRequest, "selector and nodeIds are mutually exclusive")
+		return
+	}
+	if len(nodeIDs) == 0 && len(selector) == 0 {
+		writeAPIError(w, http.StatusBadRequest, "selector or nodeIds is required")
+		return
+	}
+
+	targets, err := h.resolveTargetNodes(r.Context(), selector, nodeIDs)
+	if err != nil {
+		if errors.Is(err, store.ErrNodeNotFound) {
+			writeAPIError(w, http.StatusNotFound, "node not found")
+			return
+		}
+		writeAPIError(w, http.StatusInternalServerError, "resolve bulk job nodes")
+		return
+	}
+	if len(targets) == 0 {
+		writeAPIError(w, http.StatusBadRequest, "bulk job target set is empty")
+		return
+	}
+
+	now := time.Now().UTC()
+	results := make([]protocol.BulkJobResult, 0, len(targets))
+	created := 0
+	for _, nodeID := range targets {
+		job, err := h.store.CreateJob(r.Context(), protocol.CreateJobRequest{Type: req.Type}, nodeID, now)
+		if err != nil {
+			// A conflicting active job is a per-node skip, not a request failure.
+			if errors.Is(err, store.ErrActiveJobExists) {
+				results = append(results, protocol.BulkJobResult{NodeID: nodeID, Error: "active job already exists"})
+				continue
+			}
+			results = append(results, protocol.BulkJobResult{NodeID: nodeID, Error: "create job failed"})
+			h.logger.Warn("bulk job creation failed for node", "node_id", nodeID, "error", err)
+			continue
+		}
+		created++
+		h.metrics.IncJobCreated(string(req.Type))
+		results = append(results, protocol.BulkJobResult{NodeID: nodeID, JobID: job.ID})
+		publishJobEvent(h.events, job)
+	}
+
+	h.logger.Info("bulk jobs created", "type", req.Type, "matched", len(targets), "created", created)
+	h.audit(r.Context(), protocol.AuditEvent{
+		Actor:     audit.ActorOperator,
+		Action:    audit.ActionJobBulkCreate,
+		Detail:    fmt.Sprintf("type=%s matched=%d created=%d", req.Type, len(targets), created),
+		CreatedAt: now,
+	})
+	writeJSON(w, http.StatusCreated, protocol.BulkJobResponse{Jobs: results, Created: created})
 }
 
 func (h *handler) createRestartJob(w http.ResponseWriter, r *http.Request, nodeID string) {

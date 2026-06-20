@@ -51,6 +51,27 @@ type CreateJobRequest struct {
 	PayloadJSON string  `json:"payloadJson,omitempty"`
 }
 
+// BulkJobRequest creates one job per matched node. Exactly one of Selector or
+// NodeIDs must be set. Type currently must be deep_probe.
+type BulkJobRequest struct {
+	Selector map[string]string `json:"selector,omitempty"`
+	NodeIDs  []string          `json:"nodeIds,omitempty"`
+	Type     JobType           `json:"type"`
+}
+
+// BulkJobResult is one matched node's outcome in a bulk job creation.
+type BulkJobResult struct {
+	NodeID string `json:"nodeId"`
+	JobID  string `json:"jobId,omitempty"`
+	Error  string `json:"error,omitempty"`
+}
+
+// BulkJobResponse returns the per-node outcomes and the count of jobs created.
+type BulkJobResponse struct {
+	Jobs    []BulkJobResult `json:"jobs"`
+	Created int             `json:"created"`
+}
+
 // JobResultRequest is the sidecar's submission of a job result.
 type JobResultRequest struct {
 	Status     JobStatus `json:"status"`

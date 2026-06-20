@@ -25,6 +25,8 @@ const (
 	ActionNodeLabelsUpdate = "node.labels.update"
 	// ActionJobCreate records operator job creation.
 	ActionJobCreate = "job.create"
+	// ActionJobBulkCreate records bulk job creation across a node selection.
+	ActionJobBulkCreate = "job.bulk.create"
 	// ActionJobComplete records sidecar job completion.
 	ActionJobComplete = "job.complete"
 	// ActionJobFail records sidecar job failure.
