@@ -960,6 +960,84 @@ func TestOperatorTokenManagementEndpointsCreateListRevokeAndAudit(t *testing.T) 
 	}
 }
 
+func TestOperatorTokenScopeEnforcement(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	handler, err := NewHandlerWithConfig(HandlerConfig{
+		Store:         nodeStore,
+		Freshness:     DefaultFreshnessPolicy(),
+		OperatorToken: "bootstrap-token",
+	})
+	if err != nil {
+		t.Fatalf("build handler: %v", err)
+	}
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	client := server.Client()
+
+	readonly := doJSONRequest[protocol.CreateOperatorTokenResponse](t, client, http.MethodPost, server.URL+"/api/operator-tokens", "bootstrap-token", protocol.CreateOperatorTokenRequest{Name: "viewer", Scope: protocol.OperatorTokenScopeReadonly})
+	if readonly.OperatorToken.Scope != protocol.OperatorTokenScopeReadonly {
+		t.Fatalf("created scope = %q, want readonly", readonly.OperatorToken.Scope)
+	}
+	admin := doJSONRequest[protocol.CreateOperatorTokenResponse](t, client, http.MethodPost, server.URL+"/api/operator-tokens", "bootstrap-token", protocol.CreateOperatorTokenRequest{Name: "ops", Scope: protocol.OperatorTokenScopeAdmin})
+
+	status := func(method, path, token string, body any) int {
+		t.Helper()
+		var payload bytes.Buffer
+		if body != nil {
+			if err := json.NewEncoder(&payload).Encode(body); err != nil {
+				t.Fatalf("encode body: %v", err)
+			}
+		}
+		req, err := http.NewRequest(method, server.URL+path, &payload)
+		if err != nil {
+			t.Fatalf("build request: %v", err)
+		}
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		if body != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		res, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("%s %s: %v", method, path, err)
+		}
+		defer res.Body.Close()
+		return res.StatusCode
+	}
+
+	// readonly passes read endpoints (GET list of operator tokens).
+	if code := status(http.MethodGet, "/api/operator-tokens", readonly.Token, nil); code != http.StatusOK {
+		t.Fatalf("readonly GET operator-tokens status = %d, want 200", code)
+	}
+	// readonly is forbidden on mutating endpoints.
+	if code := status(http.MethodPost, "/api/enrollment-tokens", readonly.Token, protocol.CreateEnrollmentTokenRequest{}); code != http.StatusForbidden {
+		t.Fatalf("readonly POST enrollment-tokens status = %d, want 403", code)
+	}
+	if code := status(http.MethodPost, "/api/operator-tokens", readonly.Token, protocol.CreateOperatorTokenRequest{Name: "escalation"}); code != http.StatusForbidden {
+		t.Fatalf("readonly POST operator-tokens status = %d, want 403", code)
+	}
+	// admin named token has full access.
+	if code := status(http.MethodPost, "/api/enrollment-tokens", admin.Token, protocol.CreateEnrollmentTokenRequest{}); code != http.StatusCreated {
+		t.Fatalf("admin POST enrollment-tokens status = %d, want 201", code)
+	}
+
+	// admin mutations record the acting token id in the audit detail.
+	events, err := nodeStore.ListAuditEventsFiltered(context.Background(), store.AuditFilter{Limit: 50})
+	if err != nil {
+		t.Fatalf("list audit events: %v", err)
+	}
+	sawTokenAttribution := false
+	for _, event := range events {
+		if event.Action == audit.ActionEnrollmentTokenCreate && strings.Contains(event.Detail, "actor_id="+admin.OperatorToken.ID) {
+			sawTokenAttribution = true
+		}
+	}
+	if !sawTokenAttribution {
+		t.Fatalf("audit events missing acting token attribution for %s; events=%#v", admin.OperatorToken.ID, events)
+	}
+}
+
 func TestDesiredConfigPutWritesAuditEvent(t *testing.T) {
 	nodeStore := store.NewMemoryNodeStore()
 	handler, err := NewHandlerWithStoreAndFreshnessPolicyAndOperatorToken(nodeStore, DefaultFreshnessPolicy(), "dev-token")

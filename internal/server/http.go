@@ -2237,6 +2237,18 @@ func hashDesiredConfig(desired protocol.DesiredConfig) string {
 }
 
 func (h *handler) audit(ctx context.Context, event protocol.AuditEvent) {
+	if event.Actor == audit.ActorOperator {
+		// Attribute the acting named token by its non-secret id. The key
+		// avoids the secret-redaction keywords (token/secret/etc.) so the
+		// attribution survives RedactString below.
+		if tokenID := operatorTokenIDFromContext(ctx); tokenID != "" {
+			if strings.TrimSpace(event.Detail) == "" {
+				event.Detail = "actor_id=" + tokenID
+			} else {
+				event.Detail = event.Detail + " actor_id=" + tokenID
+			}
+		}
+	}
 	event.Detail = spconfig.RedactString(event.Detail)
 	_, _ = h.store.AppendAuditEvent(ctx, event)
 }
@@ -2279,16 +2291,40 @@ func writeJSONDecodeError(w http.ResponseWriter, err error, message string) {
 	writeAPIError(w, http.StatusBadRequest, message)
 }
 
+type operatorTokenIDContextKey struct{}
+
+// withOperatorTokenID stores the acting named-token id for later audit events.
+func withOperatorTokenID(ctx context.Context, tokenID string) context.Context {
+	return context.WithValue(ctx, operatorTokenIDContextKey{}, tokenID)
+}
+
+func operatorTokenIDFromContext(ctx context.Context) string {
+	id, _ := ctx.Value(operatorTokenIDContextKey{}).(string)
+	return id
+}
+
+func isReadOnlyHTTPMethod(method string) bool {
+	return method == http.MethodGet || method == http.MethodHead
+}
+
 func (h *handler) authorizeOperator(w http.ResponseWriter, r *http.Request) bool {
-	if h.operatorAuth.AuthorizeHeaderContext(r.Context(), r.Header.Get("Authorization")) {
-		return true
-	}
-	if ok, retryAfter := h.operatorAuthLimiter.allow(remoteRateLimitKey(r)); !ok {
-		writeRateLimited(w, retryAfter)
+	identity, ok := h.operatorAuth.AuthorizeIdentity(r.Context(), r.Header.Get("Authorization"))
+	if !ok {
+		if limited, retryAfter := h.operatorAuthLimiter.allow(remoteRateLimitKey(r)); !limited {
+			writeRateLimited(w, retryAfter)
+			return false
+		}
+		writeAPIError(w, http.StatusUnauthorized, http.StatusText(http.StatusUnauthorized))
 		return false
 	}
-	writeAPIError(w, http.StatusUnauthorized, http.StatusText(http.StatusUnauthorized))
-	return false
+	if identity.TokenID != "" {
+		*r = *r.WithContext(withOperatorTokenID(r.Context(), identity.TokenID))
+	}
+	if identity.Scope == protocol.OperatorTokenScopeReadonly && !isReadOnlyHTTPMethod(r.Method) {
+		writeAPIError(w, http.StatusForbidden, "operator token is read-only")
+		return false
+	}
+	return true
 }
 
 func decodeOptionalJSON(body io.Reader, dst any) error {
