@@ -4142,6 +4142,22 @@ func (s staticNodeStore) UpdateOperatorTokenLastUsed(context.Context, string, ti
 	return nil
 }
 
+func (s staticNodeStore) CreateAlertWebhook(context.Context, protocol.CreateAlertWebhookRequest, time.Time) (protocol.AlertWebhook, error) {
+	return protocol.AlertWebhook{}, nil
+}
+
+func (s staticNodeStore) ListAlertWebhooks(context.Context) ([]protocol.AlertWebhook, error) {
+	return nil, nil
+}
+
+func (s staticNodeStore) DeleteAlertWebhook(context.Context, string) error {
+	return nil
+}
+
+func (s staticNodeStore) ListAlertWebhookTargets(context.Context, protocol.AlertEventType) ([]store.AlertWebhookTarget, error) {
+	return nil, nil
+}
+
 func (s staticNodeStore) CreateJob(context.Context, protocol.CreateJobRequest, string, time.Time) (protocol.Job, error) {
 	return protocol.Job{}, nil
 }

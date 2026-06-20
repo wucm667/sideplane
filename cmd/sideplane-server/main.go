@@ -239,6 +239,10 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		Interval:   *rolloutInterval,
 		Logger:     logger,
 	})
+	server.StartAlertDispatcher(ctx, server.AlertDispatcherConfig{
+		Store:  nodeStore,
+		Logger: logger,
+	})
 
 	logger.Info(
 		"starting sideplane-server",
