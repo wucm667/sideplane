@@ -28,6 +28,7 @@ type MemoryNodeStore struct {
 	desiredConfig    protocol.DesiredConfig
 	desiredHistory   []protocol.DesiredConfigHistoryEntry
 	alertWebhooks    map[string]memoryAlertWebhook
+	settings         protocol.ServerSettings
 }
 
 type memoryAlertWebhook struct {
@@ -565,6 +566,21 @@ func (s *MemoryNodeStore) ListAlertWebhookTargets(_ context.Context, event proto
 	}
 	sort.Slice(targets, func(i, j int) bool { return targets[i].ID < targets[j].ID })
 	return targets, nil
+}
+
+// GetServerSettings returns the operator-tunable server settings.
+func (s *MemoryNodeStore) GetServerSettings(context.Context) (protocol.ServerSettings, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.settings, nil
+}
+
+// SetExpectedSidecarVersion records the operator-configured expected sidecar version.
+func (s *MemoryNodeStore) SetExpectedSidecarVersion(_ context.Context, version string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.settings.ExpectedSidecarVersion = strings.TrimSpace(version)
+	return nil
 }
 
 // GetJob retrieves a job by ID.

@@ -126,6 +126,12 @@ func NormalizeAlertEvents(events []protocol.AlertEventType) ([]protocol.AlertEve
 	return out, nil
 }
 
+// SettingsStore persists operator-tunable server settings.
+type SettingsStore interface {
+	GetServerSettings(ctx context.Context) (protocol.ServerSettings, error)
+	SetExpectedSidecarVersion(ctx context.Context, version string) error
+}
+
 // AlertWebhookStore persists operator-configured outbound alert webhooks.
 type AlertWebhookStore interface {
 	CreateAlertWebhook(ctx context.Context, req protocol.CreateAlertWebhookRequest, now time.Time) (protocol.AlertWebhook, error)
@@ -450,4 +456,5 @@ type Store interface {
 	DesiredConfigStore
 	HealthStore
 	AlertWebhookStore
+	SettingsStore
 }

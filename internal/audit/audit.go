@@ -55,4 +55,6 @@ const (
 	ActionAlertWebhookCreate = "alert.webhook.create"
 	// ActionAlertWebhookDelete records operator deletion of an alert webhook.
 	ActionAlertWebhookDelete = "alert.webhook.delete"
+	// ActionServerSettingsUpdate records operator updates to server settings.
+	ActionServerSettingsUpdate = "server.settings.update"
 )

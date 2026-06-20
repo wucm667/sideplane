@@ -41,6 +41,21 @@ type NodeStatus struct {
 type NodeStatusWithDrift struct {
 	NodeStatus
 	Drift bool `json:"drift"`
+	// SidecarOutdated is true when an expected sidecar version is configured and
+	// this node's reported sidecarVersion differs from it.
+	SidecarOutdated bool `json:"sidecarOutdated,omitempty"`
+}
+
+// ServerSettings holds operator-tunable server settings.
+type ServerSettings struct {
+	// ExpectedSidecarVersion, when set, flags nodes running a different sidecar
+	// version as outdated. Empty disables the check.
+	ExpectedSidecarVersion string `json:"expectedSidecarVersion"`
+}
+
+// UpdateServerSettingsRequest updates operator-tunable server settings.
+type UpdateServerSettingsRequest struct {
+	ExpectedSidecarVersion string `json:"expectedSidecarVersion"`
 }
 
 // ListNodesResponse is a paginated fleet inventory response.

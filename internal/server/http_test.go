@@ -1118,6 +1118,87 @@ func TestBulkJobCreationBySelectorAndNodeIDs(t *testing.T) {
 	}
 }
 
+func TestSidecarOutdatedFlagAndMetric(t *testing.T) {
+	ctx := context.Background()
+	nodeStore := store.NewMemoryNodeStore()
+	now := time.Now().UTC()
+	enrollTestNode(t, nodeStore, "node-a")
+	if _, err := nodeStore.RecordHeartbeat(ctx, protocol.HeartbeatRequest{NodeID: "node-a", SidecarVersion: "v1.0.0"}, now); err != nil {
+		t.Fatalf("heartbeat node-a: %v", err)
+	}
+	handler, err := NewHandlerWithConfig(HandlerConfig{
+		Store:         nodeStore,
+		Freshness:     DefaultFreshnessPolicy(),
+		OperatorToken: "dev-token",
+	})
+	if err != nil {
+		t.Fatalf("build handler: %v", err)
+	}
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	// No expected version configured: not outdated.
+	nodes := doJSONRequest[protocol.ListNodesResponse](t, server.Client(), http.MethodGet, server.URL+"/api/nodes", "", nil)
+	if len(nodes.Nodes) != 1 || nodes.Nodes[0].SidecarOutdated {
+		t.Fatalf("nodes = %+v, want node not flagged when no expected version", nodes.Nodes)
+	}
+
+	// Set an expected version that differs from the node's.
+	updated := doJSONRequest[protocol.ServerSettings](t, server.Client(), http.MethodPut, server.URL+"/api/settings", "dev-token", protocol.UpdateServerSettingsRequest{ExpectedSidecarVersion: "v1.1.0"})
+	if updated.ExpectedSidecarVersion != "v1.1.0" {
+		t.Fatalf("update settings = %+v, want v1.1.0", updated)
+	}
+	nodes = doJSONRequest[protocol.ListNodesResponse](t, server.Client(), http.MethodGet, server.URL+"/api/nodes", "", nil)
+	if len(nodes.Nodes) != 1 || !nodes.Nodes[0].SidecarOutdated {
+		t.Fatalf("nodes = %+v, want node flagged outdated", nodes.Nodes)
+	}
+
+	// Metrics gauge reflects the outdated node.
+	metricsRes, err := server.Client().Get(server.URL + "/metrics")
+	if err != nil {
+		t.Fatalf("get metrics: %v", err)
+	}
+	metricsBody, _ := io.ReadAll(metricsRes.Body)
+	metricsRes.Body.Close()
+	if !strings.Contains(string(metricsBody), "sideplane_fleet_sidecar_outdated 1") {
+		t.Fatalf("metrics missing outdated gauge=1; body=%s", metricsBody)
+	}
+
+	// Matching version clears the flag.
+	doJSONRequest[protocol.ServerSettings](t, server.Client(), http.MethodPut, server.URL+"/api/settings", "dev-token", protocol.UpdateServerSettingsRequest{ExpectedSidecarVersion: "v1.0.0"})
+	nodes = doJSONRequest[protocol.ListNodesResponse](t, server.Client(), http.MethodGet, server.URL+"/api/nodes", "", nil)
+	if nodes.Nodes[0].SidecarOutdated {
+		t.Fatalf("node still flagged outdated after matching version")
+	}
+}
+
+func TestServerSettingsUpdateRequiresOperatorAuth(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	handler, err := NewHandlerWithConfig(HandlerConfig{
+		Store:         nodeStore,
+		Freshness:     DefaultFreshnessPolicy(),
+		OperatorToken: "dev-token",
+	})
+	if err != nil {
+		t.Fatalf("build handler: %v", err)
+	}
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	var payload bytes.Buffer
+	_ = json.NewEncoder(&payload).Encode(protocol.UpdateServerSettingsRequest{ExpectedSidecarVersion: "v9"})
+	req, _ := http.NewRequest(http.MethodPut, server.URL+"/api/settings", &payload)
+	req.Header.Set("Content-Type", "application/json")
+	res, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatalf("put settings: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", res.StatusCode)
+	}
+}
+
 func TestAuditExportFormatsAndFilter(t *testing.T) {
 	ctx := context.Background()
 	nodeStore := store.NewMemoryNodeStore()
@@ -4379,6 +4460,14 @@ func (s staticNodeStore) VerifyOperatorToken(context.Context, string) (string, p
 }
 
 func (s staticNodeStore) UpdateOperatorTokenLastUsed(context.Context, string, time.Time) error {
+	return nil
+}
+
+func (s staticNodeStore) GetServerSettings(context.Context) (protocol.ServerSettings, error) {
+	return protocol.ServerSettings{}, nil
+}
+
+func (s staticNodeStore) SetExpectedSidecarVersion(context.Context, string) error {
 	return nil
 }
 

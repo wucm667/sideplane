@@ -139,6 +139,7 @@ func NewHandlerWithConfig(cfg HandlerConfig) (http.Handler, error) {
 	mux.HandleFunc("/api/operator-tokens/", handler.operatorTokenRouter)
 	mux.HandleFunc("/api/webhooks", handler.alertWebhooks)
 	mux.HandleFunc("/api/webhooks/", handler.alertWebhookRouter)
+	mux.HandleFunc("/api/settings", handler.serverSettings)
 	mux.HandleFunc("/api/signing-key", handler.publicSigningKey)
 	mux.HandleFunc("/api/config/desired/history", handler.desiredConfigHistory)
 	mux.HandleFunc("/api/config/desired/revert", handler.revertDesiredConfig)
@@ -221,8 +222,9 @@ func (h *handler) metricsEndpoint(w http.ResponseWriter, r *http.Request) {
 }
 
 type fleetMetricsSnapshot struct {
-	nodesByState map[protocol.NodeState]int
-	driftedNodes int
+	nodesByState     map[protocol.NodeState]int
+	driftedNodes     int
+	outdatedSidecars int
 }
 
 func (h *handler) collectFleetMetrics(ctx context.Context) (fleetMetricsSnapshot, error) {
@@ -233,6 +235,10 @@ func (h *handler) collectFleetMetrics(ctx context.Context) (fleetMetricsSnapshot
 	h.applyFreshness(nodes)
 
 	desired, err := h.store.GetDesiredConfig(ctx)
+	if err != nil {
+		return fleetMetricsSnapshot{}, err
+	}
+	settings, err := h.store.GetServerSettings(ctx)
 	if err != nil {
 		return fleetMetricsSnapshot{}, err
 	}
@@ -253,8 +259,22 @@ func (h *handler) collectFleetMetrics(ctx context.Context) (fleetMetricsSnapshot
 		if drift {
 			snapshot.driftedNodes++
 		}
+		if sidecarOutdated(node, settings.ExpectedSidecarVersion) {
+			snapshot.outdatedSidecars++
+		}
 	}
 	return snapshot, nil
+}
+
+// sidecarOutdated reports whether a node's reported sidecar version differs from
+// the operator-configured expected version. An empty expected version disables
+// the check.
+func sidecarOutdated(node protocol.NodeStatus, expectedVersion string) bool {
+	expectedVersion = strings.TrimSpace(expectedVersion)
+	if expectedVersion == "" {
+		return false
+	}
+	return strings.TrimSpace(node.SidecarVersion) != expectedVersion
 }
 
 func writeFleetMetrics(w http.ResponseWriter, snapshot fleetMetricsSnapshot) {
@@ -266,6 +286,9 @@ func writeFleetMetrics(w http.ResponseWriter, snapshot fleetMetricsSnapshot) {
 	fmt.Fprintln(w, "# HELP sideplane_fleet_nodes_drifted Nodes with config drift.")
 	fmt.Fprintln(w, "# TYPE sideplane_fleet_nodes_drifted gauge")
 	fmt.Fprintf(w, "sideplane_fleet_nodes_drifted %d\n", snapshot.driftedNodes)
+	fmt.Fprintln(w, "# HELP sideplane_fleet_sidecar_outdated Nodes running a sidecar version other than the expected version.")
+	fmt.Fprintln(w, "# TYPE sideplane_fleet_sidecar_outdated gauge")
+	fmt.Fprintf(w, "sideplane_fleet_sidecar_outdated %d\n", snapshot.outdatedSidecars)
 }
 
 func (h *handler) createEnrollmentToken(w http.ResponseWriter, r *http.Request) {
@@ -406,6 +429,46 @@ func (h *handler) operatorTokenRouter(w http.ResponseWriter, r *http.Request) {
 		CreatedAt: now,
 	})
 	writeJSON(w, http.StatusOK, protocol.RevokeOperatorTokenResponse{OperatorToken: token})
+}
+
+func (h *handler) serverSettings(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		settings, err := h.store.GetServerSettings(r.Context())
+		if err != nil {
+			writeAPIError(w, http.StatusInternalServerError, "get server settings")
+			return
+		}
+		writeJSON(w, http.StatusOK, settings)
+	case http.MethodPut:
+		if !h.authorizeOperator(w, r) {
+			return
+		}
+		var req protocol.UpdateServerSettingsRequest
+		if err := decodeJSONRequest(w, r, defaultJSONBodyLimit, &req); err != nil {
+			writeJSONDecodeError(w, err, "invalid settings JSON")
+			return
+		}
+		version := strings.TrimSpace(req.ExpectedSidecarVersion)
+		if len(version) > 200 {
+			writeAPIError(w, http.StatusBadRequest, "expectedSidecarVersion is too long")
+			return
+		}
+		if err := h.store.SetExpectedSidecarVersion(r.Context(), version); err != nil {
+			writeAPIError(w, http.StatusInternalServerError, "update server settings")
+			return
+		}
+		h.audit(r.Context(), protocol.AuditEvent{
+			Actor:     audit.ActorOperator,
+			Action:    audit.ActionServerSettingsUpdate,
+			Detail:    fmt.Sprintf("expectedSidecarVersion=%q", version),
+			CreatedAt: time.Now().UTC(),
+		})
+		writeJSON(w, http.StatusOK, protocol.ServerSettings{ExpectedSidecarVersion: version})
+	default:
+		w.Header().Set("Allow", "GET, PUT")
+		writeAPIError(w, http.StatusMethodNotAllowed, http.StatusText(http.StatusMethodNotAllowed))
+	}
 }
 
 func (h *handler) alertWebhooks(w http.ResponseWriter, r *http.Request) {
@@ -639,6 +702,11 @@ func (h *handler) nodes(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusInternalServerError, "get desired config")
 		return
 	}
+	settings, err := h.store.GetServerSettings(r.Context())
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "get server settings")
+		return
+	}
 
 	response := make([]protocol.NodeStatusWithDrift, len(nodeList.Nodes))
 	for i, node := range nodeList.Nodes {
@@ -648,8 +716,9 @@ func (h *handler) nodes(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		response[i] = protocol.NodeStatusWithDrift{
-			NodeStatus: node,
-			Drift:      drift,
+			NodeStatus:      node,
+			Drift:           drift,
+			SidecarOutdated: sidecarOutdated(node, settings.ExpectedSidecarVersion),
 		}
 	}
 

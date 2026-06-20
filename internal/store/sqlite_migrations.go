@@ -251,6 +251,17 @@ ON heartbeats(node_id, observed_at DESC)`,
 	ON alert_webhooks(created_at DESC, id DESC)`,
 		},
 	},
+	{
+		version: 14,
+		name:    "create server settings table",
+		statements: []string{
+			`
+	CREATE TABLE IF NOT EXISTS server_settings (
+		id INTEGER PRIMARY KEY CHECK (id = 1),
+		expected_sidecar_version TEXT NOT NULL DEFAULT ''
+	)`,
+		},
+	},
 }
 
 // LatestSQLiteSchemaVersion returns the newest migration version compiled into

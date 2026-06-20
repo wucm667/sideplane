@@ -52,8 +52,10 @@ func TestSQLiteNodeStoreMigratesAndPersistsHeartbeat(t *testing.T) {
 	assertSQLiteMigrationApplied(t, ctx, first.db, 10)
 	assertSQLiteMigrationApplied(t, ctx, first.db, 11)
 	assertSQLiteTableExists(t, ctx, first.db, "alert_webhooks")
+	assertSQLiteTableExists(t, ctx, first.db, "server_settings")
 	assertSQLiteMigrationApplied(t, ctx, first.db, 12)
 	assertSQLiteMigrationApplied(t, ctx, first.db, 13)
+	assertSQLiteMigrationApplied(t, ctx, first.db, 14)
 
 	observedAt := time.Date(2026, 6, 16, 1, 2, 3, 0, time.UTC)
 	sentAt := observedAt.Add(-time.Second)
@@ -443,6 +445,38 @@ func TestSQLiteNodeStoreAlertWebhookPersistsAcrossReopen(t *testing.T) {
 	}
 	if none, err := second.ListAlertWebhookTargets(ctx, protocol.AlertEventNodeDrift); err != nil || len(none) != 0 {
 		t.Fatalf("drift targets = %+v err=%v, want none", none, err)
+	}
+}
+
+func TestSQLiteNodeStoreServerSettingsPersistAcrossReopen(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "sideplane.db")
+	first, err := OpenSQLiteNodeStore(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	if err := first.SetExpectedSidecarVersion(ctx, "v2.0.0"); err != nil {
+		t.Fatalf("set expected version: %v", err)
+	}
+	// Upsert path: a second write replaces the single row.
+	if err := first.SetExpectedSidecarVersion(ctx, "v2.1.0"); err != nil {
+		t.Fatalf("update expected version: %v", err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	second, err := OpenSQLiteNodeStore(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("reopen sqlite store: %v", err)
+	}
+	defer second.Close()
+	settings, err := second.GetServerSettings(ctx)
+	if err != nil {
+		t.Fatalf("get settings: %v", err)
+	}
+	if settings.ExpectedSidecarVersion != "v2.1.0" {
+		t.Fatalf("expected version = %q, want persisted v2.1.0", settings.ExpectedSidecarVersion)
 	}
 }
 

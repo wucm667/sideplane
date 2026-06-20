@@ -1137,6 +1137,39 @@ func scanSQLiteAlertWebhook(scanner sqliteScanner) (protocol.AlertWebhook, strin
 	return webhook, secret, nil
 }
 
+// GetServerSettings returns the operator-tunable server settings.
+func (s *SQLiteNodeStore) GetServerSettings(ctx context.Context) (protocol.ServerSettings, error) {
+	if s == nil || s.db == nil {
+		return protocol.ServerSettings{}, errors.New("sqlite node store is closed")
+	}
+	var version string
+	err := s.db.QueryRowContext(ctx, `SELECT expected_sidecar_version FROM server_settings WHERE id = 1`).Scan(&version)
+	if errors.Is(err, sql.ErrNoRows) {
+		return protocol.ServerSettings{}, nil
+	}
+	if err != nil {
+		return protocol.ServerSettings{}, fmt.Errorf("query server settings: %w", err)
+	}
+	return protocol.ServerSettings{ExpectedSidecarVersion: version}, nil
+}
+
+// SetExpectedSidecarVersion records the operator-configured expected sidecar version.
+func (s *SQLiteNodeStore) SetExpectedSidecarVersion(ctx context.Context, version string) error {
+	if s == nil || s.db == nil {
+		return errors.New("sqlite node store is closed")
+	}
+	version = strings.TrimSpace(version)
+	_, err := s.db.ExecContext(ctx, `
+INSERT INTO server_settings (id, expected_sidecar_version)
+VALUES (1, ?)
+ON CONFLICT(id) DO UPDATE SET expected_sidecar_version = excluded.expected_sidecar_version
+`, version)
+	if err != nil {
+		return fmt.Errorf("set expected sidecar version: %w", err)
+	}
+	return nil
+}
+
 // GetJob retrieves a job by ID.
 func (s *SQLiteNodeStore) GetJob(ctx context.Context, jobID string) (*protocol.Job, error) {
 	if s == nil || s.db == nil {

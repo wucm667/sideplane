@@ -393,6 +393,38 @@ func TestMemoryNodeStoreAlertWebhookLifecycle(t *testing.T) {
 	}
 }
 
+func TestMemoryNodeStoreServerSettingsExpectedSidecarVersion(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryNodeStore()
+
+	settings, err := store.GetServerSettings(ctx)
+	if err != nil {
+		t.Fatalf("get default settings: %v", err)
+	}
+	if settings.ExpectedSidecarVersion != "" {
+		t.Fatalf("default expected version = %q, want empty", settings.ExpectedSidecarVersion)
+	}
+
+	if err := store.SetExpectedSidecarVersion(ctx, "  v1.2.3  "); err != nil {
+		t.Fatalf("set expected version: %v", err)
+	}
+	settings, err = store.GetServerSettings(ctx)
+	if err != nil {
+		t.Fatalf("get settings: %v", err)
+	}
+	if settings.ExpectedSidecarVersion != "v1.2.3" {
+		t.Fatalf("expected version = %q, want trimmed v1.2.3", settings.ExpectedSidecarVersion)
+	}
+
+	if err := store.SetExpectedSidecarVersion(ctx, ""); err != nil {
+		t.Fatalf("clear expected version: %v", err)
+	}
+	settings, _ = store.GetServerSettings(ctx)
+	if settings.ExpectedSidecarVersion != "" {
+		t.Fatalf("expected version after clear = %q, want empty", settings.ExpectedSidecarVersion)
+	}
+}
+
 func TestMemoryNodeStoreAlertWebhookValidation(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemoryNodeStore()
