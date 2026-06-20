@@ -38,6 +38,30 @@ type cliConfig struct {
 	Profile       string
 }
 
+type completionCommand struct {
+	Name        string
+	Description string
+	Subcommands []string
+}
+
+var completionCommands = []completionCommand{
+	{Name: "fleet", Description: "show fleet node status", Subcommands: []string{"status"}},
+	{Name: "probe", Description: "run a deep probe on a node"},
+	{Name: "restart", Description: "create a standalone restart job"},
+	{Name: "rollback", Description: "create a rollback job from a backup ref"},
+	{Name: "backups", Description: "list rollback backups", Subcommands: []string{"list"}},
+	{Name: "rollout", Description: "manage staged fleet rollouts", Subcommands: []string{"create", "list", "status", "pause", "resume", "abort"}},
+	{Name: "jobs", Description: "list node jobs", Subcommands: []string{"list"}},
+	{Name: "audit", Description: "list audit events", Subcommands: []string{"list"}},
+	{Name: "token", Description: "manage operator tokens", Subcommands: []string{"create", "list", "revoke"}},
+	{Name: "config", Description: "manage desired configuration", Subcommands: []string{"apply", "preview", "get", "set", "history", "revert"}},
+	{Name: "node", Description: "inspect and manage nodes", Subcommands: []string{"inspect", "label", "remove"}},
+	{Name: "enrollment", Description: "create enrollment tokens", Subcommands: []string{"create"}},
+	{Name: "config-file", Description: "show CLI config file information", Subcommands: []string{"path"}},
+	{Name: "completion", Description: "print shell completion scripts", Subcommands: []string{"bash", "zsh"}},
+	{Name: "version", Description: "print version"},
+}
+
 var cliStdin io.Reader = os.Stdin
 
 type cliNodeStatus struct {
@@ -67,6 +91,9 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 	if args[0] == "config-file" && len(args) >= 2 && args[1] == "path" {
 		return runConfigFilePath(args[2:], stdout, stderr)
+	}
+	if args[0] == "completion" {
+		return runCompletion(args[1:], stdout, stderr)
 	}
 
 	switch args[0] {
@@ -192,6 +219,7 @@ Commands:
   node remove <id>    Remove a node from the fleet
   enrollment create   Create a one-time enrollment token
   config-file path    Print resolved CLI config path
+  completion <shell>  Print shell completion script
   version             Print version
 `)
 }
@@ -228,6 +256,110 @@ func runConfigFilePath(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 	fmt.Fprintln(stdout, resolvedCLIConfigPath())
 	return 0
+}
+
+func runCompletion(args []string, stdout io.Writer, stderr io.Writer) int {
+	flags := flag.NewFlagSet("sideplane completion", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	usage := "sideplane completion [bash|zsh]"
+	if commandHelpRequested(args) {
+		printCommandHelp(stdout, usage, flags)
+		return 0
+	}
+	if err := flags.Parse(args); err != nil {
+		return 2
+	}
+	if flags.NArg() != 1 {
+		fmt.Fprintln(stderr, "usage: "+usage)
+		return 1
+	}
+	switch flags.Arg(0) {
+	case "bash":
+		fmt.Fprint(stdout, bashCompletionScript())
+		return 0
+	case "zsh":
+		fmt.Fprint(stdout, zshCompletionScript())
+		return 0
+	default:
+		fmt.Fprintf(stderr, "unsupported shell %q; want bash or zsh\n", flags.Arg(0))
+		return 1
+	}
+}
+
+func completionCommandNames() []string {
+	names := make([]string, 0, len(completionCommands))
+	for _, command := range completionCommands {
+		names = append(names, command.Name)
+	}
+	return names
+}
+
+func bashCompletionScript() string {
+	var b strings.Builder
+	fmt.Fprintln(&b, "# sideplane bash completion")
+	fmt.Fprintln(&b, "_sideplane_completion() {")
+	fmt.Fprintln(&b, "\tlocal cur command")
+	fmt.Fprintln(&b, "\tCOMPREPLY=()")
+	fmt.Fprintln(&b, "\tcur=\"${COMP_WORDS[COMP_CWORD]}\"")
+	fmt.Fprintln(&b, "\tif [[ ${COMP_CWORD} -eq 1 ]]; then")
+	fmt.Fprintf(&b, "\t\tCOMPREPLY=( $(compgen -W %q -- \"$cur\") )\n", strings.Join(completionCommandNames(), " "))
+	fmt.Fprintln(&b, "\t\treturn 0")
+	fmt.Fprintln(&b, "\tfi")
+	fmt.Fprintln(&b, "\tcommand=\"${COMP_WORDS[1]}\"")
+	fmt.Fprintln(&b, "\tcase \"$command\" in")
+	for _, command := range completionCommands {
+		if len(command.Subcommands) == 0 {
+			continue
+		}
+		fmt.Fprintf(&b, "\t\t%s)\n", command.Name)
+		fmt.Fprintf(&b, "\t\t\tCOMPREPLY=( $(compgen -W %q -- \"$cur\") )\n", strings.Join(command.Subcommands, " "))
+		fmt.Fprintln(&b, "\t\t\t;;")
+	}
+	fmt.Fprintln(&b, "\tesac")
+	fmt.Fprintln(&b, "}")
+	fmt.Fprintln(&b, "complete -F _sideplane_completion sideplane")
+	return b.String()
+}
+
+func zshCompletionScript() string {
+	var b strings.Builder
+	fmt.Fprintln(&b, "#compdef sideplane")
+	fmt.Fprintln(&b)
+	fmt.Fprintln(&b, "_sideplane() {")
+	fmt.Fprintln(&b, "\tlocal -a commands")
+	fmt.Fprintln(&b, "\tcommands=(")
+	for _, command := range completionCommands {
+		fmt.Fprintf(&b, "\t\t%q\n", command.Name+":"+command.Description)
+	}
+	fmt.Fprintln(&b, "\t)")
+	fmt.Fprintln(&b)
+	fmt.Fprintln(&b, "\tif (( CURRENT == 2 )); then")
+	fmt.Fprintln(&b, "\t\t_describe 'command' commands")
+	fmt.Fprintln(&b, "\t\treturn")
+	fmt.Fprintln(&b, "\tfi")
+	fmt.Fprintln(&b)
+	fmt.Fprintln(&b, "\tcase \"${words[2]}\" in")
+	for _, command := range completionCommands {
+		if len(command.Subcommands) == 0 {
+			continue
+		}
+		fmt.Fprintf(&b, "\t\t%s)\n", command.Name)
+		fmt.Fprintf(&b, "\t\t\t_values %q %s\n", command.Name+" command", strings.Join(quoteZshWords(command.Subcommands), " "))
+		fmt.Fprintln(&b, "\t\t\t;;")
+	}
+	fmt.Fprintln(&b, "\tesac")
+	fmt.Fprintln(&b, "}")
+	fmt.Fprintln(&b)
+	fmt.Fprintln(&b, "compdef _sideplane sideplane")
+	return b.String()
+}
+
+func quoteZshWords(words []string) []string {
+	quoted := make([]string, 0, len(words))
+	for _, word := range words {
+		quoted = append(quoted, strconv.Quote(word))
+	}
+	return quoted
 }
 
 func runRolloutCreate(args []string, stdout io.Writer, stderr io.Writer) int {

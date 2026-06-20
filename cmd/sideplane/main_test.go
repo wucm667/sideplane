@@ -336,6 +336,7 @@ func TestHelpListsCommands(t *testing.T) {
 		"node remove <id>",
 		"enrollment create",
 		"config-file path",
+		"completion <shell>",
 		"version",
 	} {
 		if !strings.Contains(output, want) {
@@ -366,6 +367,7 @@ func TestPerCommandHelpPrintsFlags(t *testing.T) {
 		{args: []string{"node", "label", "--help"}, wantServer: true},
 		{args: []string{"enrollment", "create", "--help"}, wantServer: true},
 		{args: []string{"config-file", "path", "--help"}},
+		{args: []string{"completion", "--help"}},
 	}
 	for _, tt := range tests {
 		t.Run(strings.Join(tt.args, " "), func(t *testing.T) {
@@ -381,6 +383,47 @@ func TestPerCommandHelpPrintsFlags(t *testing.T) {
 			}
 			if tt.wantServer && !strings.Contains(output, "--server") {
 				t.Fatalf("help output missing server flag:\n%s", output)
+			}
+		})
+	}
+}
+
+func TestCompletionScriptsContainTopLevelCommands(t *testing.T) {
+	for _, shell := range []string{"bash", "zsh"} {
+		t.Run(shell, func(t *testing.T) {
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+			code := run([]string{"completion", shell}, &stdout, &stderr)
+			if code != 0 {
+				t.Fatalf("run returned %d, stderr=%q", code, stderr.String())
+			}
+			output := stdout.String()
+			for _, want := range []string{
+				"fleet",
+				"probe",
+				"restart",
+				"rollback",
+				"backups",
+				"rollout",
+				"jobs",
+				"audit",
+				"token",
+				"config",
+				"node",
+				"enrollment",
+				"config-file",
+				"completion",
+				"version",
+			} {
+				if !strings.Contains(output, want) {
+					t.Fatalf("%s completion missing %q:\n%s", shell, want, output)
+				}
+			}
+			if shell == "bash" && !strings.Contains(output, "complete -F _sideplane_completion sideplane") {
+				t.Fatalf("bash completion missing registration:\n%s", output)
+			}
+			if shell == "zsh" && !strings.Contains(output, "compdef _sideplane sideplane") {
+				t.Fatalf("zsh completion missing registration:\n%s", output)
 			}
 		})
 	}

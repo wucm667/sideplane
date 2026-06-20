@@ -210,6 +210,9 @@ profile: default
 The CLI also reads `SIDEPLANE_SERVER_URL`, `SIDEPLANE_OPERATOR_TOKEN`,
 `SIDEPLANE_RUNTIME_TYPE`, and `SIDEPLANE_PROFILE`.
 
+Generate shell completion with `sideplane completion bash` or
+`sideplane completion zsh`.
+
 | Command | Purpose | Key flags |
 | --- | --- | --- |
 | `sideplane fleet status` | Show fleet node status. | `--server`, `--selector`, `--json` |
@@ -225,6 +228,7 @@ The CLI also reads `SIDEPLANE_SERVER_URL`, `SIDEPLANE_OPERATOR_TOKEN`,
 | `sideplane config get` | Show desired configuration. | `--server`, `--json` |
 | `sideplane config set` | Update global desired provider/model. | `--server`, `--operator-token`, `--provider`, `--model` |
 | `sideplane config-file path` | Print the resolved CLI config path. | none |
+| `sideplane completion bash/zsh` | Print a shell completion script. | none |
 | `sideplane node inspect <nodeId>` | Show detailed node state and runtime status. | `--server`, `--json` |
 | `sideplane node label <nodeId>` | Set or remove operator-managed labels. | `--server`, `--operator-token`, `--remove`, `--json` |
 | `sideplane node remove <nodeId>` | Remove a decommissioned node record. | `--server`, `--operator-token`, `--yes` |
