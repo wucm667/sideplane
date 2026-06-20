@@ -16,6 +16,12 @@ import (
 	"github.com/wucm667/sideplane/pkg/protocol"
 )
 
+const (
+	defaultJobResultBufferLimit = 100
+	defaultJobResultRetryBase   = time.Second
+	defaultJobResultRetryMax    = 30 * time.Second
+)
+
 // JobPollerConfig configures a sidecar job poller.
 type JobPollerConfig struct {
 	ServerURL          string
@@ -31,6 +37,9 @@ type JobPollerConfig struct {
 	Collector          adapters.RuntimeCollector
 	ConfigCollector    adapters.ConfigSnapshotCollector
 	Logger             *slog.Logger
+	// JobResultBufferLimit bounds the in-memory retry buffer for job results
+	// that could not be delivered. It does not persist across sidecar restarts.
+	JobResultBufferLimit int
 }
 
 // ServiceControllerResolver selects a runtime-specific service controller.
@@ -54,6 +63,17 @@ type JobPoller struct {
 	collector          adapters.RuntimeCollector
 	configCollector    adapters.ConfigSnapshotCollector
 	logger             *slog.Logger
+	resultBuffer       []bufferedJobResult
+	resultBufferLimit  int
+	resultRetryBase    time.Duration
+	resultRetryMax     time.Duration
+}
+
+type bufferedJobResult struct {
+	JobID       string
+	Result      protocol.JobResultRequest
+	Attempts    int
+	NextAttempt time.Time
 }
 
 // NewJobPoller creates a new job poller.
@@ -83,6 +103,10 @@ func NewJobPoller(cfg JobPollerConfig) (*JobPoller, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	resultBufferLimit := cfg.JobResultBufferLimit
+	if resultBufferLimit <= 0 {
+		resultBufferLimit = defaultJobResultBufferLimit
+	}
 	configCollector := cfg.ConfigCollector
 	if configCollector == nil {
 		if collector, ok := cfg.Collector.(adapters.ConfigSnapshotCollector); ok {
@@ -111,6 +135,9 @@ func NewJobPoller(cfg JobPollerConfig) (*JobPoller, error) {
 		collector:          cfg.Collector,
 		configCollector:    configCollector,
 		logger:             logger,
+		resultBufferLimit:  resultBufferLimit,
+		resultRetryBase:    defaultJobResultRetryBase,
+		resultRetryMax:     defaultJobResultRetryMax,
 	}, nil
 }
 
@@ -143,6 +170,8 @@ func (p *JobPoller) jobLogger() *slog.Logger {
 
 // PollAndExecute polls for the next job and executes it if found.
 func (p *JobPoller) PollAndExecute(ctx context.Context) error {
+	p.retryBufferedJobResults(ctx)
+
 	job, err := p.claimNextJob(ctx)
 	if err != nil {
 		return fmt.Errorf("claim next job: %w", err)
@@ -166,11 +195,77 @@ func (p *JobPoller) PollAndExecute(ctx context.Context) error {
 
 	// Submit the result
 	if err := p.submitJobResult(ctx, job.ID, result); err != nil {
-		return fmt.Errorf("submit job result: %w", err)
+		p.bufferJobResult(job.ID, result, err)
+		logger.Warn("job result delivery failed; buffered for retry", "job_id", job.ID, "node_id", p.nodeID, "type", job.Type, "status", result.Status, "error", err)
+		return nil
 	}
 
 	logger.Info("submitted job result", "job_id", job.ID, "node_id", p.nodeID, "type", job.Type, "status", result.Status)
 	return nil
+}
+
+func (p *JobPoller) retryBufferedJobResults(ctx context.Context) {
+	if p == nil || len(p.resultBuffer) == 0 {
+		return
+	}
+	now := time.Now().UTC()
+	remaining := p.resultBuffer[:0]
+	logger := p.jobLogger()
+	for _, item := range p.resultBuffer {
+		if !item.NextAttempt.IsZero() && now.Before(item.NextAttempt) {
+			remaining = append(remaining, item)
+			continue
+		}
+		if err := p.submitJobResult(ctx, item.JobID, item.Result); err != nil {
+			item.Attempts++
+			item.NextAttempt = now.Add(p.jobResultBackoff(item.Attempts))
+			remaining = append(remaining, item)
+			logger.Warn("buffered job result retry failed", "job_id", item.JobID, "node_id", p.nodeID, "status", item.Result.Status, "attempts", item.Attempts, "error", err)
+			continue
+		}
+		logger.Info("submitted buffered job result", "job_id", item.JobID, "node_id", p.nodeID, "status", item.Result.Status)
+	}
+	p.resultBuffer = remaining
+}
+
+func (p *JobPoller) bufferJobResult(jobID string, result protocol.JobResultRequest, deliveryErr error) {
+	if p.resultBufferLimit <= 0 {
+		p.resultBufferLimit = defaultJobResultBufferLimit
+	}
+	if len(p.resultBuffer) >= p.resultBufferLimit {
+		dropped := p.resultBuffer[0]
+		copy(p.resultBuffer, p.resultBuffer[1:])
+		p.resultBuffer = p.resultBuffer[:len(p.resultBuffer)-1]
+		p.jobLogger().Warn("job result retry buffer full; dropped oldest result", "job_id", dropped.JobID, "node_id", p.nodeID, "status", dropped.Result.Status)
+	}
+	now := time.Now().UTC()
+	p.resultBuffer = append(p.resultBuffer, bufferedJobResult{
+		JobID:       jobID,
+		Result:      result,
+		Attempts:    1,
+		NextAttempt: now.Add(p.jobResultBackoff(1)),
+	})
+	if deliveryErr != nil {
+		p.jobLogger().Warn("queued job result for retry", "job_id", jobID, "node_id", p.nodeID, "status", result.Status, "error", deliveryErr)
+	}
+}
+
+func (p *JobPoller) jobResultBackoff(attempts int) time.Duration {
+	base := p.resultRetryBase
+	if base <= 0 || attempts <= 0 {
+		return 0
+	}
+	delay := base
+	for i := 1; i < attempts; i++ {
+		if p.resultRetryMax > 0 && delay >= p.resultRetryMax/2 {
+			return p.resultRetryMax
+		}
+		delay *= 2
+	}
+	if p.resultRetryMax > 0 && delay > p.resultRetryMax {
+		return p.resultRetryMax
+	}
+	return delay
 }
 
 // claimNextJob polls for the next pending job.

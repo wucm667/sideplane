@@ -5,10 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -140,6 +143,131 @@ func TestJobPollerLogsJobLifecycleContext(t *testing.T) {
 	}
 	if strings.Contains(body, "resultJson") || strings.Contains(body, "payloadJson") {
 		t.Fatalf("sidecar logs exposed payload/result JSON:\n%s", body)
+	}
+}
+
+func TestJobPollerBuffersAndRetriesJobResultDelivery(t *testing.T) {
+	var claimed atomic.Bool
+	var resultAttempts atomic.Int32
+	var delivered protocol.JobResultRequest
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/sidecar/jobs/next":
+			if !claimed.CompareAndSwap(false, true) {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(protocol.Job{
+				ID:     "job-buffered",
+				NodeID: "node-buffered",
+				Type:   protocol.JobTypeDeepProbe,
+				Status: protocol.JobStatusClaimed,
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/sidecar/jobs/job-buffered/result":
+			attempt := resultAttempts.Add(1)
+			if err := json.NewDecoder(r.Body).Decode(&delivered); err != nil {
+				t.Fatalf("decode result attempt %d: %v", attempt, err)
+			}
+			if attempt == 1 {
+				http.Error(w, "temporary outage", http.StatusServiceUnavailable)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"status":"accepted"}`))
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer api.Close()
+
+	poller, err := NewJobPoller(JobPollerConfig{
+		ServerURL:            api.URL,
+		NodeID:               "node-buffered",
+		NodeCredential:       "credential",
+		Collector:            fakeRuntimeCollector{},
+		HTTPClient:           api.Client(),
+		JobResultBufferLimit: 2,
+		Logger:               slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatalf("new job poller: %v", err)
+	}
+	poller.resultRetryBase = 0
+
+	if err := poller.PollAndExecute(context.Background()); err != nil {
+		t.Fatalf("first poll and execute: %v", err)
+	}
+	if len(poller.resultBuffer) != 1 || poller.resultBuffer[0].JobID != "job-buffered" {
+		t.Fatalf("buffer after failed delivery = %#v, want job-buffered", poller.resultBuffer)
+	}
+
+	if err := poller.PollAndExecute(context.Background()); err != nil {
+		t.Fatalf("retry poll and execute: %v", err)
+	}
+	if len(poller.resultBuffer) != 0 {
+		t.Fatalf("buffer after recovery = %#v, want empty", poller.resultBuffer)
+	}
+	if resultAttempts.Load() != 2 {
+		t.Fatalf("result attempts = %d, want original plus retry", resultAttempts.Load())
+	}
+	if delivered.Status != protocol.JobStatusCompleted {
+		t.Fatalf("delivered status = %q, want completed", delivered.Status)
+	}
+}
+
+func TestJobPollerDropsOldestBufferedResultOnOverflow(t *testing.T) {
+	var mu sync.Mutex
+	claims := []protocol.Job{
+		{ID: "job-1", NodeID: "node-overflow", Type: protocol.JobTypeDeepProbe, Status: protocol.JobStatusClaimed},
+		{ID: "job-2", NodeID: "node-overflow", Type: protocol.JobTypeDeepProbe, Status: protocol.JobStatusClaimed},
+		{ID: "job-3", NodeID: "node-overflow", Type: protocol.JobTypeDeepProbe, Status: protocol.JobStatusClaimed},
+	}
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/sidecar/jobs/next":
+			mu.Lock()
+			defer mu.Unlock()
+			if len(claims) == 0 {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			job := claims[0]
+			claims = claims[1:]
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(job)
+		case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/sidecar/jobs/") && strings.HasSuffix(r.URL.Path, "/result"):
+			http.Error(w, "still unavailable", http.StatusServiceUnavailable)
+		default:
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer api.Close()
+
+	poller, err := NewJobPoller(JobPollerConfig{
+		ServerURL:            api.URL,
+		NodeID:               "node-overflow",
+		NodeCredential:       "credential",
+		Collector:            fakeRuntimeCollector{},
+		HTTPClient:           api.Client(),
+		JobResultBufferLimit: 2,
+		Logger:               slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatalf("new job poller: %v", err)
+	}
+	poller.resultRetryBase = 0
+
+	for i := 0; i < 3; i++ {
+		if err := poller.PollAndExecute(context.Background()); err != nil {
+			t.Fatalf("poll %d: %v", i+1, err)
+		}
+	}
+	if len(poller.resultBuffer) != 2 {
+		t.Fatalf("buffer len = %d, want 2: %#v", len(poller.resultBuffer), poller.resultBuffer)
+	}
+	if poller.resultBuffer[0].JobID != "job-2" || poller.resultBuffer[1].JobID != "job-3" {
+		t.Fatalf("buffered job IDs = %q,%q; want job-2,job-3 after oldest drop", poller.resultBuffer[0].JobID, poller.resultBuffer[1].JobID)
 	}
 }
 
