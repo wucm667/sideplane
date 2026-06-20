@@ -1,5 +1,6 @@
-import { useEffect } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { ActivityView } from './components/ActivityView.tsx'
+import { CommandPalette, type CommandItem } from './components/CommandPalette.tsx'
 import { EnrollmentView } from './components/EnrollmentView.tsx'
 import { FleetOverview } from './components/FleetOverview.tsx'
 import { NodeDetailView } from './components/NodeDetailView.tsx'
@@ -68,8 +69,32 @@ export default function FleetPage() {
     performRolloutAction,
   } = useFleetPageController()
 
+  const [paletteOpen, setPaletteOpen] = useState(false)
+
+  const commands = useMemo<CommandItem[]>(() => {
+    const items: CommandItem[] = [
+      { id: 'view:fleet', label: 'Go to Fleet', keywords: 'fleet nodes view', run: () => changeView('fleet') },
+      { id: 'view:activity', label: 'Go to Activity', keywords: 'activity audit view', run: () => changeView('activity') },
+      { id: 'view:enrollment', label: 'Go to Enrollment & Settings', keywords: 'enrollment tokens webhooks settings view', run: () => changeView('enrollment') },
+      { id: 'view:rollouts', label: 'Go to Rollouts', keywords: 'rollouts view', run: () => changeView('rollouts') },
+      { id: 'action:new-rollout', label: 'New rollout', keywords: 'create rollout deploy', run: () => changeView('rollouts') },
+    ]
+    for (const node of nodes) {
+      const labels = Object.entries(node.labels ?? {}).map(([key, value]) => `${key}=${value}`).join(' ')
+      const keywords = `${node.nodeId} ${node.hostname ?? ''} ${labels}`
+      items.push({ id: `open:${node.nodeId}`, label: `Open node ${node.nodeId}`, hint: node.hostname, keywords, run: () => openNode(node.nodeId) })
+      items.push({ id: `probe:${node.nodeId}`, label: `Deep probe ${node.nodeId}`, hint: node.hostname, keywords: `probe ${keywords}`, run: () => void createDeepProbe(node.nodeId) })
+    }
+    return items
+  }, [changeView, createDeepProbe, nodes, openNode])
+
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault()
+        setPaletteOpen((open) => !open)
+        return
+      }
       if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) return
       if (isEditableTarget(event.target)) return
 
@@ -211,6 +236,7 @@ export default function FleetPage() {
           )}
         </main>
       </div>
+      <CommandPalette open={paletteOpen} commands={commands} onClose={() => setPaletteOpen(false)} />
     </div>
   )
 }

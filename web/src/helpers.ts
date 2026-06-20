@@ -16,6 +16,27 @@ const THEME_STORAGE_KEY = 'sideplane.theme'
 export type View = 'fleet' | 'node' | 'rollouts' | 'activity' | 'enrollment'
 export type Theme = 'light' | 'dark'
 
+// fuzzyMatch reports whether every character of query appears in order within
+// text (case-insensitive subsequence match). An empty query always matches.
+export function fuzzyMatch(query: string, text: string): boolean {
+  const q = query.trim().toLowerCase()
+  if (q === '') return true
+  const t = text.toLowerCase()
+  let qi = 0
+  for (let ti = 0; ti < t.length && qi < q.length; ti++) {
+    if (t[ti] === q[qi]) qi++
+  }
+  return qi === q.length
+}
+
+// filterFuzzy returns items whose searchable text fuzzily matches query,
+// preserving input order.
+export function filterFuzzy<T>(items: T[], query: string, toText: (item: T) => string): T[] {
+  const q = query.trim()
+  if (q === '') return items
+  return items.filter((item) => fuzzyMatch(q, toText(item)))
+}
+
 export interface RollbackCandidate {
   ref: string
   sourceJobId: string

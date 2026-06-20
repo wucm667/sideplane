@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   compactHash,
+  filterFuzzy,
   fleetOverviewMetrics,
   formatRelativeTime,
+  fuzzyMatch,
   groupRows,
   jobBadgeClasses,
   latestConfigSnapshots,
@@ -166,6 +168,34 @@ describe('fleet helper summaries', () => {
       runningRollouts: 1,
       pausedRollouts: 1,
     })
+  })
+})
+
+describe('fuzzyMatch', () => {
+  it('matches an in-order subsequence case-insensitively', () => {
+    expect(fuzzyMatch('nb', 'node-b')).toBe(true)
+    expect(fuzzyMatch('NDB', 'node-b')).toBe(true)
+    expect(fuzzyMatch('canary', 'role=canary')).toBe(true)
+  })
+
+  it('rejects characters out of order or missing', () => {
+    expect(fuzzyMatch('bn', 'node-b')).toBe(false)
+    expect(fuzzyMatch('xyz', 'node-b')).toBe(false)
+  })
+
+  it('treats an empty query as a match', () => {
+    expect(fuzzyMatch('', 'anything')).toBe(true)
+    expect(fuzzyMatch('   ', 'anything')).toBe(true)
+  })
+
+  it('filterFuzzy keeps matching items in order', () => {
+    const items = [
+      { id: 'a', text: 'node-a host-a' },
+      { id: 'b', text: 'node-b host-b' },
+      { id: 'c', text: 'rollouts view' },
+    ]
+    expect(filterFuzzy(items, 'nodeb', (item) => item.text).map((item) => item.id)).toEqual(['b'])
+    expect(filterFuzzy(items, '', (item) => item.text)).toEqual(items)
   })
 })
 
