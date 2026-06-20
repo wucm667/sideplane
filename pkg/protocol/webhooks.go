@@ -2,6 +2,29 @@ package protocol
 
 import "time"
 
+// AlertWebhookKind controls the outbound payload shape for an alert webhook.
+type AlertWebhookKind string
+
+const (
+	// AlertWebhookKindGeneric delivers the current Sideplane JSON payload.
+	AlertWebhookKindGeneric AlertWebhookKind = "generic"
+	// AlertWebhookKindSlack delivers a Slack incoming-webhook-compatible body.
+	AlertWebhookKindSlack AlertWebhookKind = "slack"
+)
+
+// NormalizeAlertWebhookKind defaults an empty kind to generic and validates
+// known webhook channel kinds.
+func NormalizeAlertWebhookKind(kind AlertWebhookKind) (AlertWebhookKind, bool) {
+	switch kind {
+	case "", AlertWebhookKindGeneric:
+		return AlertWebhookKindGeneric, true
+	case AlertWebhookKindSlack:
+		return AlertWebhookKindSlack, true
+	default:
+		return "", false
+	}
+}
+
 // AlertEventType is one of the fixed events that can trigger an outbound alert
 // webhook delivery.
 type AlertEventType string
@@ -42,6 +65,7 @@ func ValidAlertEventType(event AlertEventType) bool {
 // reports whether one is set.
 type AlertWebhook struct {
 	ID        string           `json:"id"`
+	Kind      AlertWebhookKind `json:"kind"`
 	URL       string           `json:"url"`
 	Events    []AlertEventType `json:"events"`
 	HasSecret bool             `json:"hasSecret"`
@@ -55,6 +79,7 @@ type AlertWebhook struct {
 // secret is set, deliveries carry an HMAC-SHA256 signature header.
 type CreateAlertWebhookRequest struct {
 	URL    string           `json:"url"`
+	Kind   AlertWebhookKind `json:"kind,omitempty"`
 	Events []AlertEventType `json:"events"`
 	Sign   bool             `json:"sign,omitempty"`
 	Secret string           `json:"secret,omitempty"`

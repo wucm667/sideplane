@@ -502,15 +502,63 @@ func TestSQLiteNodeStoreAlertWebhookPersistsAcrossReopen(t *testing.T) {
 	if len(listed) != 1 || listed[0].ID != created.ID || !listed[0].HasSecret {
 		t.Fatalf("listed webhooks = %+v, want persisted metadata", listed)
 	}
+	if listed[0].Kind != protocol.AlertWebhookKindGeneric {
+		t.Fatalf("listed kind = %q, want generic default", listed[0].Kind)
+	}
 	targets, err := second.ListAlertWebhookTargets(ctx, protocol.AlertEventRolloutPaused)
 	if err != nil {
 		t.Fatalf("list targets: %v", err)
 	}
-	if len(targets) != 1 || targets[0].Secret != "topsecret" {
+	if len(targets) != 1 || targets[0].Kind != protocol.AlertWebhookKindGeneric || targets[0].Secret != "topsecret" {
 		t.Fatalf("targets = %+v, want persisted secret for signing", targets)
 	}
 	if none, err := second.ListAlertWebhookTargets(ctx, protocol.AlertEventNodeDrift); err != nil || len(none) != 0 {
 		t.Fatalf("drift targets = %+v err=%v, want none", none, err)
+	}
+}
+
+func TestSQLiteNodeStoreAlertWebhookKindPersists(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "sideplane.db")
+	first, err := OpenSQLiteNodeStore(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	now := time.Date(2026, 6, 18, 12, 0, 0, 0, time.UTC)
+	created, err := first.CreateAlertWebhook(ctx, protocol.CreateAlertWebhookRequest{
+		Kind:   protocol.AlertWebhookKindSlack,
+		URL:    "https://hooks.example.com/slack",
+		Events: []protocol.AlertEventType{protocol.AlertEventNodeDrift},
+	}, now)
+	if err != nil {
+		t.Fatalf("create slack webhook: %v", err)
+	}
+	if created.Kind != protocol.AlertWebhookKindSlack {
+		t.Fatalf("created kind = %q, want slack", created.Kind)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatalf("close first store: %v", err)
+	}
+
+	second, err := OpenSQLiteNodeStore(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("reopen sqlite store: %v", err)
+	}
+	defer second.Close()
+
+	listed, err := second.ListAlertWebhooks(ctx)
+	if err != nil {
+		t.Fatalf("list webhooks: %v", err)
+	}
+	if len(listed) != 1 || listed[0].ID != created.ID || listed[0].Kind != protocol.AlertWebhookKindSlack {
+		t.Fatalf("listed webhooks = %+v, want slack metadata", listed)
+	}
+	targets, err := second.ListAlertWebhookTargets(ctx, protocol.AlertEventNodeDrift)
+	if err != nil {
+		t.Fatalf("list targets: %v", err)
+	}
+	if len(targets) != 1 || targets[0].Kind != protocol.AlertWebhookKindSlack || targets[0].Secret != "" {
+		t.Fatalf("targets = %+v, want unsigned slack target", targets)
 	}
 }
 

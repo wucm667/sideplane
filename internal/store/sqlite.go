@@ -1073,13 +1073,14 @@ func (s *SQLiteNodeStore) CreateAlertWebhook(ctx context.Context, req protocol.C
 	}
 	createdAt := now.UTC()
 	if _, err := s.db.ExecContext(ctx, `
-INSERT INTO alert_webhooks (id, url, events_json, secret, disabled, created_at)
-VALUES (?, ?, ?, ?, 0, ?)
-`, id, req.URL, string(eventsJSON), req.Secret, formatDBTime(createdAt)); err != nil {
+INSERT INTO alert_webhooks (id, kind, url, events_json, secret, disabled, created_at)
+VALUES (?, ?, ?, ?, ?, 0, ?)
+`, id, string(req.Kind), req.URL, string(eventsJSON), req.Secret, formatDBTime(createdAt)); err != nil {
 		return protocol.AlertWebhook{}, fmt.Errorf("insert alert webhook: %w", err)
 	}
 	return protocol.AlertWebhook{
 		ID:        id,
+		Kind:      req.Kind,
 		URL:       req.URL,
 		Events:    append([]protocol.AlertEventType(nil), req.Events...),
 		HasSecret: req.Secret != "",
@@ -1094,7 +1095,7 @@ func (s *SQLiteNodeStore) ListAlertWebhooks(ctx context.Context) ([]protocol.Ale
 		return nil, errors.New("sqlite node store is closed")
 	}
 	rows, err := s.db.QueryContext(ctx, `
-SELECT id, url, events_json, secret, disabled, created_at
+SELECT id, kind, url, events_json, secret, disabled, created_at
 FROM alert_webhooks
 ORDER BY created_at DESC, id DESC
 `)
@@ -1145,7 +1146,7 @@ func (s *SQLiteNodeStore) ListAlertWebhookTargets(ctx context.Context, event pro
 		return nil, errors.New("sqlite node store is closed")
 	}
 	rows, err := s.db.QueryContext(ctx, `
-SELECT id, url, events_json, secret, disabled, created_at
+SELECT id, kind, url, events_json, secret, disabled, created_at
 FROM alert_webhooks
 WHERE disabled = 0
 ORDER BY id ASC
@@ -1163,7 +1164,7 @@ ORDER BY id ASC
 		if !slices.Contains(webhook.Events, event) {
 			continue
 		}
-		targets = append(targets, AlertWebhookTarget{ID: webhook.ID, URL: webhook.URL, Secret: secret})
+		targets = append(targets, AlertWebhookTarget{ID: webhook.ID, Kind: webhook.Kind, URL: webhook.URL, Secret: secret})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate alert webhook targets: %w", err)
@@ -1173,10 +1174,14 @@ ORDER BY id ASC
 
 func scanSQLiteAlertWebhook(scanner sqliteScanner) (protocol.AlertWebhook, string, error) {
 	var webhook protocol.AlertWebhook
-	var eventsJSON, secret, createdAtText string
+	var kindText, eventsJSON, secret, createdAtText string
 	var disabled int
-	if err := scanner.Scan(&webhook.ID, &webhook.URL, &eventsJSON, &secret, &disabled, &createdAtText); err != nil {
+	if err := scanner.Scan(&webhook.ID, &kindText, &webhook.URL, &eventsJSON, &secret, &disabled, &createdAtText); err != nil {
 		return protocol.AlertWebhook{}, "", err
+	}
+	kind, ok := protocol.NormalizeAlertWebhookKind(protocol.AlertWebhookKind(kindText))
+	if !ok {
+		return protocol.AlertWebhook{}, "", fmt.Errorf("decode webhook kind %q", kindText)
 	}
 	if err := json.Unmarshal([]byte(eventsJSON), &webhook.Events); err != nil {
 		return protocol.AlertWebhook{}, "", fmt.Errorf("decode webhook events: %w", err)
@@ -1185,6 +1190,7 @@ func scanSQLiteAlertWebhook(scanner sqliteScanner) (protocol.AlertWebhook, strin
 	if err != nil {
 		return protocol.AlertWebhook{}, "", fmt.Errorf("parse webhook created_at: %w", err)
 	}
+	webhook.Kind = kind
 	webhook.CreatedAt = createdAt
 	webhook.Disabled = disabled != 0
 	webhook.HasSecret = secret != ""

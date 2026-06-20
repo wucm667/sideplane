@@ -292,6 +292,13 @@ ON heartbeats(node_id, observed_at DESC)`,
 			`ALTER TABLE audit_events ADD COLUMN actor_name TEXT NOT NULL DEFAULT ''`,
 		},
 	},
+	{
+		version: 18,
+		name:    "add alert webhook kind",
+		statements: []string{
+			`ALTER TABLE alert_webhooks ADD COLUMN kind TEXT NOT NULL DEFAULT 'generic'`,
+		},
+	},
 }
 
 // LatestSQLiteSchemaVersion returns the newest migration version compiled into

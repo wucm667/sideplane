@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/wucm667/sideplane/internal/store"
@@ -46,6 +47,22 @@ type alertDelivery struct {
 	webhookID string
 	target    store.AlertWebhookTarget
 	payload   protocol.AlertWebhookPayload
+}
+
+type slackAlertWebhookPayload struct {
+	Text   string            `json:"text"`
+	Blocks []slackAlertBlock `json:"blocks,omitempty"`
+}
+
+type slackAlertBlock struct {
+	Type   string           `json:"type"`
+	Text   *slackAlertText  `json:"text,omitempty"`
+	Fields []slackAlertText `json:"fields,omitempty"`
+}
+
+type slackAlertText struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
 }
 
 // alertDispatcher delivers webhook payloads for fleet alert events. It owns a
@@ -202,16 +219,10 @@ func (d *alertDispatcher) enqueue(delivery alertDelivery) {
 
 // deliver POSTs the payload with bounded retries on transient failures.
 func (d *alertDispatcher) deliver(ctx context.Context, delivery alertDelivery) {
-	body, err := json.Marshal(delivery.payload)
+	body, signature, err := alertDeliveryRequest(delivery)
 	if err != nil {
 		d.metrics.IncWebhookDelivery("failed")
 		return
-	}
-	signature := ""
-	if delivery.target.Secret != "" {
-		mac := hmac.New(sha256.New, []byte(delivery.target.Secret))
-		mac.Write(body)
-		signature = "sha256=" + hex.EncodeToString(mac.Sum(nil))
 	}
 	for attempt := 1; attempt <= d.maxAttempts; attempt++ {
 		if ctx.Err() != nil {
@@ -237,6 +248,74 @@ func (d *alertDispatcher) deliver(ctx context.Context, delivery alertDelivery) {
 	}
 	d.metrics.IncWebhookDelivery("dropped")
 	d.logger.Warn("alert webhook dropped after retries", "webhook", delivery.webhookID, "event", delivery.payload.Event, "attempts", d.maxAttempts)
+}
+
+func alertDeliveryRequest(delivery alertDelivery) ([]byte, string, error) {
+	kind, ok := protocol.NormalizeAlertWebhookKind(delivery.target.Kind)
+	if !ok {
+		kind = protocol.AlertWebhookKindGeneric
+	}
+	if kind == protocol.AlertWebhookKindSlack {
+		body, err := json.Marshal(slackAlertPayload(delivery.payload))
+		return body, "", err
+	}
+	body, err := json.Marshal(delivery.payload)
+	if err != nil {
+		return nil, "", err
+	}
+	if delivery.target.Secret == "" {
+		return body, "", nil
+	}
+	mac := hmac.New(sha256.New, []byte(delivery.target.Secret))
+	mac.Write(body)
+	return body, "sha256=" + hex.EncodeToString(mac.Sum(nil)), nil
+}
+
+func slackAlertPayload(payload protocol.AlertWebhookPayload) slackAlertWebhookPayload {
+	text := slackAlertSummary(payload)
+	fields := []slackAlertText{
+		{Type: "mrkdwn", Text: "*Event*\n" + string(payload.Event)},
+	}
+	if payload.NodeID != "" {
+		fields = append(fields, slackAlertText{Type: "mrkdwn", Text: "*Node*\n" + payload.NodeID})
+	}
+	if payload.RolloutID != "" {
+		fields = append(fields, slackAlertText{Type: "mrkdwn", Text: "*Rollout*\n" + payload.RolloutID})
+	}
+	if payload.Actor != "" {
+		fields = append(fields, slackAlertText{Type: "mrkdwn", Text: "*Actor*\n" + payload.Actor})
+	}
+	if !payload.OccurredAt.IsZero() {
+		fields = append(fields, slackAlertText{Type: "mrkdwn", Text: "*Occurred*\n" + payload.OccurredAt.UTC().Format(time.RFC3339)})
+	}
+	return slackAlertWebhookPayload{
+		Text: text,
+		Blocks: []slackAlertBlock{
+			{
+				Type: "section",
+				Text: &slackAlertText{Type: "mrkdwn", Text: "*Sideplane alert*\n" + text},
+			},
+			{
+				Type:   "section",
+				Fields: fields,
+			},
+		},
+	}
+}
+
+func slackAlertSummary(payload protocol.AlertWebhookPayload) string {
+	detail := strings.TrimSpace(payload.Detail)
+	if detail == "" {
+		detail = string(payload.Event)
+	}
+	switch {
+	case payload.NodeID != "":
+		return detail + " on " + payload.NodeID
+	case payload.RolloutID != "":
+		return detail + " for " + payload.RolloutID
+	default:
+		return detail
+	}
 }
 
 // attempt performs a single delivery, reporting success and whether a failure is

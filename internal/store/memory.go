@@ -538,6 +538,7 @@ func (s *MemoryNodeStore) CreateAlertWebhook(_ context.Context, req protocol.Cre
 	}
 	metadata := protocol.AlertWebhook{
 		ID:        id,
+		Kind:      req.Kind,
 		URL:       req.URL,
 		Events:    append([]protocol.AlertEventType(nil), req.Events...),
 		HasSecret: req.Secret != "",
@@ -598,7 +599,7 @@ func (s *MemoryNodeStore) ListAlertWebhookTargets(_ context.Context, event proto
 		if !slices.Contains(webhook.Metadata.Events, event) {
 			continue
 		}
-		targets = append(targets, AlertWebhookTarget{ID: webhook.Metadata.ID, URL: webhook.Metadata.URL, Secret: webhook.Secret})
+		targets = append(targets, AlertWebhookTarget{ID: webhook.Metadata.ID, Kind: webhook.Metadata.Kind, URL: webhook.Metadata.URL, Secret: webhook.Secret})
 	}
 	sort.Slice(targets, func(i, j int) bool { return targets[i].ID < targets[j].ID })
 	return targets, nil

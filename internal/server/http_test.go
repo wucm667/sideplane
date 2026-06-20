@@ -1407,6 +1407,9 @@ func TestAlertWebhookCRUDEndpoints(t *testing.T) {
 	if created.Webhook.ID == "" || !created.Webhook.HasSecret {
 		t.Fatalf("created webhook = %+v, want id and hasSecret", created.Webhook)
 	}
+	if created.Webhook.Kind != protocol.AlertWebhookKindGeneric {
+		t.Fatalf("created webhook kind = %q, want generic default", created.Webhook.Kind)
+	}
 	if created.Secret == "" {
 		t.Fatalf("create response missing one-time signing secret")
 	}

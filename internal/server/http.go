@@ -734,7 +734,7 @@ func (h *handler) createAlertWebhook(w http.ResponseWriter, r *http.Request) {
 	h.audit(r.Context(), protocol.AuditEvent{
 		Actor:     audit.ActorOperator,
 		Action:    audit.ActionAlertWebhookCreate,
-		Detail:    fmt.Sprintf("alert webhook created id=%s url=%s events=%d signed=%t", webhook.ID, webhook.URL, len(webhook.Events), webhook.HasSecret),
+		Detail:    fmt.Sprintf("alert webhook created id=%s kind=%s url=%s events=%d signed=%t", webhook.ID, webhook.Kind, webhook.URL, len(webhook.Events), webhook.HasSecret),
 		CreatedAt: now,
 	})
 	// The signing secret is returned exactly once, here at creation time.

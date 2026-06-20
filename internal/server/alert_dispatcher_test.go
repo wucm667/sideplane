@@ -68,6 +68,82 @@ func TestAlertDispatcherSignsAndDeliversPayload(t *testing.T) {
 	assertMetricsContains(t, metrics, `sideplane_webhook_deliveries_total{status="succeeded"} 1`)
 }
 
+func TestAlertDispatcherFormatsSlackAndGenericPayloads(t *testing.T) {
+	type received struct {
+		signature string
+		body      []byte
+	}
+	newReceiver := func(ch chan received) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			body, _ := io.ReadAll(r.Body)
+			ch <- received{signature: r.Header.Get(AlertSignatureHeader), body: body}
+			w.WriteHeader(http.StatusOK)
+		}))
+	}
+	genericGot := make(chan received, 1)
+	slackGot := make(chan received, 1)
+	genericReceiver := newReceiver(genericGot)
+	defer genericReceiver.Close()
+	slackReceiver := newReceiver(slackGot)
+	defer slackReceiver.Close()
+
+	payload := protocol.AlertWebhookPayload{
+		Event:      protocol.AlertEventNodeOffline,
+		NodeID:     "node-a",
+		Detail:     "node offline",
+		OccurredAt: time.Date(2026, 6, 18, 12, 0, 0, 0, time.UTC),
+	}
+	d := newAlertDispatcher(AlertDispatcherConfig{Store: store.NewMemoryNodeStore(), Client: genericReceiver.Client(), Backoff: time.Millisecond, MaxAttempts: 1})
+	d.deliver(context.Background(), alertDelivery{
+		webhookID: "whk_generic",
+		target:    store.AlertWebhookTarget{Kind: protocol.AlertWebhookKindGeneric, URL: genericReceiver.URL, Secret: "generic-secret"},
+		payload:   payload,
+	})
+	d.deliver(context.Background(), alertDelivery{
+		webhookID: "whk_slack",
+		target:    store.AlertWebhookTarget{Kind: protocol.AlertWebhookKindSlack, URL: slackReceiver.URL, Secret: "ignored-secret"},
+		payload:   payload,
+	})
+
+	select {
+	case r := <-genericGot:
+		if r.signature != AlertSignature("generic-secret", r.body) {
+			t.Fatalf("generic signature = %q, want valid signature", r.signature)
+		}
+		var genericPayload protocol.AlertWebhookPayload
+		if err := json.Unmarshal(r.body, &genericPayload); err != nil {
+			t.Fatalf("decode generic payload: %v", err)
+		}
+		if genericPayload.Event != protocol.AlertEventNodeOffline || genericPayload.NodeID != "node-a" {
+			t.Fatalf("generic payload = %+v, want node offline", genericPayload)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("generic receiver did not get delivery")
+	}
+
+	select {
+	case r := <-slackGot:
+		if r.signature != "" {
+			t.Fatalf("slack signature = %q, want no signature", r.signature)
+		}
+		var slackPayload struct {
+			Text   string `json:"text"`
+			Blocks []any  `json:"blocks"`
+		}
+		if err := json.Unmarshal(r.body, &slackPayload); err != nil {
+			t.Fatalf("decode slack payload: %v", err)
+		}
+		if !strings.Contains(slackPayload.Text, "node offline") || !strings.Contains(slackPayload.Text, "node-a") {
+			t.Fatalf("slack text = %q, want alert summary with node", slackPayload.Text)
+		}
+		if len(slackPayload.Blocks) == 0 {
+			t.Fatalf("slack payload missing blocks: %s", string(r.body))
+		}
+	case <-time.After(time.Second):
+		t.Fatal("slack receiver did not get delivery")
+	}
+}
+
 func TestAlertDispatcherRetriesOn5xxThenSucceeds(t *testing.T) {
 	var calls atomic.Int32
 	receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -398,6 +398,9 @@ func TestMemoryNodeStoreAlertWebhookLifecycle(t *testing.T) {
 	if created.ID == "" || !created.HasSecret || created.Disabled {
 		t.Fatalf("created webhook = %+v, want id, hasSecret, enabled", created)
 	}
+	if created.Kind != protocol.AlertWebhookKindGeneric {
+		t.Fatalf("created kind = %q, want generic default", created.Kind)
+	}
 	if len(created.Events) != 2 {
 		t.Fatalf("created events = %+v, want deduplicated to 2", created.Events)
 	}
@@ -432,6 +435,32 @@ func TestMemoryNodeStoreAlertWebhookLifecycle(t *testing.T) {
 	}
 	if err := store.DeleteAlertWebhook(ctx, created.ID); !errors.Is(err, ErrAlertWebhookNotFound) {
 		t.Fatalf("double delete err = %v, want ErrAlertWebhookNotFound", err)
+	}
+}
+
+func TestMemoryNodeStoreAlertWebhookKinds(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryNodeStore()
+	now := time.Date(2026, 6, 18, 12, 0, 0, 0, time.UTC)
+
+	slack, err := store.CreateAlertWebhook(ctx, protocol.CreateAlertWebhookRequest{
+		Kind:   protocol.AlertWebhookKindSlack,
+		URL:    "https://hooks.example.com/slack",
+		Events: []protocol.AlertEventType{protocol.AlertEventNodeDrift},
+	}, now)
+	if err != nil {
+		t.Fatalf("create slack webhook: %v", err)
+	}
+	if slack.Kind != protocol.AlertWebhookKindSlack || slack.HasSecret {
+		t.Fatalf("slack webhook = %+v, want slack kind without secret", slack)
+	}
+
+	targets, err := store.ListAlertWebhookTargets(ctx, protocol.AlertEventNodeDrift)
+	if err != nil {
+		t.Fatalf("list targets: %v", err)
+	}
+	if len(targets) != 1 || targets[0].Kind != protocol.AlertWebhookKindSlack || targets[0].Secret != "" {
+		t.Fatalf("targets = %+v, want unsigned slack target", targets)
 	}
 }
 
@@ -529,6 +558,8 @@ func TestMemoryNodeStoreAlertWebhookValidation(t *testing.T) {
 		{name: "bad scheme", req: protocol.CreateAlertWebhookRequest{URL: "ftp://x.example.com", Events: []protocol.AlertEventType{protocol.AlertEventNodeOffline}}},
 		{name: "no events", req: protocol.CreateAlertWebhookRequest{URL: "https://x.example.com"}},
 		{name: "unknown event", req: protocol.CreateAlertWebhookRequest{URL: "https://x.example.com", Events: []protocol.AlertEventType{"node.exploded"}}},
+		{name: "unknown kind", req: protocol.CreateAlertWebhookRequest{Kind: protocol.AlertWebhookKind("pagerduty"), URL: "https://x.example.com", Events: []protocol.AlertEventType{protocol.AlertEventNodeOffline}}},
+		{name: "signed slack", req: protocol.CreateAlertWebhookRequest{Kind: protocol.AlertWebhookKindSlack, URL: "https://x.example.com", Events: []protocol.AlertEventType{protocol.AlertEventNodeOffline}, Sign: true, Secret: "secret"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

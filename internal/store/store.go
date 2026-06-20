@@ -79,6 +79,7 @@ const (
 // exposed through the operator API.
 type AlertWebhookTarget struct {
 	ID     string
+	Kind   protocol.AlertWebhookKind
 	URL    string
 	Secret string
 }
@@ -101,9 +102,17 @@ func ValidateAlertWebhookRequest(req protocol.CreateAlertWebhookRequest) (protoc
 		return req, err
 	}
 	req.Events = events
+	kind, ok := protocol.NormalizeAlertWebhookKind(req.Kind)
+	if !ok {
+		return req, fmt.Errorf("unknown webhook kind %q", req.Kind)
+	}
+	req.Kind = kind
 	req.Secret = strings.TrimSpace(req.Secret)
 	if len(req.Secret) > MaxAlertWebhookSecretLength {
 		return req, errors.New("webhook secret is too long")
+	}
+	if req.Kind == protocol.AlertWebhookKindSlack && (req.Sign || req.Secret != "") {
+		return req, errors.New("webhook signing is only supported for generic webhooks")
 	}
 	return req, nil
 }
