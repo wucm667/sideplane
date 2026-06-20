@@ -1,0 +1,47 @@
+groups:
+  - name: sideplane.release-hardening
+    rules:
+      - alert: SideplaneHighOfflineNodeRatio
+        expr: sum(sideplane_fleet_nodes{state="offline"}) / clamp_min(sum(sideplane_fleet_nodes), 1) > 0.25
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Sideplane has a high offline node ratio
+          description: More than 25% of known Sideplane nodes have been offline for 10 minutes.
+
+      - alert: SideplaneDriftedNodes
+        expr: sideplane_fleet_nodes_drifted > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Sideplane nodes are reporting configuration drift
+          description: At least one node has actual provider/model configuration that differs from desired state.
+
+      - alert: SideplaneDegradedRuntimes
+        expr: sum(sideplane_runtime_health{state="degraded"}) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Sideplane runtimes are degraded
+          description: One or more runtime health checks are degraded.
+
+      - alert: SideplaneRolloutPaused
+        expr: sideplane_rollouts{state="paused"} > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: A Sideplane rollout is paused
+          description: At least one rollout has paused and needs operator review.
+
+      - alert: SideplaneWebhookDeliveryFailures
+        expr: sum(increase(sideplane_webhook_deliveries_total{status=~"failed|dropped"}[15m])) > 0
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: Sideplane alert webhook deliveries are failing
+          description: One or more alert webhook deliveries failed or were dropped in the last 15 minutes.

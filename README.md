@@ -74,7 +74,10 @@ Prometheus scrapes `server:8080/metrics` and listens on
 pre-provisioned Sideplane dashboard; set `GRAFANA_ADMIN_PASSWORD` before
 starting the override if the default local password is not appropriate. The
 dashboard includes fleet freshness, drift, heartbeat/job rates, active rollout
-state, rollout outcomes, and alert webhook delivery outcomes.
+state, degraded runtime health, rollout outcomes, and alert webhook delivery
+outcomes. Example Prometheus alert rules live at
+`deployments/observability/alert-rules.yml`; copy or mount them into your
+Prometheus deployment when you are ready to page on Sideplane signals.
 
 ### Local Development
 
@@ -447,6 +450,12 @@ metrics, and alert webhook delivery outcomes. The optional Docker Compose
 observability override adds Prometheus and Grafana with a pre-provisioned
 Sideplane dashboard. The Web Fleet view mirrors the most important overview
 numbers for operators who are not watching Prometheus directly.
+
+Example alert rules are provided in
+`deployments/observability/alert-rules.yml` for offline-node ratio,
+configuration drift, degraded runtimes, paused rollouts, and webhook delivery
+failures. They are examples for self-hosted deployments; review thresholds and
+notification routing before enabling them.
 
 For systemd deployment files, see `deployments/systemd/`. The root
 `install.sh` creates the `sideplane` user/group, `/etc/sideplane`,

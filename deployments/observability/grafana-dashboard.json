@@ -637,6 +637,68 @@
       ],
       "title": "Webhook Deliveries (1h)",
       "type": "bargauge"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "sideplane-prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 0,
+        "y": 24
+      },
+      "id": 11,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "11.3.0",
+      "targets": [
+        {
+          "expr": "sum(sideplane_runtime_health{state=\"degraded\"})",
+          "legendFormat": "degraded",
+          "refId": "A"
+        }
+      ],
+      "title": "Degraded Runtime Health",
+      "type": "stat"
     }
   ],
   "preload": false,
@@ -657,6 +719,6 @@
   "timezone": "browser",
   "title": "Sideplane Fleet Overview",
   "uid": "sideplane-fleet-overview",
-  "version": 1,
+  "version": 2,
   "weekStart": ""
 }
