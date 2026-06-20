@@ -1828,6 +1828,57 @@ LIMIT ? OFFSET ?
 	}, nil
 }
 
+// ListActiveRolloutConflicts finds non-terminal rollouts that already target any node.
+func (s *SQLiteNodeStore) ListActiveRolloutConflicts(ctx context.Context, nodeIDs []string) ([]RolloutNodeConflict, error) {
+	if s == nil || s.db == nil {
+		return nil, errors.New("sqlite node store is closed")
+	}
+	targets := rolloutConflictTargetSet(nodeIDs)
+	if len(targets) == 0 {
+		return nil, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT rollout_json
+FROM rollouts
+WHERE state NOT IN (?, ?, ?)
+ORDER BY created_at DESC, id DESC
+`, string(protocol.RolloutStateCompleted), string(protocol.RolloutStateAborted), string(protocol.RolloutStateFailed))
+	if err != nil {
+		return nil, fmt.Errorf("query active rollout conflicts: %w", err)
+	}
+	defer rows.Close()
+
+	conflicts := []RolloutNodeConflict{}
+	for rows.Next() {
+		var payload string
+		if err := rows.Scan(&payload); err != nil {
+			return nil, fmt.Errorf("scan active rollout: %w", err)
+		}
+		rollout, err := parseSQLiteRollout(payload)
+		if err != nil {
+			return nil, err
+		}
+		if rolloutStateTerminal(rollout.State) {
+			continue
+		}
+		for _, nodeID := range rollout.Spec.NodeIDs {
+			if _, ok := targets[nodeID]; !ok {
+				continue
+			}
+			conflicts = append(conflicts, RolloutNodeConflict{
+				NodeID:    nodeID,
+				RolloutID: rollout.ID,
+				State:     rollout.State,
+			})
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate active rollout conflicts: %w", err)
+	}
+	sortRolloutNodeConflicts(conflicts)
+	return conflicts, nil
+}
+
 // UpdateRollout replaces a rollout snapshot.
 func (s *SQLiteNodeStore) UpdateRollout(ctx context.Context, rollout protocol.Rollout) error {
 	if s == nil || s.db == nil {

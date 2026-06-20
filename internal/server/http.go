@@ -1040,6 +1040,17 @@ func (h *handler) createRollout(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusBadRequest, "rollout target set is empty")
 		return
 	}
+	if !spec.AllowOverlap {
+		conflicts, err := h.store.ListActiveRolloutConflicts(r.Context(), nodeIDs)
+		if err != nil {
+			writeAPIError(w, http.StatusInternalServerError, "check rollout overlap")
+			return
+		}
+		if len(conflicts) > 0 {
+			writeAPIError(w, http.StatusConflict, rolloutOverlapConflictMessage(conflicts))
+			return
+		}
+	}
 	spec.NodeIDs = nodeIDs
 	spec.Selector = cloneStringMap(spec.Selector)
 	now := time.Now().UTC()
@@ -1066,6 +1077,18 @@ func (h *handler) createRollout(w http.ResponseWriter, r *http.Request) {
 	})
 	publishRolloutEventWithActor(h.events, created, h.operatorActorName(r.Context()))
 	writeJSON(w, http.StatusCreated, protocol.CreateRolloutResponse{Rollout: created})
+}
+
+func rolloutOverlapConflictMessage(conflicts []store.RolloutNodeConflict) string {
+	parts := make([]string, 0, len(conflicts))
+	for _, conflict := range conflicts {
+		state := strings.TrimSpace(string(conflict.State))
+		if state == "" {
+			state = "unknown"
+		}
+		parts = append(parts, fmt.Sprintf("%s in rollout %s (%s)", conflict.NodeID, conflict.RolloutID, state))
+	}
+	return "rollout overlaps active target(s): " + strings.Join(parts, "; ") + "; set allowOverlap=true to override"
 }
 
 func (h *handler) rolloutTemplates(w http.ResponseWriter, r *http.Request) {

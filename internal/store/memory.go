@@ -1011,6 +1011,35 @@ func (s *MemoryNodeStore) ListRollouts(_ context.Context, filter RolloutFilter) 
 	}, nil
 }
 
+// ListActiveRolloutConflicts finds non-terminal rollouts that already target any node.
+func (s *MemoryNodeStore) ListActiveRolloutConflicts(_ context.Context, nodeIDs []string) ([]RolloutNodeConflict, error) {
+	targets := rolloutConflictTargetSet(nodeIDs)
+	if len(targets) == 0 {
+		return nil, nil
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	conflicts := []RolloutNodeConflict{}
+	for _, rollout := range s.rollouts {
+		if rolloutStateTerminal(rollout.State) {
+			continue
+		}
+		for _, nodeID := range rollout.Spec.NodeIDs {
+			if _, ok := targets[nodeID]; !ok {
+				continue
+			}
+			conflicts = append(conflicts, RolloutNodeConflict{
+				NodeID:    nodeID,
+				RolloutID: rollout.ID,
+				State:     rollout.State,
+			})
+		}
+	}
+	sortRolloutNodeConflicts(conflicts)
+	return conflicts, nil
+}
+
 // UpdateRollout replaces a rollout snapshot.
 func (s *MemoryNodeStore) UpdateRollout(_ context.Context, rollout protocol.Rollout) error {
 	rollout.ID = strings.TrimSpace(rollout.ID)
@@ -1329,6 +1358,26 @@ func cloneRollout(rollout protocol.Rollout) (protocol.Rollout, error) {
 
 func rolloutStateTerminal(state protocol.RolloutState) bool {
 	return state == protocol.RolloutStateCompleted || state == protocol.RolloutStateAborted || state == protocol.RolloutStateFailed
+}
+
+func rolloutConflictTargetSet(nodeIDs []string) map[string]struct{} {
+	targets := make(map[string]struct{}, len(nodeIDs))
+	for _, nodeID := range nodeIDs {
+		nodeID = strings.TrimSpace(nodeID)
+		if nodeID != "" {
+			targets[nodeID] = struct{}{}
+		}
+	}
+	return targets
+}
+
+func sortRolloutNodeConflicts(conflicts []RolloutNodeConflict) {
+	slices.SortFunc(conflicts, func(a, b RolloutNodeConflict) int {
+		if a.NodeID != b.NodeID {
+			return strings.Compare(a.NodeID, b.NodeID)
+		}
+		return strings.Compare(a.RolloutID, b.RolloutID)
+	})
 }
 
 func cloneRuntimeStatuses(runtimes []protocol.RuntimeStatus) []protocol.RuntimeStatus {

@@ -386,8 +386,16 @@ type RolloutStore interface {
 	CreateRollout(ctx context.Context, rollout protocol.Rollout) (protocol.Rollout, error)
 	GetRollout(ctx context.Context, rolloutID string) (*protocol.Rollout, error)
 	ListRollouts(ctx context.Context, filter RolloutFilter) (RolloutList, error)
+	ListActiveRolloutConflicts(ctx context.Context, nodeIDs []string) ([]RolloutNodeConflict, error)
 	UpdateRollout(ctx context.Context, rollout protocol.Rollout) error
 	PruneTerminalRollouts(ctx context.Context, before time.Time) (int64, error)
+}
+
+// RolloutNodeConflict names a non-terminal rollout already targeting a node.
+type RolloutNodeConflict struct {
+	NodeID    string
+	RolloutID string
+	State     protocol.RolloutState
 }
 
 // RolloutFilter constrains rollout listing.

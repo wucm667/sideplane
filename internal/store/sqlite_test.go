@@ -1245,6 +1245,17 @@ func TestSQLiteRolloutLifecycleListUpdateAndPrune(t *testing.T) {
 	}
 }
 
+func TestSQLiteRolloutActiveConflictLookup(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenSQLiteNodeStore(ctx, filepath.Join(t.TempDir(), "sideplane.db"))
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer store.Close()
+
+	assertRolloutConflictLookup(t, store)
+}
+
 func TestSQLiteRolloutConcurrentUpdates(t *testing.T) {
 	ctx := context.Background()
 	store, err := OpenSQLiteNodeStore(ctx, filepath.Join(t.TempDir(), "sideplane.db"))

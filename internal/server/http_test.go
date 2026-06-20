@@ -4245,9 +4245,103 @@ func TestRolloutCreateExcludesMaintenanceNodesUnlessIncluded(t *testing.T) {
 	}
 
 	baseSpec.IncludeMaintenance = true
+	baseSpec.AllowOverlap = true
 	withMaintenance := doJSONRequest[protocol.CreateRolloutResponse](t, server.Client(), http.MethodPost, server.URL+"/api/rollouts", "dev-token", protocol.CreateRolloutRequest{Spec: baseSpec})
 	if got := withMaintenance.Rollout.Spec.NodeIDs; len(got) != 2 || got[0] != "node-a" || got[1] != "node-b" {
 		t.Fatalf("rollout with maintenance nodeIDs = %+v, want node-a and node-b", got)
+	}
+}
+
+func TestRolloutCreateRejectsActiveOverlapUnlessAllowed(t *testing.T) {
+	ctx := context.Background()
+	nodeStore := store.NewMemoryNodeStore()
+	for _, nodeID := range []string{"node-a", "node-b"} {
+		enrollTestNode(t, nodeStore, nodeID)
+	}
+	now := time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC)
+	active, err := nodeStore.CreateRollout(ctx, protocol.Rollout{
+		ID: "rollout-active",
+		Spec: protocol.RolloutSpec{
+			NodeIDs:     []string{"node-a"},
+			RuntimeType: "hermes",
+			Target:      protocol.ProviderModelConfig{Provider: "openai", Model: "gpt-4o"},
+			BatchSize:   1,
+		},
+		State:     protocol.RolloutStateRunning,
+		Batches:   rolloutengine.PlanBatches([]string{"node-a"}, 1),
+		CreatedAt: now,
+		UpdatedAt: now,
+	})
+	if err != nil {
+		t.Fatalf("create active rollout: %v", err)
+	}
+	if _, err := nodeStore.CreateRollout(ctx, protocol.Rollout{
+		ID: "rollout-terminal",
+		Spec: protocol.RolloutSpec{
+			NodeIDs:     []string{"node-b"},
+			RuntimeType: "hermes",
+			Target:      protocol.ProviderModelConfig{Provider: "openai", Model: "gpt-4o"},
+			BatchSize:   1,
+		},
+		State:      protocol.RolloutStateCompleted,
+		Batches:    rolloutengine.PlanBatches([]string{"node-b"}, 1),
+		CreatedAt:  now.Add(time.Minute),
+		UpdatedAt:  now.Add(time.Minute),
+		FinishedAt: now.Add(time.Minute),
+	}); err != nil {
+		t.Fatalf("create terminal rollout: %v", err)
+	}
+
+	handler, err := NewHandlerWithConfig(HandlerConfig{
+		Store:         nodeStore,
+		Freshness:     DefaultFreshnessPolicy(),
+		OperatorToken: "dev-token",
+	})
+	if err != nil {
+		t.Fatalf("build handler: %v", err)
+	}
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	baseSpec := protocol.RolloutSpec{
+		NodeIDs:     []string{"node-a"},
+		RuntimeType: "hermes",
+		Target:      protocol.ProviderModelConfig{Provider: "openai", Model: "gpt-4o-mini"},
+	}
+	body, _ := json.Marshal(protocol.CreateRolloutRequest{Spec: baseSpec})
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/api/rollouts", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("build overlap request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer dev-token")
+	req.Header.Set("Content-Type", "application/json")
+	res, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatalf("create overlapping rollout: %v", err)
+	}
+	defer res.Body.Close()
+	var apiErr protocol.APIError
+	if err := json.NewDecoder(res.Body).Decode(&apiErr); err != nil {
+		t.Fatalf("decode overlap error: %v", err)
+	}
+	if res.StatusCode != http.StatusConflict || apiErr.Code != "conflict" || !strings.Contains(apiErr.Message, "node-a") || !strings.Contains(apiErr.Message, active.ID) {
+		t.Fatalf("overlap response status=%d error=%+v, want 409 naming node-a and %s", res.StatusCode, apiErr, active.ID)
+	}
+
+	allowedSpec := baseSpec
+	allowedSpec.AllowOverlap = true
+	allowed := doJSONRequest[protocol.CreateRolloutResponse](t, server.Client(), http.MethodPost, server.URL+"/api/rollouts", "dev-token", protocol.CreateRolloutRequest{Spec: allowedSpec})
+	if !allowed.Rollout.Spec.AllowOverlap || allowed.Rollout.Spec.NodeIDs[0] != "node-a" {
+		t.Fatalf("allowed overlap rollout = %#v, want allowOverlap node-a rollout", allowed.Rollout)
+	}
+
+	terminalOnly := doJSONRequest[protocol.CreateRolloutResponse](t, server.Client(), http.MethodPost, server.URL+"/api/rollouts", "dev-token", protocol.CreateRolloutRequest{Spec: protocol.RolloutSpec{
+		NodeIDs:     []string{"node-b"},
+		RuntimeType: "hermes",
+		Target:      protocol.ProviderModelConfig{Provider: "openai", Model: "gpt-4o-mini"},
+	}})
+	if terminalOnly.Rollout.Spec.NodeIDs[0] != "node-b" {
+		t.Fatalf("terminal-only rollout = %#v, want node-b allowed", terminalOnly.Rollout)
 	}
 }
 
@@ -5112,6 +5206,10 @@ func (s staticNodeStore) GetRollout(context.Context, string) (*protocol.Rollout,
 
 func (s staticNodeStore) ListRollouts(context.Context, store.RolloutFilter) (store.RolloutList, error) {
 	return store.RolloutList{}, nil
+}
+
+func (s staticNodeStore) ListActiveRolloutConflicts(context.Context, []string) ([]store.RolloutNodeConflict, error) {
+	return nil, nil
 }
 
 func (s staticNodeStore) UpdateRollout(context.Context, protocol.Rollout) error {

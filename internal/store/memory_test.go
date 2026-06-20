@@ -833,6 +833,10 @@ func TestMemoryRolloutLifecycleListUpdateAndPrune(t *testing.T) {
 	}
 }
 
+func TestMemoryRolloutActiveConflictLookup(t *testing.T) {
+	assertRolloutConflictLookup(t, NewMemoryNodeStore())
+}
+
 func TestMemoryRolloutConcurrentUpdates(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemoryNodeStore()
@@ -1153,6 +1157,41 @@ func rolloutForStoreTest(id string, state protocol.RolloutState, createdAt time.
 		}},
 		CreatedAt: createdAt,
 		UpdatedAt: createdAt,
+	}
+}
+
+func assertRolloutConflictLookup(t *testing.T, rolloutStore RolloutStore) {
+	t.Helper()
+	ctx := context.Background()
+	now := time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC)
+
+	active, err := rolloutStore.CreateRollout(ctx, rolloutForStoreTest("rollout-active", protocol.RolloutStatePending, now))
+	if err != nil {
+		t.Fatalf("create active rollout: %v", err)
+	}
+	terminal := rolloutForStoreTest("rollout-terminal", protocol.RolloutStateCompleted, now.Add(time.Minute))
+	terminal.FinishedAt = now.Add(2 * time.Minute)
+	if _, err := rolloutStore.CreateRollout(ctx, terminal); err != nil {
+		t.Fatalf("create terminal rollout: %v", err)
+	}
+
+	conflicts, err := rolloutStore.ListActiveRolloutConflicts(ctx, []string{"node-a", "node-c"})
+	if err != nil {
+		t.Fatalf("list active rollout conflicts: %v", err)
+	}
+	if len(conflicts) != 1 {
+		t.Fatalf("conflicts = %#v, want one active node-a conflict", conflicts)
+	}
+	if conflicts[0].NodeID != "node-a" || conflicts[0].RolloutID != active.ID || conflicts[0].State != protocol.RolloutStatePending {
+		t.Fatalf("conflict = %#v, want node-a/%s/pending", conflicts[0], active.ID)
+	}
+
+	conflicts, err = rolloutStore.ListActiveRolloutConflicts(ctx, []string{"node-c"})
+	if err != nil {
+		t.Fatalf("list empty active rollout conflicts: %v", err)
+	}
+	if len(conflicts) != 0 {
+		t.Fatalf("conflicts for node-c = %#v, want none", conflicts)
 	}
 }
 

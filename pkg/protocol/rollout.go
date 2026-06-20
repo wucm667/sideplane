@@ -68,6 +68,10 @@ type RolloutSpec struct {
 	// false preserves the existing pause-only behavior. Never applies to
 	// dry-run rollouts.
 	AutoRollbackOnFailure bool `json:"autoRollbackOnFailure,omitempty"`
+	// AllowOverlap lets an operator intentionally create a rollout whose target
+	// nodes are already in another non-terminal rollout. Default false rejects
+	// overlaps at creation time.
+	AllowOverlap bool `json:"allowOverlap,omitempty"`
 }
 
 // RolloutNodeProgress tracks one node's rollout job and health state.
