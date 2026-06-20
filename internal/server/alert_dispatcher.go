@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -153,6 +154,9 @@ func (d *alertDispatcher) handleEvent(ctx context.Context, name string, data []b
 	if !ok {
 		return
 	}
+	if d.suppressMaintenanceNodeAlert(ctx, payload) {
+		return
+	}
 	targets, err := d.store.ListAlertWebhookTargets(ctx, event)
 	if err != nil {
 		d.logger.Warn("list alert webhook targets failed", "event", event, "error", err)
@@ -161,6 +165,25 @@ func (d *alertDispatcher) handleEvent(ctx context.Context, name string, data []b
 	for _, target := range targets {
 		d.enqueue(alertDelivery{webhookID: target.ID, target: target, payload: payload})
 	}
+}
+
+func (d *alertDispatcher) suppressMaintenanceNodeAlert(ctx context.Context, payload protocol.AlertWebhookPayload) bool {
+	switch payload.Event {
+	case protocol.AlertEventNodeOffline, protocol.AlertEventNodeDrift:
+	default:
+		return false
+	}
+	if payload.NodeID == "" {
+		return false
+	}
+	maintenance, err := d.store.GetNodeMaintenance(ctx, payload.NodeID)
+	if err != nil {
+		if !errors.Is(err, store.ErrNodeNotFound) {
+			d.logger.Warn("read node maintenance for alert suppression failed", "node_id", payload.NodeID, "error", err)
+		}
+		return false
+	}
+	return maintenance
 }
 
 // enqueue adds a delivery without blocking; a full queue drops the delivery so

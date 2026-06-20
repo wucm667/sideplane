@@ -1118,6 +1118,47 @@ func TestBulkJobCreationBySelectorAndNodeIDs(t *testing.T) {
 	}
 }
 
+func TestBulkJobCreationExcludesMaintenanceNodesUnlessIncluded(t *testing.T) {
+	ctx := context.Background()
+	nodeStore := store.NewMemoryNodeStore()
+	for _, id := range []string{"node-a", "node-b"} {
+		enrollTestNode(t, nodeStore, id)
+		if err := nodeStore.SetNodeLabels(ctx, id, map[string]string{"role": "canary"}); err != nil {
+			t.Fatalf("label %s: %v", id, err)
+		}
+	}
+	if err := nodeStore.SetNodeMaintenance(ctx, "node-b", true); err != nil {
+		t.Fatalf("set node-b maintenance: %v", err)
+	}
+	handler, err := NewHandlerWithConfig(HandlerConfig{
+		Store:         nodeStore,
+		Freshness:     DefaultFreshnessPolicy(),
+		OperatorToken: "dev-token",
+	})
+	if err != nil {
+		t.Fatalf("build handler: %v", err)
+	}
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	withoutMaintenance := doJSONRequest[protocol.BulkJobResponse](t, server.Client(), http.MethodPost, server.URL+"/api/jobs/bulk", "dev-token", protocol.BulkJobRequest{
+		Selector: map[string]string{"role": "canary"},
+		Type:     protocol.JobTypeDeepProbe,
+	})
+	if withoutMaintenance.Created != 1 || len(withoutMaintenance.Jobs) != 1 || withoutMaintenance.Jobs[0].NodeID != "node-a" {
+		t.Fatalf("bulk without maintenance = %+v, want only node-a", withoutMaintenance)
+	}
+
+	withMaintenance := doJSONRequest[protocol.BulkJobResponse](t, server.Client(), http.MethodPost, server.URL+"/api/jobs/bulk", "dev-token", protocol.BulkJobRequest{
+		NodeIDs:            []string{"node-b"},
+		Type:               protocol.JobTypeDeepProbe,
+		IncludeMaintenance: true,
+	})
+	if withMaintenance.Created != 1 || len(withMaintenance.Jobs) != 1 || withMaintenance.Jobs[0].NodeID != "node-b" {
+		t.Fatalf("bulk with maintenance = %+v, want node-b included", withMaintenance)
+	}
+}
+
 func TestSidecarOutdatedFlagAndMetric(t *testing.T) {
 	ctx := context.Background()
 	nodeStore := store.NewMemoryNodeStore()
@@ -1546,6 +1587,54 @@ func TestBulkNodeLabelAssignmentValidation(t *testing.T) {
 				t.Fatalf("status = %d, want %d", res.StatusCode, tc.want)
 			}
 		})
+	}
+}
+
+func TestBulkNodeLabelAssignmentExcludesMaintenanceNodesUnlessIncluded(t *testing.T) {
+	ctx := context.Background()
+	nodeStore := store.NewMemoryNodeStore()
+	for _, id := range []string{"node-a", "node-b"} {
+		enrollTestNode(t, nodeStore, id)
+		if err := nodeStore.SetNodeLabels(ctx, id, map[string]string{"zone": "lab"}); err != nil {
+			t.Fatalf("label %s: %v", id, err)
+		}
+	}
+	if err := nodeStore.SetNodeMaintenance(ctx, "node-b", true); err != nil {
+		t.Fatalf("set node-b maintenance: %v", err)
+	}
+	handler, err := NewHandlerWithConfig(HandlerConfig{
+		Store:         nodeStore,
+		Freshness:     DefaultFreshnessPolicy(),
+		OperatorToken: "dev-token",
+	})
+	if err != nil {
+		t.Fatalf("build handler: %v", err)
+	}
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	withoutMaintenance := doJSONRequest[protocol.BulkNodeLabelsResponse](t, server.Client(), http.MethodPut, server.URL+"/api/nodes/labels", "dev-token", protocol.BulkNodeLabelsRequest{
+		Selector: map[string]string{"zone": "lab"},
+		Labels:   map[string]string{"role": "canary"},
+	})
+	if withoutMaintenance.Updated != 1 || len(withoutMaintenance.NodeIDs) != 1 || withoutMaintenance.NodeIDs[0] != "node-a" {
+		t.Fatalf("bulk labels without maintenance = %+v, want only node-a", withoutMaintenance)
+	}
+	labelsB, err := nodeStore.GetNodeLabels(ctx, "node-b")
+	if err != nil {
+		t.Fatalf("get node-b labels: %v", err)
+	}
+	if _, ok := labelsB["role"]; ok {
+		t.Fatalf("node-b labels = %+v, want role untouched while in maintenance", labelsB)
+	}
+
+	withMaintenance := doJSONRequest[protocol.BulkNodeLabelsResponse](t, server.Client(), http.MethodPut, server.URL+"/api/nodes/labels", "dev-token", protocol.BulkNodeLabelsRequest{
+		NodeIDs:            []string{"node-b"},
+		Labels:             map[string]string{"role": "included"},
+		IncludeMaintenance: true,
+	})
+	if withMaintenance.Updated != 1 || len(withMaintenance.NodeIDs) != 1 || withMaintenance.NodeIDs[0] != "node-b" {
+		t.Fatalf("bulk labels with maintenance = %+v, want node-b included", withMaintenance)
 	}
 }
 
@@ -3804,6 +3893,46 @@ func TestRolloutAPICreateListGetActionsAndAudit(t *testing.T) {
 	}
 	if len(events) != 2 {
 		t.Fatalf("rollout create audit events = %#v, want two", events)
+	}
+}
+
+func TestRolloutCreateExcludesMaintenanceNodesUnlessIncluded(t *testing.T) {
+	ctx := context.Background()
+	nodeStore := store.NewMemoryNodeStore()
+	for _, nodeID := range []string{"node-a", "node-b"} {
+		enrollTestNode(t, nodeStore, nodeID)
+		if err := nodeStore.SetNodeLabels(ctx, nodeID, map[string]string{"role": "canary"}); err != nil {
+			t.Fatalf("set %s labels: %v", nodeID, err)
+		}
+	}
+	if err := nodeStore.SetNodeMaintenance(ctx, "node-b", true); err != nil {
+		t.Fatalf("set node-b maintenance: %v", err)
+	}
+	handler, err := NewHandlerWithConfig(HandlerConfig{
+		Store:         nodeStore,
+		Freshness:     DefaultFreshnessPolicy(),
+		OperatorToken: "dev-token",
+	})
+	if err != nil {
+		t.Fatalf("build handler: %v", err)
+	}
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	baseSpec := protocol.RolloutSpec{
+		Selector:    map[string]string{"role": "canary"},
+		RuntimeType: "hermes",
+		Target:      protocol.ProviderModelConfig{Provider: "openai", Model: "gpt-5"},
+	}
+	withoutMaintenance := doJSONRequest[protocol.CreateRolloutResponse](t, server.Client(), http.MethodPost, server.URL+"/api/rollouts", "dev-token", protocol.CreateRolloutRequest{Spec: baseSpec})
+	if got := withoutMaintenance.Rollout.Spec.NodeIDs; len(got) != 1 || got[0] != "node-a" {
+		t.Fatalf("rollout without maintenance nodeIDs = %+v, want node-a only", got)
+	}
+
+	baseSpec.IncludeMaintenance = true
+	withMaintenance := doJSONRequest[protocol.CreateRolloutResponse](t, server.Client(), http.MethodPost, server.URL+"/api/rollouts", "dev-token", protocol.CreateRolloutRequest{Spec: baseSpec})
+	if got := withMaintenance.Rollout.Spec.NodeIDs; len(got) != 2 || got[0] != "node-a" || got[1] != "node-b" {
+		t.Fatalf("rollout with maintenance nodeIDs = %+v, want node-a and node-b", got)
 	}
 }
 

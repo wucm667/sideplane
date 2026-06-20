@@ -54,9 +54,10 @@ type CreateJobRequest struct {
 // BulkJobRequest creates one job per matched node. Exactly one of Selector or
 // NodeIDs must be set. Type currently must be deep_probe.
 type BulkJobRequest struct {
-	Selector map[string]string `json:"selector,omitempty"`
-	NodeIDs  []string          `json:"nodeIds,omitempty"`
-	Type     JobType           `json:"type"`
+	Selector           map[string]string `json:"selector,omitempty"`
+	NodeIDs            []string          `json:"nodeIds,omitempty"`
+	Type               JobType           `json:"type"`
+	IncludeMaintenance bool              `json:"includeMaintenance,omitempty"`
 }
 
 // BulkJobResult is one matched node's outcome in a bulk job creation.

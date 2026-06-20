@@ -142,6 +142,43 @@ func TestAlertDispatcherEnqueueNeverBlocksProducers(t *testing.T) {
 	}
 }
 
+func TestAlertDispatcherSuppressesMaintenanceNodeAlertsOnly(t *testing.T) {
+	ctx := context.Background()
+	nodeStore := store.NewMemoryNodeStore()
+	if _, err := nodeStore.RecordHeartbeat(ctx, protocol.HeartbeatRequest{NodeID: "node-maint"}, time.Now().UTC()); err != nil {
+		t.Fatalf("record heartbeat: %v", err)
+	}
+	if err := nodeStore.SetNodeMaintenance(ctx, "node-maint", true); err != nil {
+		t.Fatalf("set maintenance: %v", err)
+	}
+	if _, err := nodeStore.CreateAlertWebhook(ctx, protocol.CreateAlertWebhookRequest{
+		URL: "http://127.0.0.1/alerts",
+		Events: []protocol.AlertEventType{
+			protocol.AlertEventNodeOffline,
+			protocol.AlertEventNodeDrift,
+			protocol.AlertEventRolloutFailed,
+		},
+	}, time.Now()); err != nil {
+		t.Fatalf("create webhook: %v", err)
+	}
+	d := newAlertDispatcher(AlertDispatcherConfig{Store: nodeStore, QueueSize: 3})
+
+	d.handleEvent(ctx, "node", mustJSON(t, map[string]any{"nodeId": "node-maint", "state": string(protocol.NodeStateOffline)}))
+	assertNoAlertDelivery(t, d)
+	d.handleEvent(ctx, "node", mustJSON(t, map[string]any{"nodeId": "node-maint", "drift": true}))
+	assertNoAlertDelivery(t, d)
+
+	d.handleEvent(ctx, "rollout", mustJSON(t, map[string]string{"rolloutId": "rollout-1", "state": string(protocol.RolloutStateFailed)}))
+	select {
+	case delivery := <-d.queue:
+		if delivery.payload.Event != protocol.AlertEventRolloutFailed {
+			t.Fatalf("delivery event = %q, want rollout failed", delivery.payload.Event)
+		}
+	default:
+		t.Fatal("rollout alert was unexpectedly suppressed")
+	}
+}
+
 func TestAlertDispatcherSlowReceiverDoesNotBlockHub(t *testing.T) {
 	release := make(chan struct{})
 	var calls atomic.Int32
@@ -205,6 +242,15 @@ func TestAlertDispatcherShutdownStopsWorkers(t *testing.T) {
 	case <-stopped:
 	case <-time.After(time.Second):
 		t.Fatal("worker did not stop on context cancel")
+	}
+}
+
+func assertNoAlertDelivery(t *testing.T, d *alertDispatcher) {
+	t.Helper()
+	select {
+	case delivery := <-d.queue:
+		t.Fatalf("unexpected alert delivery: %+v", delivery.payload)
+	default:
 	}
 }
 

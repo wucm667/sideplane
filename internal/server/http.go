@@ -1065,23 +1065,33 @@ func validateRolloutSpec(spec protocol.RolloutSpec) error {
 }
 
 func (h *handler) resolveRolloutNodes(ctx context.Context, spec protocol.RolloutSpec) ([]string, error) {
-	return h.resolveTargetNodes(ctx, spec.Selector, spec.NodeIDs)
+	return h.resolveTargetNodes(ctx, spec.Selector, spec.NodeIDs, spec.IncludeMaintenance)
 }
 
 // resolveTargetNodes resolves an operator node selection to node IDs. When
 // nodeIDs is set, each must exist; otherwise the selector matches labels.
-func (h *handler) resolveTargetNodes(ctx context.Context, selector map[string]string, nodeIDs []string) ([]string, error) {
+func (h *handler) resolveTargetNodes(ctx context.Context, selector map[string]string, nodeIDs []string, includeMaintenance bool) ([]string, error) {
 	if len(nodeIDs) > 0 {
+		nodes, err := h.store.ListNodes(ctx)
+		if err != nil {
+			return nil, err
+		}
+		byID := make(map[string]protocol.NodeStatus, len(nodes))
+		for _, node := range nodes {
+			byID[node.NodeID] = node
+		}
+		resolved := make([]string, 0, len(nodeIDs))
 		for _, nodeID := range nodeIDs {
-			exists, err := h.store.NodeExists(ctx, nodeID)
-			if err != nil {
-				return nil, err
-			}
-			if !exists {
+			node, ok := byID[nodeID]
+			if !ok {
 				return nil, store.ErrNodeNotFound
 			}
+			if node.Maintenance && !includeMaintenance {
+				continue
+			}
+			resolved = append(resolved, nodeID)
 		}
-		return append([]string(nil), nodeIDs...), nil
+		return resolved, nil
 	}
 	list, err := h.store.ListNodesFiltered(ctx, store.NodeFilter{
 		Labels: selector,
@@ -1092,6 +1102,9 @@ func (h *handler) resolveTargetNodes(ctx context.Context, selector map[string]st
 	}
 	resolved := make([]string, 0, len(list.Nodes))
 	for _, node := range list.Nodes {
+		if node.Maintenance && !includeMaintenance {
+			continue
+		}
 		resolved = append(resolved, node.NodeID)
 	}
 	return resolved, nil
@@ -1750,7 +1763,7 @@ func (h *handler) bulkJobs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	targets, err := h.resolveTargetNodes(r.Context(), selector, nodeIDs)
+	targets, err := h.resolveTargetNodes(r.Context(), selector, nodeIDs, req.IncludeMaintenance)
 	if err != nil {
 		if errors.Is(err, store.ErrNodeNotFound) {
 			writeAPIError(w, http.StatusNotFound, "node not found")
@@ -1833,7 +1846,7 @@ func (h *handler) bulkNodeLabels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	targets, err := h.resolveTargetNodes(r.Context(), selector, nodeIDs)
+	targets, err := h.resolveTargetNodes(r.Context(), selector, nodeIDs, req.IncludeMaintenance)
 	if err != nil {
 		if errors.Is(err, store.ErrNodeNotFound) {
 			writeAPIError(w, http.StatusNotFound, "node not found")

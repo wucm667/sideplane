@@ -93,9 +93,10 @@ type NodeMaintenanceResponse struct {
 // NodeIDs. Exactly one of Selector or NodeIDs must be set, and Labels must be
 // non-empty. Existing labels with other keys are preserved.
 type BulkNodeLabelsRequest struct {
-	Selector map[string]string `json:"selector,omitempty"`
-	NodeIDs  []string          `json:"nodeIds,omitempty"`
-	Labels   map[string]string `json:"labels"`
+	Selector           map[string]string `json:"selector,omitempty"`
+	NodeIDs            []string          `json:"nodeIds,omitempty"`
+	Labels             map[string]string `json:"labels"`
+	IncludeMaintenance bool              `json:"includeMaintenance,omitempty"`
 }
 
 // BulkNodeLabelsResponse returns the nodes updated and the applied label keys.

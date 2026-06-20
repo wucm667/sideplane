@@ -56,6 +56,9 @@ type RolloutSpec struct {
 	BatchSize     int                 `json:"batchSize,omitempty"`
 	Live          bool                `json:"live"`
 	HealthTimeout time.Duration       `json:"healthTimeout,omitempty"`
+	// IncludeMaintenance allows explicit operator opt-in to target nodes marked
+	// maintenance. By default maintenance nodes are excluded from new rollouts.
+	IncludeMaintenance bool `json:"includeMaintenance,omitempty"`
 	// AutoRollbackOnFailure opts a live rollout into per-node rollback of the
 	// failed batch's already-applied nodes before the rollout pauses. Default
 	// false preserves the existing pause-only behavior. Never applies to
