@@ -53,6 +53,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	tlsCert := flags.String("tls-cert", "", "path to TLS certificate file; can also be set with SIDEPLANE_TLS_CERT")
 	tlsKey := flags.String("tls-key", "", "path to TLS private key file; can also be set with SIDEPLANE_TLS_KEY")
 	tlsRedirectAddr := flags.String("tls-redirect-addr", "", "optional HTTP listen address that redirects requests to HTTPS; can also be set with SIDEPLANE_TLS_REDIRECT_ADDR")
+	basePath := flags.String("base-path", "", "optional URL path prefix to serve the app under; can also be set with SIDEPLANE_BASE_PATH")
 	backupDir := flags.String("backup-dir", "", "directory for periodic online DB backups; periodic backups are off unless set with a positive --backup-interval")
 	backupInterval := flags.Duration("backup-interval", 0, "interval between periodic online DB backups; set 0 to disable")
 	backupRetention := flags.Int("backup-retention", defaultBackupRetention, "number of recent periodic DB backups to retain")
@@ -86,6 +87,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		tlsCert:               tlsCert,
 		tlsKey:                tlsKey,
 		tlsRedirectAddr:       tlsRedirectAddr,
+		basePath:              basePath,
 		webDir:                webDir,
 		staleAfter:            staleAfter,
 		offlineAfter:          offlineAfter,
@@ -157,6 +159,11 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	tlsRedirectAddrValue := strings.TrimSpace(*tlsRedirectAddr)
 	if tlsRedirectAddrValue != "" && !tlsConfig.Enabled() {
 		fmt.Fprintln(stderr, "invalid TLS redirect configuration: tls-redirect-addr requires tls-cert and tls-key")
+		return 1
+	}
+	normalizedBasePath, err := server.NormalizeBasePath(*basePath)
+	if err != nil {
+		fmt.Fprintf(stderr, "invalid base path: %v\n", err)
 		return 1
 	}
 
@@ -241,6 +248,11 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		}
 		handler = server.NewEmbeddedWebHandler(distFS, handler)
 	}
+	handler, err = server.NewBasePathHandler(normalizedBasePath, handler)
+	if err != nil {
+		logger.Error("configure base path", "base_path", normalizedBasePath, "error", err)
+		return 1
+	}
 
 	httpServer := &http.Server{
 		Addr:    *addr,
@@ -275,6 +287,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		"addr", *addr,
 		"scheme", scheme,
 		"tls_redirect_addr", tlsRedirectAddrValue,
+		"base_path", normalizedBasePath,
 		"db", *dbPath,
 		"web", webMode,
 		"stale_after", staleAfter.String(),
@@ -313,6 +326,7 @@ type serverFlagValues struct {
 	tlsCert               *string
 	tlsKey                *string
 	tlsRedirectAddr       *string
+	basePath              *string
 	webDir                *string
 	staleAfter            *time.Duration
 	offlineAfter          *time.Duration
@@ -507,6 +521,7 @@ func applyServerEnvFallbacks(setFlags map[string]bool, values serverFlagValues) 
 	applyStringEnvFallback(setFlags, "tls-cert", "SIDEPLANE_TLS_CERT", values.tlsCert)
 	applyStringEnvFallback(setFlags, "tls-key", "SIDEPLANE_TLS_KEY", values.tlsKey)
 	applyStringEnvFallback(setFlags, "tls-redirect-addr", "SIDEPLANE_TLS_REDIRECT_ADDR", values.tlsRedirectAddr)
+	applyStringEnvFallback(setFlags, "base-path", "SIDEPLANE_BASE_PATH", values.basePath)
 	applyStringEnvFallback(setFlags, "web-dir", "SIDEPLANE_WEB_DIR", values.webDir)
 	if err := applyDurationEnvFallback(setFlags, "stale-after", "SIDEPLANE_STALE_AFTER", values.staleAfter); err != nil {
 		return err

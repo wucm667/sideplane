@@ -12,7 +12,7 @@ import (
 )
 
 func TestEnrollmentRateLimitReturnsTooManyRequests(t *testing.T) {
-	clock := &rateLimitFakeClock{now: time.Date(2026, 6, 20, 12, 0, 0, 0, time.UTC)}
+	clock := &rateLimitFakeClock{now: time.Now().UTC().Truncate(time.Minute)}
 	nodeStore := store.NewMemoryNodeStore()
 	handler, err := NewHandlerWithConfig(HandlerConfig{
 		Store:     nodeStore,

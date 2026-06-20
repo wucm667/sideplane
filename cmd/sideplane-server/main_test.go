@@ -71,6 +71,7 @@ func TestServerEnvFallbacksApplyWhenFlagsUnset(t *testing.T) {
 	t.Setenv("SIDEPLANE_TLS_CERT", "/etc/sideplane/tls.crt")
 	t.Setenv("SIDEPLANE_TLS_KEY", "/etc/sideplane/tls.key")
 	t.Setenv("SIDEPLANE_TLS_REDIRECT_ADDR", ":8081")
+	t.Setenv("SIDEPLANE_BASE_PATH", "/sideplane/")
 	t.Setenv("SIDEPLANE_WEB_DIR", "/usr/share/sideplane/web")
 	t.Setenv("SIDEPLANE_STALE_AFTER", "90s")
 	t.Setenv("SIDEPLANE_OFFLINE_AFTER", "6m")
@@ -87,6 +88,7 @@ func TestServerEnvFallbacksApplyWhenFlagsUnset(t *testing.T) {
 	tlsCert := ""
 	tlsKey := ""
 	tlsRedirectAddr := ""
+	basePath := ""
 	webDir := ""
 	staleAfter := 2 * time.Minute
 	offlineAfter := 10 * time.Minute
@@ -104,6 +106,7 @@ func TestServerEnvFallbacksApplyWhenFlagsUnset(t *testing.T) {
 		tlsCert:               &tlsCert,
 		tlsKey:                &tlsKey,
 		tlsRedirectAddr:       &tlsRedirectAddr,
+		basePath:              &basePath,
 		webDir:                &webDir,
 		staleAfter:            &staleAfter,
 		offlineAfter:          &offlineAfter,
@@ -132,6 +135,9 @@ func TestServerEnvFallbacksApplyWhenFlagsUnset(t *testing.T) {
 	}
 	if tlsRedirectAddr != ":8081" {
 		t.Fatalf("tls redirect addr = %q, want env redirect addr", tlsRedirectAddr)
+	}
+	if basePath != "/sideplane/" {
+		t.Fatalf("base path = %q, want env base path", basePath)
 	}
 	if webDir != "/usr/share/sideplane/web" {
 		t.Fatalf("web dir = %q, want env web dir", webDir)
@@ -162,6 +168,22 @@ func TestServerEnvFallbacksApplyWhenFlagsUnset(t *testing.T) {
 	}
 	if rateLimitWindow != 45*time.Second {
 		t.Fatalf("rate limit window = %s, want 45s", rateLimitWindow)
+	}
+}
+
+func TestRunRejectsInvalidBasePath(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"--base-path", "/side plane"}, &stdout, &stderr)
+
+	if code == 0 {
+		t.Fatalf("exit code = 0, want non-zero")
+	}
+	if !strings.Contains(stderr.String(), "invalid base path") {
+		t.Fatalf("stderr = %q, want base path validation error", stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout = %q, want empty", stdout.String())
 	}
 }
 
