@@ -29,6 +29,7 @@ type MemoryNodeStore struct {
 	desiredHistory   []protocol.DesiredConfigHistoryEntry
 	alertWebhooks    map[string]memoryAlertWebhook
 	settings         protocol.ServerSettings
+	rolloutTemplates map[string]protocol.RolloutTemplate
 }
 
 type memoryAlertWebhook struct {
@@ -566,6 +567,74 @@ func (s *MemoryNodeStore) ListAlertWebhookTargets(_ context.Context, event proto
 	}
 	sort.Slice(targets, func(i, j int) bool { return targets[i].ID < targets[j].ID })
 	return targets, nil
+}
+
+// CreateRolloutTemplate stores a reusable rollout spec under a name.
+func (s *MemoryNodeStore) CreateRolloutTemplate(_ context.Context, name string, spec protocol.RolloutSpec, now time.Time) (protocol.RolloutTemplate, error) {
+	name, err := ValidateRolloutTemplateName(name)
+	if err != nil {
+		return protocol.RolloutTemplate{}, err
+	}
+	id, err := newRandomID("rtpl_")
+	if err != nil {
+		return protocol.RolloutTemplate{}, err
+	}
+	template := protocol.RolloutTemplate{ID: id, Name: name, Spec: cloneRolloutSpec(spec), CreatedAt: now.UTC()}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.rolloutTemplates == nil {
+		s.rolloutTemplates = make(map[string]protocol.RolloutTemplate)
+	}
+	s.rolloutTemplates[id] = template
+	return cloneRolloutTemplate(template), nil
+}
+
+// ListRolloutTemplates returns saved rollout templates newest-first.
+func (s *MemoryNodeStore) ListRolloutTemplates(context.Context) ([]protocol.RolloutTemplate, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	templates := make([]protocol.RolloutTemplate, 0, len(s.rolloutTemplates))
+	for _, template := range s.rolloutTemplates {
+		templates = append(templates, cloneRolloutTemplate(template))
+	}
+	sort.Slice(templates, func(i, j int) bool {
+		if !templates[i].CreatedAt.Equal(templates[j].CreatedAt) {
+			return templates[i].CreatedAt.After(templates[j].CreatedAt)
+		}
+		return templates[i].ID > templates[j].ID
+	})
+	return templates, nil
+}
+
+// GetRolloutTemplate returns one rollout template by ID.
+func (s *MemoryNodeStore) GetRolloutTemplate(_ context.Context, id string) (*protocol.RolloutTemplate, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil, ErrRolloutTemplateNotFound
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	template, ok := s.rolloutTemplates[id]
+	if !ok {
+		return nil, ErrRolloutTemplateNotFound
+	}
+	clone := cloneRolloutTemplate(template)
+	return &clone, nil
+}
+
+// DeleteRolloutTemplate removes a rollout template by ID.
+func (s *MemoryNodeStore) DeleteRolloutTemplate(_ context.Context, id string) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return ErrRolloutTemplateNotFound
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.rolloutTemplates[id]; !ok {
+		return ErrRolloutTemplateNotFound
+	}
+	delete(s.rolloutTemplates, id)
+	return nil
 }
 
 // GetServerSettings returns the operator-tunable server settings.
@@ -1170,6 +1239,19 @@ func cloneNodeStatus(node protocol.NodeStatus) protocol.NodeStatus {
 func cloneAlertWebhook(webhook protocol.AlertWebhook) protocol.AlertWebhook {
 	clone := webhook
 	clone.Events = append([]protocol.AlertEventType(nil), webhook.Events...)
+	return clone
+}
+
+func cloneRolloutSpec(spec protocol.RolloutSpec) protocol.RolloutSpec {
+	clone := spec
+	clone.Selector = cloneLabels(spec.Selector)
+	clone.NodeIDs = append([]string(nil), spec.NodeIDs...)
+	return clone
+}
+
+func cloneRolloutTemplate(template protocol.RolloutTemplate) protocol.RolloutTemplate {
+	clone := template
+	clone.Spec = cloneRolloutSpec(template.Spec)
 	return clone
 }
 

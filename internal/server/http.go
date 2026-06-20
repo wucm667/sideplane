@@ -151,6 +151,8 @@ func NewHandlerWithConfig(cfg HandlerConfig) (http.Handler, error) {
 	mux.HandleFunc("/api/heartbeat", handler.heartbeat)
 	mux.HandleFunc("/api/rollouts", handler.rollouts)
 	mux.HandleFunc("/api/rollouts/", handler.rolloutRouter)
+	mux.HandleFunc("/api/rollout-templates", handler.rolloutTemplates)
+	mux.HandleFunc("/api/rollout-templates/", handler.rolloutTemplateRouter)
 	mux.HandleFunc("/api/jobs/bulk", handler.bulkJobs)
 	mux.HandleFunc("/api/nodes/labels", handler.bulkNodeLabels)
 	mux.HandleFunc("/api/nodes", handler.nodes)
@@ -780,7 +782,22 @@ func (h *handler) createRollout(w http.ResponseWriter, r *http.Request) {
 		writeJSONDecodeError(w, err, "invalid rollout JSON")
 		return
 	}
-	spec, err := normalizeRolloutSpec(req.Spec)
+	baseSpec := req.Spec
+	if templateID := strings.TrimSpace(req.TemplateID); templateID != "" {
+		template, err := h.store.GetRolloutTemplate(r.Context(), templateID)
+		if err != nil {
+			if errors.Is(err, store.ErrRolloutTemplateNotFound) {
+				writeAPIError(w, http.StatusNotFound, "rollout template not found")
+				return
+			}
+			writeAPIError(w, http.StatusInternalServerError, "load rollout template")
+			return
+		}
+		// The template prefills the spec; it is still normalized, validated, and
+		// resolved below at creation time.
+		baseSpec = template.Spec
+	}
+	spec, err := normalizeRolloutSpec(baseSpec)
 	if err != nil {
 		writeAPIError(w, http.StatusBadRequest, err.Error())
 		return
@@ -824,6 +841,101 @@ func (h *handler) createRollout(w http.ResponseWriter, r *http.Request) {
 	})
 	publishRolloutEvent(h.events, created)
 	writeJSON(w, http.StatusCreated, protocol.CreateRolloutResponse{Rollout: created})
+}
+
+func (h *handler) rolloutTemplates(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodPost:
+		h.createRolloutTemplate(w, r)
+	case http.MethodGet:
+		h.listRolloutTemplates(w, r)
+	default:
+		w.Header().Set("Allow", "GET, POST")
+		writeAPIError(w, http.StatusMethodNotAllowed, http.StatusText(http.StatusMethodNotAllowed))
+	}
+}
+
+func (h *handler) createRolloutTemplate(w http.ResponseWriter, r *http.Request) {
+	if !h.authorizeOperator(w, r) {
+		return
+	}
+	var req protocol.CreateRolloutTemplateRequest
+	if err := decodeJSONRequest(w, r, defaultJSONBodyLimit, &req); err != nil {
+		writeJSONDecodeError(w, err, "invalid rollout template JSON")
+		return
+	}
+	name, err := store.ValidateRolloutTemplateName(req.Name)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	spec, err := normalizeRolloutSpec(req.Spec)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := validateRolloutSpec(spec); err != nil {
+		writeAPIError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	now := time.Now().UTC()
+	template, err := h.store.CreateRolloutTemplate(r.Context(), name, spec, now)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	h.audit(r.Context(), protocol.AuditEvent{
+		Actor:     audit.ActorOperator,
+		Action:    audit.ActionRolloutTemplateCreate,
+		Detail:    fmt.Sprintf("rollout template created id=%s name=%q runtime=%s", template.ID, template.Name, spec.RuntimeType),
+		CreatedAt: now,
+	})
+	writeJSON(w, http.StatusCreated, protocol.CreateRolloutTemplateResponse{Template: template})
+}
+
+func (h *handler) listRolloutTemplates(w http.ResponseWriter, r *http.Request) {
+	if !h.authorizeOperator(w, r) {
+		return
+	}
+	templates, err := h.store.ListRolloutTemplates(r.Context())
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "list rollout templates")
+		return
+	}
+	writeJSON(w, http.StatusOK, protocol.ListRolloutTemplatesResponse{Templates: templates})
+}
+
+func (h *handler) rolloutTemplateRouter(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		w.Header().Set("Allow", http.MethodDelete)
+		writeAPIError(w, http.StatusMethodNotAllowed, http.StatusText(http.StatusMethodNotAllowed))
+		return
+	}
+	if !h.authorizeOperator(w, r) {
+		return
+	}
+	templateID := strings.TrimSpace(strings.TrimPrefix(r.URL.Path, "/api/rollout-templates/"))
+	if templateID == "" || strings.Contains(templateID, "/") {
+		writeAPIError(w, http.StatusNotFound, "rollout template not found")
+		return
+	}
+	if err := h.store.DeleteRolloutTemplate(r.Context(), templateID); err != nil {
+		if errors.Is(err, store.ErrRolloutTemplateNotFound) {
+			writeAPIError(w, http.StatusNotFound, "rollout template not found")
+			return
+		}
+		writeAPIError(w, http.StatusInternalServerError, "delete rollout template")
+		return
+	}
+	now := time.Now().UTC()
+	h.audit(r.Context(), protocol.AuditEvent{
+		Actor:     audit.ActorOperator,
+		Action:    audit.ActionRolloutTemplateDelete,
+		Detail:    "rollout template deleted id=" + templateID,
+		CreatedAt: now,
+	})
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *handler) listRollouts(w http.ResponseWriter, r *http.Request) {

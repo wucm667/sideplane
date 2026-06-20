@@ -4463,6 +4463,22 @@ func (s staticNodeStore) UpdateOperatorTokenLastUsed(context.Context, string, ti
 	return nil
 }
 
+func (s staticNodeStore) CreateRolloutTemplate(context.Context, string, protocol.RolloutSpec, time.Time) (protocol.RolloutTemplate, error) {
+	return protocol.RolloutTemplate{}, nil
+}
+
+func (s staticNodeStore) ListRolloutTemplates(context.Context) ([]protocol.RolloutTemplate, error) {
+	return nil, nil
+}
+
+func (s staticNodeStore) GetRolloutTemplate(context.Context, string) (*protocol.RolloutTemplate, error) {
+	return nil, store.ErrRolloutTemplateNotFound
+}
+
+func (s staticNodeStore) DeleteRolloutTemplate(context.Context, string) error {
+	return nil
+}
+
 func (s staticNodeStore) GetServerSettings(context.Context) (protocol.ServerSettings, error) {
 	return protocol.ServerSettings{}, nil
 }

@@ -63,6 +63,8 @@ var (
 	ErrDesiredConfigHistoryNotFound = errors.New("desired config history not found")
 	// ErrAlertWebhookNotFound means the requested alert webhook does not exist.
 	ErrAlertWebhookNotFound = errors.New("alert webhook not found")
+	// ErrRolloutTemplateNotFound means the requested rollout template does not exist.
+	ErrRolloutTemplateNotFound = errors.New("rollout template not found")
 )
 
 const (
@@ -124,6 +126,14 @@ func NormalizeAlertEvents(events []protocol.AlertEventType) ([]protocol.AlertEve
 		out = append(out, event)
 	}
 	return out, nil
+}
+
+// RolloutTemplateStore persists reusable rollout specs.
+type RolloutTemplateStore interface {
+	CreateRolloutTemplate(ctx context.Context, name string, spec protocol.RolloutSpec, now time.Time) (protocol.RolloutTemplate, error)
+	ListRolloutTemplates(ctx context.Context) ([]protocol.RolloutTemplate, error)
+	GetRolloutTemplate(ctx context.Context, id string) (*protocol.RolloutTemplate, error)
+	DeleteRolloutTemplate(ctx context.Context, id string) error
 }
 
 // SettingsStore persists operator-tunable server settings.
@@ -251,6 +261,21 @@ func ValidateOperatorTokenName(name string) (string, error) {
 	}
 	if hasControlCharacter(name) {
 		return "", errors.New("operator token name must not contain control characters")
+	}
+	return name, nil
+}
+
+// ValidateRolloutTemplateName trims and validates a rollout template name.
+func ValidateRolloutTemplateName(name string) (string, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "", errors.New("rollout template name is required")
+	}
+	if len(name) > 120 {
+		return "", errors.New("rollout template name is too long")
+	}
+	if hasControlCharacter(name) {
+		return "", errors.New("rollout template name must not contain control characters")
 	}
 	return name, nil
 }
@@ -457,4 +482,5 @@ type Store interface {
 	HealthStore
 	AlertWebhookStore
 	SettingsStore
+	RolloutTemplateStore
 }

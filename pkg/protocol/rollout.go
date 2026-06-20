@@ -100,9 +100,37 @@ type Rollout struct {
 	FinishedAt     time.Time      `json:"finishedAt,omitzero"`
 }
 
-// CreateRolloutRequest creates a rollout from the provided spec.
+// CreateRolloutRequest creates a rollout from the provided spec. When TemplateID
+// is set, the referenced template's spec prefills the rollout; the resulting
+// spec is still resolved and validated at creation time.
 type CreateRolloutRequest struct {
+	Spec       RolloutSpec `json:"spec"`
+	TemplateID string      `json:"templateId,omitempty"`
+}
+
+// RolloutTemplate is a saved, reusable RolloutSpec. It is never executed on its
+// own; it only prefills new rollouts.
+type RolloutTemplate struct {
+	ID        string      `json:"id"`
+	Name      string      `json:"name"`
+	Spec      RolloutSpec `json:"spec"`
+	CreatedAt time.Time   `json:"createdAt"`
+}
+
+// CreateRolloutTemplateRequest saves a reusable rollout spec under a name.
+type CreateRolloutTemplateRequest struct {
+	Name string      `json:"name"`
 	Spec RolloutSpec `json:"spec"`
+}
+
+// CreateRolloutTemplateResponse returns the saved rollout template.
+type CreateRolloutTemplateResponse struct {
+	Template RolloutTemplate `json:"template"`
+}
+
+// ListRolloutTemplatesResponse lists saved rollout templates.
+type ListRolloutTemplatesResponse struct {
+	Templates []RolloutTemplate `json:"templates"`
 }
 
 // CreateRolloutResponse returns the created rollout.

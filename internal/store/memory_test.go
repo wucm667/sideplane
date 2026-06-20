@@ -393,6 +393,55 @@ func TestMemoryNodeStoreAlertWebhookLifecycle(t *testing.T) {
 	}
 }
 
+func TestMemoryNodeStoreRolloutTemplateLifecycle(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryNodeStore()
+	now := time.Date(2026, 6, 18, 12, 0, 0, 0, time.UTC)
+	spec := protocol.RolloutSpec{
+		Selector:    map[string]string{"role": "canary"},
+		RuntimeType: "hermes",
+		Target:      protocol.ProviderModelConfig{Provider: "openai", Model: "gpt-4o"},
+		BatchSize:   2,
+		Live:        true,
+	}
+
+	created, err := store.CreateRolloutTemplate(ctx, "canary", spec, now)
+	if err != nil {
+		t.Fatalf("create template: %v", err)
+	}
+	if created.ID == "" || created.Name != "canary" || created.Spec.BatchSize != 2 {
+		t.Fatalf("created template = %+v, want name and spec", created)
+	}
+
+	// Stored spec is a copy; mutating the input must not affect the store.
+	spec.Selector["role"] = "mutated"
+	got, err := store.GetRolloutTemplate(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("get template: %v", err)
+	}
+	if got.Spec.Selector["role"] != "canary" {
+		t.Fatalf("template selector = %q, want isolated copy", got.Spec.Selector["role"])
+	}
+
+	listed, err := store.ListRolloutTemplates(ctx)
+	if err != nil {
+		t.Fatalf("list templates: %v", err)
+	}
+	if len(listed) != 1 || listed[0].ID != created.ID {
+		t.Fatalf("listed templates = %+v, want created template", listed)
+	}
+
+	if err := store.DeleteRolloutTemplate(ctx, created.ID); err != nil {
+		t.Fatalf("delete template: %v", err)
+	}
+	if _, err := store.GetRolloutTemplate(ctx, created.ID); !errors.Is(err, ErrRolloutTemplateNotFound) {
+		t.Fatalf("get after delete err = %v, want ErrRolloutTemplateNotFound", err)
+	}
+	if _, err := store.CreateRolloutTemplate(ctx, "  ", spec, now); err == nil {
+		t.Fatalf("expected error for blank template name")
+	}
+}
+
 func TestMemoryNodeStoreServerSettingsExpectedSidecarVersion(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemoryNodeStore()

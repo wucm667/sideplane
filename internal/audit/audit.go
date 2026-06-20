@@ -57,4 +57,8 @@ const (
 	ActionAlertWebhookDelete = "alert.webhook.delete"
 	// ActionServerSettingsUpdate records operator updates to server settings.
 	ActionServerSettingsUpdate = "server.settings.update"
+	// ActionRolloutTemplateCreate records creation of a rollout template.
+	ActionRolloutTemplateCreate = "rollout.template.create"
+	// ActionRolloutTemplateDelete records deletion of a rollout template.
+	ActionRolloutTemplateDelete = "rollout.template.delete"
 )

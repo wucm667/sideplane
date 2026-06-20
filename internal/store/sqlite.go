@@ -1137,6 +1137,124 @@ func scanSQLiteAlertWebhook(scanner sqliteScanner) (protocol.AlertWebhook, strin
 	return webhook, secret, nil
 }
 
+// CreateRolloutTemplate stores a reusable rollout spec under a name.
+func (s *SQLiteNodeStore) CreateRolloutTemplate(ctx context.Context, name string, spec protocol.RolloutSpec, now time.Time) (protocol.RolloutTemplate, error) {
+	if s == nil || s.db == nil {
+		return protocol.RolloutTemplate{}, errors.New("sqlite node store is closed")
+	}
+	name, err := ValidateRolloutTemplateName(name)
+	if err != nil {
+		return protocol.RolloutTemplate{}, err
+	}
+	id, err := newRandomID("rtpl_")
+	if err != nil {
+		return protocol.RolloutTemplate{}, err
+	}
+	specJSON, err := json.Marshal(spec)
+	if err != nil {
+		return protocol.RolloutTemplate{}, fmt.Errorf("encode rollout template spec: %w", err)
+	}
+	createdAt := now.UTC()
+	if _, err := s.db.ExecContext(ctx, `
+INSERT INTO rollout_templates (id, name, spec_json, created_at)
+VALUES (?, ?, ?, ?)
+`, id, name, string(specJSON), formatDBTime(createdAt)); err != nil {
+		return protocol.RolloutTemplate{}, fmt.Errorf("insert rollout template: %w", err)
+	}
+	return protocol.RolloutTemplate{ID: id, Name: name, Spec: spec, CreatedAt: createdAt}, nil
+}
+
+// ListRolloutTemplates returns saved rollout templates newest-first.
+func (s *SQLiteNodeStore) ListRolloutTemplates(ctx context.Context) ([]protocol.RolloutTemplate, error) {
+	if s == nil || s.db == nil {
+		return nil, errors.New("sqlite node store is closed")
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT id, name, spec_json, created_at
+FROM rollout_templates
+ORDER BY created_at DESC, id DESC
+`)
+	if err != nil {
+		return nil, fmt.Errorf("query rollout templates: %w", err)
+	}
+	defer rows.Close()
+	templates := []protocol.RolloutTemplate{}
+	for rows.Next() {
+		template, err := scanSQLiteRolloutTemplate(rows)
+		if err != nil {
+			return nil, err
+		}
+		templates = append(templates, template)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate rollout templates: %w", err)
+	}
+	return templates, nil
+}
+
+// GetRolloutTemplate returns one rollout template by ID.
+func (s *SQLiteNodeStore) GetRolloutTemplate(ctx context.Context, id string) (*protocol.RolloutTemplate, error) {
+	if s == nil || s.db == nil {
+		return nil, errors.New("sqlite node store is closed")
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil, ErrRolloutTemplateNotFound
+	}
+	template, err := scanSQLiteRolloutTemplate(s.db.QueryRowContext(ctx, `
+SELECT id, name, spec_json, created_at
+FROM rollout_templates
+WHERE id = ?
+`, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrRolloutTemplateNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &template, nil
+}
+
+// DeleteRolloutTemplate removes a rollout template by ID.
+func (s *SQLiteNodeStore) DeleteRolloutTemplate(ctx context.Context, id string) error {
+	if s == nil || s.db == nil {
+		return errors.New("sqlite node store is closed")
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return ErrRolloutTemplateNotFound
+	}
+	result, err := s.db.ExecContext(ctx, `DELETE FROM rollout_templates WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("delete rollout template: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("count rollout template delete: %w", err)
+	}
+	if affected == 0 {
+		return ErrRolloutTemplateNotFound
+	}
+	return nil
+}
+
+func scanSQLiteRolloutTemplate(scanner sqliteScanner) (protocol.RolloutTemplate, error) {
+	var template protocol.RolloutTemplate
+	var specJSON, createdAtText string
+	if err := scanner.Scan(&template.ID, &template.Name, &specJSON, &createdAtText); err != nil {
+		return protocol.RolloutTemplate{}, err
+	}
+	if err := json.Unmarshal([]byte(specJSON), &template.Spec); err != nil {
+		return protocol.RolloutTemplate{}, fmt.Errorf("decode rollout template spec: %w", err)
+	}
+	createdAt, err := parseDBTime(createdAtText)
+	if err != nil {
+		return protocol.RolloutTemplate{}, fmt.Errorf("parse rollout template created_at: %w", err)
+	}
+	template.CreatedAt = createdAt
+	return template, nil
+}
+
 // GetServerSettings returns the operator-tunable server settings.
 func (s *SQLiteNodeStore) GetServerSettings(ctx context.Context) (protocol.ServerSettings, error) {
 	if s == nil || s.db == nil {

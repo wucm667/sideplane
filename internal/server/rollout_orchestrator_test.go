@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wucm667/sideplane/internal/audit"
 	rolloutengine "github.com/wucm667/sideplane/internal/rollout"
 	"github.com/wucm667/sideplane/internal/store"
 	spcrypto "github.com/wucm667/sideplane/pkg/crypto"
@@ -244,6 +245,95 @@ func TestRolloutOrchestratorPausesOnApplyFailureAndStopsDispatch(t *testing.T) {
 	}
 	if configApplyJobs != 0 {
 		t.Fatalf("node-b config apply jobs = %d, want 0", configApplyJobs)
+	}
+}
+
+func TestRolloutTemplatesEndpointsAndPrefill(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 6, 18, 9, 0, 0, 0, time.UTC)
+	nodeStore := store.NewMemoryNodeStore()
+	enrollRolloutNode(t, nodeStore, "node-a", now)
+	seedRolloutProbe(t, nodeStore, "node-a", "hermes", "", "/etc/sideplane-test/a.json", now)
+	keyPair := generateRolloutSigningKey(t)
+	handler, err := NewHandlerWithConfig(HandlerConfig{
+		Store:                           nodeStore,
+		Freshness:                       DefaultFreshnessPolicy(),
+		AllowUnauthenticatedOperatorAPI: true,
+		SigningKeyPair:                  keyPair,
+	})
+	if err != nil {
+		t.Fatalf("build handler: %v", err)
+	}
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	created := doJSONRequest[protocol.CreateRolloutTemplateResponse](t, server.Client(), http.MethodPost, server.URL+"/api/rollout-templates", "", protocol.CreateRolloutTemplateRequest{
+		Name: "canary",
+		Spec: protocol.RolloutSpec{
+			NodeIDs:     []string{"node-a"},
+			RuntimeType: "hermes",
+			Target:      protocol.ProviderModelConfig{Provider: "openai", Model: "gpt-4o"},
+			BatchSize:   3,
+		},
+	})
+	if created.Template.ID == "" || created.Template.Spec.BatchSize != 3 {
+		t.Fatalf("created template = %+v, want id and spec", created.Template)
+	}
+
+	listed := doJSONRequest[protocol.ListRolloutTemplatesResponse](t, server.Client(), http.MethodGet, server.URL+"/api/rollout-templates", "", nil)
+	if len(listed.Templates) != 1 || listed.Templates[0].ID != created.Template.ID {
+		t.Fatalf("listed templates = %+v, want created template", listed.Templates)
+	}
+
+	// Creating a rollout from the template prefills the spec (batchSize 3).
+	rollout := doJSONRequest[protocol.CreateRolloutResponse](t, server.Client(), http.MethodPost, server.URL+"/api/rollouts", "", protocol.CreateRolloutRequest{
+		TemplateID: created.Template.ID,
+	})
+	if rollout.Rollout.Spec.BatchSize != 3 || rollout.Rollout.Spec.Target.Model != "gpt-4o" {
+		t.Fatalf("rollout spec = %+v, want prefilled from template", rollout.Rollout.Spec)
+	}
+	if len(rollout.Rollout.Spec.NodeIDs) != 1 || rollout.Rollout.Spec.NodeIDs[0] != "node-a" {
+		t.Fatalf("rollout nodes = %+v, want resolved node-a", rollout.Rollout.Spec.NodeIDs)
+	}
+
+	// Unknown template id -> 404.
+	req, _ := http.NewRequest(http.MethodPost, server.URL+"/api/rollouts", strings.NewReader(`{"templateId":"rtpl_missing"}`))
+	req.Header.Set("Content-Type", "application/json")
+	res, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatalf("missing template request: %v", err)
+	}
+	res.Body.Close()
+	if res.StatusCode != http.StatusNotFound {
+		t.Fatalf("missing template status = %d, want 404", res.StatusCode)
+	}
+
+	// Delete template.
+	delReq, _ := http.NewRequest(http.MethodDelete, server.URL+"/api/rollout-templates/"+created.Template.ID, nil)
+	delRes, err := server.Client().Do(delReq)
+	if err != nil {
+		t.Fatalf("delete template: %v", err)
+	}
+	delRes.Body.Close()
+	if delRes.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete status = %d, want 204", delRes.StatusCode)
+	}
+
+	events, err := nodeStore.ListAuditEventsFiltered(ctx, store.AuditFilter{Limit: 50})
+	if err != nil {
+		t.Fatalf("list audit events: %v", err)
+	}
+	var sawCreate, sawDelete bool
+	for _, event := range events {
+		switch event.Action {
+		case audit.ActionRolloutTemplateCreate:
+			sawCreate = true
+		case audit.ActionRolloutTemplateDelete:
+			sawDelete = true
+		}
+	}
+	if !sawCreate || !sawDelete {
+		t.Fatalf("template audit actions create=%t delete=%t", sawCreate, sawDelete)
 	}
 }
 

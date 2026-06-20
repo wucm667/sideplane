@@ -262,6 +262,22 @@ ON heartbeats(node_id, observed_at DESC)`,
 	)`,
 		},
 	},
+	{
+		version: 15,
+		name:    "create rollout templates table",
+		statements: []string{
+			`
+	CREATE TABLE IF NOT EXISTS rollout_templates (
+		id TEXT PRIMARY KEY,
+		name TEXT NOT NULL,
+		spec_json TEXT NOT NULL,
+		created_at TEXT NOT NULL
+	)`,
+			`
+	CREATE INDEX IF NOT EXISTS idx_rollout_templates_created_at
+	ON rollout_templates(created_at DESC, id DESC)`,
+		},
+	},
 }
 
 // LatestSQLiteSchemaVersion returns the newest migration version compiled into
