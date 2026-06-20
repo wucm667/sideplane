@@ -62,6 +62,21 @@ type NodeLabelsResponse struct {
 	Labels map[string]string `json:"labels"`
 }
 
+// BulkNodeLabelsRequest merges Labels onto every node matched by Selector or
+// NodeIDs. Exactly one of Selector or NodeIDs must be set, and Labels must be
+// non-empty. Existing labels with other keys are preserved.
+type BulkNodeLabelsRequest struct {
+	Selector map[string]string `json:"selector,omitempty"`
+	NodeIDs  []string          `json:"nodeIds,omitempty"`
+	Labels   map[string]string `json:"labels"`
+}
+
+// BulkNodeLabelsResponse returns the nodes updated and the applied label keys.
+type BulkNodeLabelsResponse struct {
+	NodeIDs []string `json:"nodeIds"`
+	Updated int      `json:"updated"`
+}
+
 // HeartbeatRequest is sent by sidecars to report their current lightweight state.
 type HeartbeatRequest struct {
 	NodeID         string          `json:"nodeId"`

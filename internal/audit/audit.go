@@ -23,6 +23,8 @@ const (
 	ActionNodeDelete = "node.delete"
 	// ActionNodeLabelsUpdate records operator updates to node labels.
 	ActionNodeLabelsUpdate = "node.labels.update"
+	// ActionNodeLabelsBulkUpdate records bulk label assignment across a selection.
+	ActionNodeLabelsBulkUpdate = "node.labels.bulk.update"
 	// ActionJobCreate records operator job creation.
 	ActionJobCreate = "job.create"
 	// ActionJobBulkCreate records bulk job creation across a node selection.

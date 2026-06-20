@@ -1117,6 +1117,117 @@ func TestBulkJobCreationBySelectorAndNodeIDs(t *testing.T) {
 	}
 }
 
+func TestBulkNodeLabelAssignmentMergesAndAudits(t *testing.T) {
+	ctx := context.Background()
+	nodeStore := store.NewMemoryNodeStore()
+	for _, id := range []string{"node-a", "node-b", "node-c"} {
+		enrollTestNode(t, nodeStore, id)
+	}
+	if err := nodeStore.SetNodeLabels(ctx, "node-a", map[string]string{"zone": "lab"}); err != nil {
+		t.Fatalf("seed node-a labels: %v", err)
+	}
+	if err := nodeStore.SetNodeLabels(ctx, "node-b", map[string]string{"zone": "lab"}); err != nil {
+		t.Fatalf("seed node-b labels: %v", err)
+	}
+	handler, err := NewHandlerWithConfig(HandlerConfig{
+		Store:         nodeStore,
+		Freshness:     DefaultFreshnessPolicy(),
+		OperatorToken: "dev-token",
+	})
+	if err != nil {
+		t.Fatalf("build handler: %v", err)
+	}
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	resp := doJSONRequest[protocol.BulkNodeLabelsResponse](t, server.Client(), http.MethodPut, server.URL+"/api/nodes/labels", "dev-token", protocol.BulkNodeLabelsRequest{
+		Selector: map[string]string{"zone": "lab"},
+		Labels:   map[string]string{"role": "canary"},
+	})
+	if resp.Updated != 2 || len(resp.NodeIDs) != 2 {
+		t.Fatalf("bulk labels response = %+v, want 2 updated", resp)
+	}
+
+	// Existing zone label is preserved, role is added.
+	labelsA, err := nodeStore.GetNodeLabels(ctx, "node-a")
+	if err != nil {
+		t.Fatalf("get node-a labels: %v", err)
+	}
+	if labelsA["zone"] != "lab" || labelsA["role"] != "canary" {
+		t.Fatalf("node-a labels = %+v, want merged zone+role", labelsA)
+	}
+	// node-c was not matched.
+	labelsC, err := nodeStore.GetNodeLabels(ctx, "node-c")
+	if err != nil {
+		t.Fatalf("get node-c labels: %v", err)
+	}
+	if labelsC["role"] != "" {
+		t.Fatalf("node-c labels = %+v, want untouched", labelsC)
+	}
+
+	events, err := nodeStore.ListAuditEventsFiltered(ctx, store.AuditFilter{Limit: 50})
+	if err != nil {
+		t.Fatalf("list audit events: %v", err)
+	}
+	sawBulk := false
+	for _, event := range events {
+		if event.Action == audit.ActionNodeLabelsBulkUpdate {
+			sawBulk = true
+		}
+	}
+	if !sawBulk {
+		t.Fatalf("audit events missing %s; events=%#v", audit.ActionNodeLabelsBulkUpdate, events)
+	}
+}
+
+func TestBulkNodeLabelAssignmentValidation(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	enrollTestNode(t, nodeStore, "node-a")
+	handler, err := NewHandlerWithConfig(HandlerConfig{
+		Store:         nodeStore,
+		Freshness:     DefaultFreshnessPolicy(),
+		OperatorToken: "dev-token",
+	})
+	if err != nil {
+		t.Fatalf("build handler: %v", err)
+	}
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	cases := []struct {
+		name string
+		body protocol.BulkNodeLabelsRequest
+		want int
+	}{
+		{name: "missing labels", body: protocol.BulkNodeLabelsRequest{NodeIDs: []string{"node-a"}}, want: http.StatusBadRequest},
+		{name: "selector and nodeIds", body: protocol.BulkNodeLabelsRequest{NodeIDs: []string{"node-a"}, Selector: map[string]string{"a": "b"}, Labels: map[string]string{"role": "x"}}, want: http.StatusBadRequest},
+		{name: "neither selector nor nodeIds", body: protocol.BulkNodeLabelsRequest{Labels: map[string]string{"role": "x"}}, want: http.StatusBadRequest},
+		{name: "missing node", body: protocol.BulkNodeLabelsRequest{NodeIDs: []string{"ghost"}, Labels: map[string]string{"role": "x"}}, want: http.StatusNotFound},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var payload bytes.Buffer
+			if err := json.NewEncoder(&payload).Encode(tc.body); err != nil {
+				t.Fatalf("encode body: %v", err)
+			}
+			req, err := http.NewRequest(http.MethodPut, server.URL+"/api/nodes/labels", &payload)
+			if err != nil {
+				t.Fatalf("build request: %v", err)
+			}
+			req.Header.Set("Authorization", "Bearer dev-token")
+			req.Header.Set("Content-Type", "application/json")
+			res, err := server.Client().Do(req)
+			if err != nil {
+				t.Fatalf("do request: %v", err)
+			}
+			defer res.Body.Close()
+			if res.StatusCode != tc.want {
+				t.Fatalf("status = %d, want %d", res.StatusCode, tc.want)
+			}
+		})
+	}
+}
+
 func TestBulkJobCreationValidation(t *testing.T) {
 	nodeStore := store.NewMemoryNodeStore()
 	enrollTestNode(t, nodeStore, "node-a")

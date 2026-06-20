@@ -145,6 +145,7 @@ func NewHandlerWithConfig(cfg HandlerConfig) (http.Handler, error) {
 	mux.HandleFunc("/api/rollouts", handler.rollouts)
 	mux.HandleFunc("/api/rollouts/", handler.rolloutRouter)
 	mux.HandleFunc("/api/jobs/bulk", handler.bulkJobs)
+	mux.HandleFunc("/api/nodes/labels", handler.bulkNodeLabels)
 	mux.HandleFunc("/api/nodes", handler.nodes)
 	mux.HandleFunc("/api/nodes/", handler.nodeJobsRouter)
 	mux.HandleFunc("/api/sidecar/jobs/next", handler.claimNextJob)
@@ -1464,6 +1465,98 @@ func (h *handler) bulkJobs(w http.ResponseWriter, r *http.Request) {
 		CreatedAt: now,
 	})
 	writeJSON(w, http.StatusCreated, protocol.BulkJobResponse{Jobs: results, Created: created})
+}
+
+func (h *handler) bulkNodeLabels(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPut {
+		w.Header().Set("Allow", http.MethodPut)
+		writeAPIError(w, http.StatusMethodNotAllowed, http.StatusText(http.StatusMethodNotAllowed))
+		return
+	}
+	if !h.authorizeOperator(w, r) {
+		return
+	}
+	var req protocol.BulkNodeLabelsRequest
+	if err := decodeJSONRequest(w, r, defaultJSONBodyLimit, &req); err != nil {
+		writeJSONDecodeError(w, err, "invalid bulk labels JSON")
+		return
+	}
+	labels, err := store.ValidateNodeLabels(req.Labels)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "invalid labels: "+err.Error())
+		return
+	}
+	if len(labels) == 0 {
+		writeAPIError(w, http.StatusBadRequest, "labels are required")
+		return
+	}
+	nodeIDs := uniqueTrimmedStrings(req.NodeIDs)
+	selector, err := store.ValidateNodeLabels(req.Selector)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "invalid selector: "+err.Error())
+		return
+	}
+	if len(nodeIDs) > 0 && len(selector) > 0 {
+		writeAPIError(w, http.StatusBadRequest, "selector and nodeIds are mutually exclusive")
+		return
+	}
+	if len(nodeIDs) == 0 && len(selector) == 0 {
+		writeAPIError(w, http.StatusBadRequest, "selector or nodeIds is required")
+		return
+	}
+
+	targets, err := h.resolveTargetNodes(r.Context(), selector, nodeIDs)
+	if err != nil {
+		if errors.Is(err, store.ErrNodeNotFound) {
+			writeAPIError(w, http.StatusNotFound, "node not found")
+			return
+		}
+		writeAPIError(w, http.StatusInternalServerError, "resolve label target nodes")
+		return
+	}
+	if len(targets) == 0 {
+		writeAPIError(w, http.StatusBadRequest, "label target set is empty")
+		return
+	}
+
+	for _, nodeID := range targets {
+		existing, err := h.store.GetNodeLabels(r.Context(), nodeID)
+		if err != nil {
+			writeAPIError(w, http.StatusInternalServerError, "read node labels")
+			return
+		}
+		merged := make(map[string]string, len(existing)+len(labels))
+		for key, value := range existing {
+			merged[key] = value
+		}
+		for key, value := range labels {
+			merged[key] = value
+		}
+		if err := h.store.SetNodeLabels(r.Context(), nodeID, merged); err != nil {
+			writeAPIError(w, http.StatusInternalServerError, "set node labels")
+			return
+		}
+	}
+
+	now := time.Now().UTC()
+	h.logger.Info("bulk node labels applied", "matched", len(targets), "keys", len(labels))
+	h.audit(r.Context(), protocol.AuditEvent{
+		Actor:     audit.ActorOperator,
+		Action:    audit.ActionNodeLabelsBulkUpdate,
+		Detail:    fmt.Sprintf("nodes=%d keys=%s", len(targets), labelKeysSummary(labels)),
+		CreatedAt: now,
+	})
+	writeJSON(w, http.StatusOK, protocol.BulkNodeLabelsResponse{NodeIDs: targets, Updated: len(targets)})
+}
+
+// labelKeysSummary renders the sorted set of label keys for audit detail.
+func labelKeysSummary(labels map[string]string) string {
+	keys := make([]string, 0, len(labels))
+	for key := range labels {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return strings.Join(keys, ",")
 }
 
 func (h *handler) createRestartJob(w http.ResponseWriter, r *http.Request, nodeID string) {
