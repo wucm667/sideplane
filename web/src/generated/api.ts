@@ -15,6 +15,11 @@ export interface AcceptedResponse {
   status: "accepted" | "accepted_late";
 }
 
+export interface EventTicketResponse {
+  ticket: string;
+  expiresAt: string;
+}
+
 export interface CreateEnrollmentTokenRequest {
   expiresAt?: string;
 }
@@ -22,6 +27,31 @@ export interface CreateEnrollmentTokenRequest {
 export interface CreateEnrollmentTokenResponse {
   token: string;
   expiresAt: string;
+}
+
+export interface OperatorToken {
+  id: string;
+  name: string;
+  createdAt: string;
+  lastUsedAt?: string;
+  revokedAt?: string;
+}
+
+export interface CreateOperatorTokenRequest {
+  name: string;
+}
+
+export interface CreateOperatorTokenResponse {
+  operatorToken: OperatorToken;
+  token: string;
+}
+
+export interface ListOperatorTokensResponse {
+  tokens: OperatorToken[];
+}
+
+export interface RevokeOperatorTokenResponse {
+  operatorToken: OperatorToken;
 }
 
 export interface EnrollNodeRequest {
@@ -58,6 +88,7 @@ export interface NodeStatus {
   lastHeartbeatAt: string;
   runtimes?: RuntimeStatus[];
   configHash?: string;
+  labels?: Labels;
   lastError?: string;
 }
 
@@ -68,6 +99,19 @@ export interface ListNodesResponse {
   total: number;
   limit: number;
   offset: number;
+}
+
+export interface Labels {
+  [key: string]: string;
+}
+
+export interface NodeLabelsRequest {
+  labels: Labels;
+}
+
+export interface NodeLabelsResponse {
+  nodeId: string;
+  labels: Labels;
 }
 
 export interface HeartbeatRequest {
@@ -168,6 +212,21 @@ export interface RollbackBackup {
   createdAt?: string;
 }
 
+export interface RollbackBackupInventoryItem {
+  ref: string;
+  sourceJobId: string;
+  runtimeType?: string;
+  profile?: string;
+  configHash?: string;
+  createdAt?: string;
+}
+
+export interface ListRollbackBackupsResponse {
+  backups: RollbackBackupInventoryItem[];
+  total: number;
+  limit: number;
+}
+
 export interface RollbackRequest {
   runtimeType?: "hermes" | "openclaw";
   runtimeName?: string;
@@ -192,6 +251,80 @@ export interface RollbackJobResult {
   healthStatus?: string;
 }
 
+export type RolloutState = "pending" | "running" | "paused" | "completed" | "aborted" | "failed";
+
+export type RolloutBatchState = "pending" | "running" | "completed" | "paused" | "failed";
+
+export type RolloutNodeState = "pending" | "dispatched" | "succeeded" | "failed" | "timed_out" | "offline";
+
+export type RolloutAction = "pause" | "resume" | "abort";
+
+export interface RolloutSpec {
+  selector?: Labels;
+  nodeIds?: string[];
+  runtimeType: "hermes" | "openclaw";
+  profile?: string;
+  target: ProviderModelConfig;
+  batchSize?: number;
+  live: boolean;
+  healthTimeout?: number;
+}
+
+export interface RolloutNodeProgress {
+  nodeId: string;
+  jobId?: string;
+  state: RolloutNodeState;
+  lastError?: string;
+  startedAt?: string;
+  finishedAt?: string;
+}
+
+export interface RolloutBatch {
+  index: number;
+  nodeIds: string[];
+  state: RolloutBatchState;
+  nodes: { [key: string]: RolloutNodeProgress };
+}
+
+export interface Rollout {
+  id: string;
+  spec: RolloutSpec;
+  state: RolloutState;
+  batches: RolloutBatch[];
+  pauseReason?: string;
+  failingNodeIds?: string[];
+  createdAt: string;
+  updatedAt: string;
+  finishedAt?: string;
+}
+
+export interface CreateRolloutRequest {
+  spec: RolloutSpec;
+}
+
+export interface CreateRolloutResponse {
+  rollout: Rollout;
+}
+
+export interface ListRolloutsResponse {
+  rollouts: Rollout[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface GetRolloutResponse {
+  rollout: Rollout;
+}
+
+export interface RolloutActionRequest {
+  action: RolloutAction;
+}
+
+export interface RolloutActionResponse {
+  rollout: Rollout;
+}
+
 export interface RuntimeConfigSnapshot {
   runtimeName: string;
   runtimeType: string;
@@ -214,6 +347,30 @@ export interface DesiredConfig {
   nodeOverrides?: { [key: string]: ProviderModelConfig };
   runtimeProfileOverrides?: { [key: string]: ProviderModelConfig };
   nodeRuntimeProfileOverrides?: { [key: string]: ProviderModelConfig };
+}
+
+export interface DesiredConfigHistoryEntry {
+  id: string;
+  config: DesiredConfig;
+  desiredHash?: string;
+  updatedAt: string;
+  actor: string;
+}
+
+export interface ListDesiredConfigHistoryResponse {
+  history: DesiredConfigHistoryEntry[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface RevertDesiredConfigRequest {
+  historyId: string;
+}
+
+export interface RevertDesiredConfigResponse {
+  desired: DesiredConfig;
+  history: DesiredConfigHistoryEntry;
 }
 
 export interface ConfigDiffEntry {

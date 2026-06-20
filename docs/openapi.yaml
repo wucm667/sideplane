@@ -14,6 +14,7 @@ servers:
 tags:
   - name: Health
   - name: Metrics
+  - name: Events
   - name: Operator
   - name: Sidecar
 security: []
@@ -54,6 +55,59 @@ paths:
             text/plain:
               schema:
                 type: string
+  /api/events:
+    get:
+      tags: [Events]
+      summary: Stream server-sent fleet events.
+      operationId: streamEvents
+      description: >
+        Streams `node`, `job`, and `rollout` events as `text/event-stream`.
+        Clients may authenticate with an operator bearer token or with a
+        one-use ticket from `POST /api/events/tickets`.
+      security:
+        - operatorBearer: []
+        - eventTicket: []
+      parameters:
+        - name: ticket
+          in: query
+          required: false
+          schema:
+            type: string
+          description: One-use event stream ticket for browser EventSource clients.
+      responses:
+        "200":
+          description: Server-sent event stream.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+              examples:
+                node:
+                  value: "event: node\ndata: {\"nodeId\":\"node-a\",\"state\":\"fresh\"}\n\n"
+                job:
+                  value: "event: job\ndata: {\"jobId\":\"job-a\",\"nodeId\":\"node-a\",\"status\":\"completed\"}\n\n"
+                rollout:
+                  value: "event: rollout\ndata: {\"rolloutId\":\"rollout-a\",\"state\":\"running\"}\n\n"
+        "401":
+          $ref: "#/components/responses/APIError"
+  /api/events/tickets:
+    post:
+      tags: [Events]
+      summary: Create a one-use SSE ticket.
+      operationId: createEventTicket
+      security:
+        - operatorBearer: []
+      responses:
+        "201":
+          description: Short-lived one-use event stream ticket.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EventTicketResponse"
+        "401":
+          $ref: "#/components/responses/APIError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
   /api/enrollment-tokens:
     post:
       tags: [Operator]
@@ -79,8 +133,79 @@ paths:
               example:
                 token: "enroll_example_token"
                 expiresAt: "2026-06-19T12:00:00Z"
+        "400":
+          $ref: "#/components/responses/APIError"
         "401":
           $ref: "#/components/responses/APIError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+  /api/operator-tokens:
+    get:
+      tags: [Operator]
+      summary: List named operator token metadata.
+      operationId: listOperatorTokens
+      security:
+        - operatorBearer: []
+      responses:
+        "200":
+          description: Operator token metadata. Plaintext tokens are never listed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListOperatorTokensResponse"
+        "401":
+          $ref: "#/components/responses/APIError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+    post:
+      tags: [Operator]
+      summary: Create a named revocable operator token.
+      operationId: createOperatorToken
+      security:
+        - operatorBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateOperatorTokenRequest"
+            example:
+              name: workstation
+      responses:
+        "201":
+          description: Plaintext operator token returned once.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateOperatorTokenResponse"
+        "400":
+          $ref: "#/components/responses/APIError"
+        "401":
+          $ref: "#/components/responses/APIError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+  /api/operator-tokens/{tokenId}:
+    delete:
+      tags: [Operator]
+      summary: Revoke a named operator token.
+      operationId: revokeOperatorToken
+      security:
+        - operatorBearer: []
+      parameters:
+        - $ref: "#/components/parameters/TokenId"
+      responses:
+        "200":
+          description: Revoked token metadata.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RevokeOperatorTokenResponse"
+        "401":
+          $ref: "#/components/responses/APIError"
+        "404":
+          $ref: "#/components/responses/APIError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
   /api/enroll:
     post:
       tags: [Sidecar]
@@ -111,6 +236,8 @@ paths:
           $ref: "#/components/responses/APIError"
         "409":
           $ref: "#/components/responses/APIError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
   /api/heartbeat:
     post:
       tags: [Sidecar]
@@ -156,6 +283,12 @@ paths:
             minimum: 0
             default: 0
           description: Number of nodes to skip from the stable node ID order.
+        - name: selector
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Comma-separated exact label matches, for example `role=canary,zone=lab`.
       responses:
         "200":
           description: Paginated fleet nodes.
@@ -163,6 +296,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ListNodesResponse"
+        "400":
+          $ref: "#/components/responses/APIError"
   /api/nodes/{nodeId}:
     delete:
       tags: [Operator]
@@ -179,6 +314,216 @@ paths:
           $ref: "#/components/responses/APIError"
         "404":
           $ref: "#/components/responses/APIError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+  /api/nodes/{nodeId}/labels:
+    get:
+      tags: [Operator]
+      summary: Get operator-managed node labels.
+      operationId: getNodeLabels
+      security:
+        - operatorBearer: []
+      parameters:
+        - $ref: "#/components/parameters/NodeId"
+      responses:
+        "200":
+          description: Node labels.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NodeLabelsResponse"
+        "401":
+          $ref: "#/components/responses/APIError"
+        "404":
+          $ref: "#/components/responses/APIError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+    put:
+      tags: [Operator]
+      summary: Replace operator-managed node labels.
+      operationId: putNodeLabels
+      security:
+        - operatorBearer: []
+      parameters:
+        - $ref: "#/components/parameters/NodeId"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NodeLabelsRequest"
+            example:
+              labels:
+                role: canary
+                zone: lab
+      responses:
+        "200":
+          description: Updated node labels.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NodeLabelsResponse"
+        "400":
+          $ref: "#/components/responses/APIError"
+        "401":
+          $ref: "#/components/responses/APIError"
+        "404":
+          $ref: "#/components/responses/APIError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+  /api/nodes/{nodeId}/backups:
+    get:
+      tags: [Operator]
+      summary: List rollback backup inventory for a node.
+      operationId: listNodeBackups
+      description: >
+        Lists server-known backup references derived from prior config_apply
+        job results. Sidecar-local paths are intentionally omitted.
+      security:
+        - operatorBearer: []
+      parameters:
+        - $ref: "#/components/parameters/NodeId"
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 50
+      responses:
+        "200":
+          description: Backup references, newest first.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListRollbackBackupsResponse"
+        "400":
+          $ref: "#/components/responses/APIError"
+        "401":
+          $ref: "#/components/responses/APIError"
+        "404":
+          $ref: "#/components/responses/APIError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+  /api/rollouts:
+    get:
+      tags: [Operator]
+      summary: List staged fleet rollouts.
+      operationId: listRollouts
+      security:
+        - operatorBearer: []
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 50
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+      responses:
+        "200":
+          description: Paginated rollout list.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListRolloutsResponse"
+        "400":
+          $ref: "#/components/responses/APIError"
+        "401":
+          $ref: "#/components/responses/APIError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+    post:
+      tags: [Operator]
+      summary: Create a staged fleet rollout.
+      operationId: createRollout
+      description: >
+        Resolves a label selector or explicit node IDs and creates sequential
+        config-apply batches. Dry-run rollout jobs are the default.
+      security:
+        - operatorBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateRolloutRequest"
+      responses:
+        "201":
+          description: Rollout created.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateRolloutResponse"
+        "400":
+          $ref: "#/components/responses/APIError"
+        "401":
+          $ref: "#/components/responses/APIError"
+        "404":
+          $ref: "#/components/responses/APIError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+  /api/rollouts/{rolloutId}:
+    get:
+      tags: [Operator]
+      summary: Get one staged fleet rollout.
+      operationId: getRollout
+      security:
+        - operatorBearer: []
+      parameters:
+        - $ref: "#/components/parameters/RolloutId"
+      responses:
+        "200":
+          description: Rollout.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GetRolloutResponse"
+        "401":
+          $ref: "#/components/responses/APIError"
+        "404":
+          $ref: "#/components/responses/APIError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+  /api/rollouts/{rolloutId}/actions:
+    post:
+      tags: [Operator]
+      summary: Pause, resume, or abort a rollout.
+      operationId: actOnRollout
+      security:
+        - operatorBearer: []
+      parameters:
+        - $ref: "#/components/parameters/RolloutId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RolloutActionRequest"
+      responses:
+        "200":
+          description: Updated rollout.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RolloutActionResponse"
+        "400":
+          $ref: "#/components/responses/APIError"
+        "401":
+          $ref: "#/components/responses/APIError"
+        "404":
+          $ref: "#/components/responses/APIError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
   /api/nodes/{nodeId}/jobs:
     get:
       tags: [Operator]
@@ -239,6 +584,8 @@ paths:
           $ref: "#/components/responses/APIError"
         "409":
           $ref: "#/components/responses/APIError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
   /api/nodes/{nodeId}/config-apply:
     post:
       tags: [Operator]
@@ -273,6 +620,8 @@ paths:
           $ref: "#/components/responses/APIError"
         "409":
           $ref: "#/components/responses/APIError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
   /api/nodes/{nodeId}/restart:
     post:
       tags: [Operator]
@@ -310,6 +659,8 @@ paths:
           $ref: "#/components/responses/APIError"
         "409":
           $ref: "#/components/responses/APIError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
   /api/nodes/{nodeId}/rollback:
     post:
       tags: [Operator]
@@ -348,6 +699,8 @@ paths:
           $ref: "#/components/responses/APIError"
         "409":
           $ref: "#/components/responses/APIError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
   /api/sidecar/jobs/next:
     get:
       tags: [Sidecar]
@@ -404,6 +757,70 @@ paths:
           $ref: "#/components/responses/APIError"
         "404":
           $ref: "#/components/responses/APIError"
+  /api/config/desired/history:
+    get:
+      tags: [Operator]
+      summary: List desired config history.
+      operationId: listDesiredConfigHistory
+      security:
+        - operatorBearer: []
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 50
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+      responses:
+        "200":
+          description: Paginated desired config history.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListDesiredConfigHistoryResponse"
+        "400":
+          $ref: "#/components/responses/APIError"
+        "401":
+          $ref: "#/components/responses/APIError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+  /api/config/desired/revert:
+    post:
+      tags: [Operator]
+      summary: Revert desired config to a history entry.
+      operationId: revertDesiredConfig
+      security:
+        - operatorBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RevertDesiredConfigRequest"
+      responses:
+        "200":
+          description: Reverted desired config and appended history entry.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RevertDesiredConfigResponse"
+        "400":
+          $ref: "#/components/responses/APIError"
+        "401":
+          $ref: "#/components/responses/APIError"
+        "404":
+          $ref: "#/components/responses/APIError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
   /api/config/desired:
     get:
       tags: [Operator]
@@ -439,6 +856,8 @@ paths:
           $ref: "#/components/responses/APIError"
         "401":
           $ref: "#/components/responses/APIError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
   /api/config/effective:
     get:
       tags: [Operator]
@@ -493,6 +912,8 @@ paths:
           $ref: "#/components/responses/APIError"
         "401":
           $ref: "#/components/responses/APIError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
   /api/audit:
     get:
       tags: [Operator]
@@ -543,6 +964,11 @@ components:
       type: http
       scheme: bearer
       description: Operator bearer token from `SIDEPLANE_OPERATOR_TOKEN`.
+    eventTicket:
+      type: apiKey
+      in: query
+      name: ticket
+      description: One-use SSE ticket returned by `POST /api/events/tickets`.
     nodeBearer:
       type: http
       scheme: bearer
@@ -554,9 +980,33 @@ components:
       required: true
       schema:
         type: string
+    RolloutId:
+      name: rolloutId
+      in: path
+      required: true
+      schema:
+        type: string
+    TokenId:
+      name: tokenId
+      in: path
+      required: true
+      schema:
+        type: string
   responses:
     APIError:
       description: Structured JSON error response.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/APIError"
+    RateLimited:
+      description: Rate limit exceeded.
+      headers:
+        Retry-After:
+          description: Seconds until the caller should retry.
+          schema:
+            type: integer
+            minimum: 1
       content:
         application/json:
           schema:
@@ -583,6 +1033,15 @@ components:
         status:
           type: string
           enum: [accepted, accepted_late]
+    EventTicketResponse:
+      type: object
+      required: [ticket, expiresAt]
+      properties:
+        ticket:
+          type: string
+        expiresAt:
+          type: string
+          format: date-time
     CreateEnrollmentTokenRequest:
       type: object
       properties:
@@ -598,6 +1057,52 @@ components:
         expiresAt:
           type: string
           format: date-time
+    OperatorToken:
+      type: object
+      required: [id, name, createdAt]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        lastUsedAt:
+          type: string
+          format: date-time
+        revokedAt:
+          type: string
+          format: date-time
+    CreateOperatorTokenRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+    CreateOperatorTokenResponse:
+      type: object
+      required: [operatorToken, token]
+      properties:
+        operatorToken:
+          $ref: "#/components/schemas/OperatorToken"
+        token:
+          type: string
+          description: Plaintext token returned once.
+    ListOperatorTokensResponse:
+      type: object
+      required: [tokens]
+      properties:
+        tokens:
+          type: array
+          items:
+            $ref: "#/components/schemas/OperatorToken"
+    RevokeOperatorTokenResponse:
+      type: object
+      required: [operatorToken]
+      properties:
+        operatorToken:
+          $ref: "#/components/schemas/OperatorToken"
     EnrollNodeRequest:
       type: object
       required: [token]
@@ -666,6 +1171,8 @@ components:
             $ref: "#/components/schemas/RuntimeStatus"
         configHash:
           type: string
+        labels:
+          $ref: "#/components/schemas/Labels"
         lastError:
           type: string
     NodeStatusWithDrift:
@@ -690,6 +1197,24 @@ components:
           type: integer
         offset:
           type: integer
+    Labels:
+      type: object
+      additionalProperties:
+        type: string
+    NodeLabelsRequest:
+      type: object
+      required: [labels]
+      properties:
+        labels:
+          $ref: "#/components/schemas/Labels"
+    NodeLabelsResponse:
+      type: object
+      required: [nodeId, labels]
+      properties:
+        nodeId:
+          type: string
+        labels:
+          $ref: "#/components/schemas/Labels"
     HeartbeatRequest:
       type: object
       required: [nodeId, sentAt]
@@ -884,6 +1409,35 @@ components:
         createdAt:
           type: string
           format: date-time
+    RollbackBackupInventoryItem:
+      type: object
+      required: [ref, sourceJobId]
+      properties:
+        ref:
+          type: string
+        sourceJobId:
+          type: string
+        runtimeType:
+          type: string
+        profile:
+          type: string
+        configHash:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+    ListRollbackBackupsResponse:
+      type: object
+      required: [backups, total, limit]
+      properties:
+        backups:
+          type: array
+          items:
+            $ref: "#/components/schemas/RollbackBackupInventoryItem"
+        total:
+          type: integer
+        limit:
+          type: integer
     RollbackRequest:
       type: object
       required: [backupRef]
@@ -930,6 +1484,154 @@ components:
             $ref: "#/components/schemas/ConfigApplyStep"
         healthStatus:
           type: string
+    RolloutState:
+      type: string
+      enum: [pending, running, paused, completed, aborted, failed]
+    RolloutBatchState:
+      type: string
+      enum: [pending, running, completed, paused, failed]
+    RolloutNodeState:
+      type: string
+      enum: [pending, dispatched, succeeded, failed, timed_out, offline]
+    RolloutAction:
+      type: string
+      enum: [pause, resume, abort]
+    RolloutSpec:
+      type: object
+      required: [runtimeType, target, live]
+      properties:
+        selector:
+          $ref: "#/components/schemas/Labels"
+        nodeIds:
+          type: array
+          items:
+            type: string
+        runtimeType:
+          type: string
+          enum: [hermes, openclaw]
+        profile:
+          type: string
+        target:
+          $ref: "#/components/schemas/ProviderModelConfig"
+        batchSize:
+          type: integer
+          minimum: 1
+          default: 1
+        live:
+          type: boolean
+          default: false
+        healthTimeout:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Nanoseconds. Omit or send 0 to use the server default.
+    RolloutNodeProgress:
+      type: object
+      required: [nodeId, state]
+      properties:
+        nodeId:
+          type: string
+        jobId:
+          type: string
+        state:
+          $ref: "#/components/schemas/RolloutNodeState"
+        lastError:
+          type: string
+        startedAt:
+          type: string
+          format: date-time
+        finishedAt:
+          type: string
+          format: date-time
+    RolloutBatch:
+      type: object
+      required: [index, nodeIds, state, nodes]
+      properties:
+        index:
+          type: integer
+        nodeIds:
+          type: array
+          items:
+            type: string
+        state:
+          $ref: "#/components/schemas/RolloutBatchState"
+        nodes:
+          type: object
+          additionalProperties:
+            $ref: "#/components/schemas/RolloutNodeProgress"
+    Rollout:
+      type: object
+      required: [id, spec, state, batches, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+        spec:
+          $ref: "#/components/schemas/RolloutSpec"
+        state:
+          $ref: "#/components/schemas/RolloutState"
+        batches:
+          type: array
+          items:
+            $ref: "#/components/schemas/RolloutBatch"
+        pauseReason:
+          type: string
+        failingNodeIds:
+          type: array
+          items:
+            type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        finishedAt:
+          type: string
+          format: date-time
+    CreateRolloutRequest:
+      type: object
+      required: [spec]
+      properties:
+        spec:
+          $ref: "#/components/schemas/RolloutSpec"
+    CreateRolloutResponse:
+      type: object
+      required: [rollout]
+      properties:
+        rollout:
+          $ref: "#/components/schemas/Rollout"
+    ListRolloutsResponse:
+      type: object
+      required: [rollouts, total, limit, offset]
+      properties:
+        rollouts:
+          type: array
+          items:
+            $ref: "#/components/schemas/Rollout"
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+    GetRolloutResponse:
+      type: object
+      required: [rollout]
+      properties:
+        rollout:
+          $ref: "#/components/schemas/Rollout"
+    RolloutActionRequest:
+      type: object
+      required: [action]
+      properties:
+        action:
+          $ref: "#/components/schemas/RolloutAction"
+    RolloutActionResponse:
+      type: object
+      required: [rollout]
+      properties:
+        rollout:
+          $ref: "#/components/schemas/Rollout"
     RuntimeConfigSnapshot:
       type: object
       required: [runtimeName, runtimeType]
@@ -979,6 +1681,49 @@ components:
           type: object
           additionalProperties:
             $ref: "#/components/schemas/ProviderModelConfig"
+    DesiredConfigHistoryEntry:
+      type: object
+      required: [id, config, updatedAt, actor]
+      properties:
+        id:
+          type: string
+        config:
+          $ref: "#/components/schemas/DesiredConfig"
+        desiredHash:
+          type: string
+        updatedAt:
+          type: string
+          format: date-time
+        actor:
+          type: string
+    ListDesiredConfigHistoryResponse:
+      type: object
+      required: [history, total, limit, offset]
+      properties:
+        history:
+          type: array
+          items:
+            $ref: "#/components/schemas/DesiredConfigHistoryEntry"
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+    RevertDesiredConfigRequest:
+      type: object
+      required: [historyId]
+      properties:
+        historyId:
+          type: string
+    RevertDesiredConfigResponse:
+      type: object
+      required: [desired, history]
+      properties:
+        desired:
+          $ref: "#/components/schemas/DesiredConfig"
+        history:
+          $ref: "#/components/schemas/DesiredConfigHistoryEntry"
     ConfigDiffEntry:
       type: object
       required: [field, change]

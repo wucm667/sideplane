@@ -15,9 +15,12 @@ Production operators should still treat it as pre-1.0 infrastructure. Run it on 
 ## Features
 
 - Fleet inventory with node heartbeat, freshness state, runtime summary, and drift badges.
+- Operator-managed node labels with exact selector filtering for fleet views and rollouts.
 - Sidecar enrollment token flow with one-time tokens exchanged for long-lived node credentials.
+- Named, revocable operator tokens for API and Web sessions.
 - Hermes and OpenClaw adapters for read-only runtime discovery, config hash reporting, and provider/model snapshots.
 - Desired configuration layering with effective config preview and read-only actual-vs-desired diffs.
+- Desired config history with explicit revert.
 - Signed config apply plans, dry-run by default, with live apply gated behind explicit sidecar opt-in and rollback handling.
 - Staged fleet rollouts for provider/model changes across node labels or explicit node lists, canary-first by default.
 - Deep-probe, config-apply, restart/rollback-aware job lifecycle with paginated recent job status in the UI.
@@ -25,6 +28,7 @@ Production operators should still treat it as pre-1.0 infrastructure. Run it on 
 - Node removal API and UI flow for decommissioned fleet entries.
 - Conservative retention pruning for old completed/failed jobs and audit events.
 - Prometheus-compatible `/metrics`, including job counters and fleet freshness/drift gauges.
+- Server-sent events for live Web refresh, with polling fallback when SSE is unavailable.
 - Compact infrastructure-console Web UI served directly by `sideplane-server`.
 - Docker Compose, server and sidecar systemd units, and a Linux install script for local systemd setup.
 - Server hardening with security response headers and structured request logging.
@@ -142,12 +146,16 @@ Server flags can be configured with environment variables. Explicit CLI flags ta
 | `SIDEPLANE_JOB_RETENTION` | `720h` | Age to retain completed and failed jobs. Pending and claimed jobs are never pruned. Set `0` to disable. |
 | `SIDEPLANE_AUDIT_RETENTION` | `4320h` | Age to retain audit events. Set `0` to disable. |
 | `SIDEPLANE_ROLLOUT_INTERVAL` | `5s` | Background rollout reconciliation interval. Set `0` to disable. |
+| `SIDEPLANE_ENROLLMENT_RATE_LIMIT` | `20` | Enrollment attempts per remote address per rate-limit window. Set `0` to disable. |
+| `SIDEPLANE_OPERATOR_AUTH_RATE_LIMIT` | `60` | Failed operator auth attempts per remote address per rate-limit window. Set `0` to disable. |
+| `SIDEPLANE_RATE_LIMIT_WINDOW` | `1m` | Fixed window for enrollment and operator auth rate limits. |
 | `SIDEPLANE_ALLOW_UNAUTHENTICATED_OPERATOR_API` | false | Development-only escape hatch for mutating operator APIs. |
 
 Matching flags are available on `sideplane-server`: `--addr`, `--db`,
 `--web-dir`, `--operator-token`, `--signing-key`, `--stale-after`,
 `--offline-after`, `--heartbeat-retention`, `--job-retention`,
-`--audit-retention`, `--rollout-interval`, and
+`--audit-retention`, `--rollout-interval`, `--enrollment-rate-limit`,
+`--operator-auth-rate-limit`, `--rate-limit-window`, and
 `--allow-unauthenticated-operator-api`.
 
 Sidecar runtime flags also support env vars. Explicit CLI flags take precedence over env vars, then values loaded from the sidecar state file.
@@ -199,15 +207,48 @@ Core endpoints:
 
 - `GET /healthz`, `GET /readyz`, and `GET /metrics`.
 - `POST /api/enrollment-tokens` creates one-time enrollment tokens with operator auth.
+- `GET /api/operator-tokens`, `POST /api/operator-tokens`, and `DELETE /api/operator-tokens/{tokenId}` manage named operator tokens.
 - `POST /api/enroll` exchanges an enrollment token for a node credential.
 - `POST /api/heartbeat` records node status with node credential auth.
-- `GET /api/nodes` lists freshness-adjusted nodes with drift state.
+- `GET /api/nodes?selector=role=canary` lists freshness-adjusted nodes with drift state and optional exact label filtering.
+- `GET /api/nodes/{nodeId}/labels` and `PUT /api/nodes/{nodeId}/labels` read and replace operator-managed labels.
 - `DELETE /api/nodes/{nodeId}` removes a node with operator auth and records `node.delete`.
 - `GET /api/nodes/{nodeId}/jobs?limit=50&status=completed` lists node jobs with optional bounded `limit` and `status` filters.
 - `POST /api/nodes/{nodeId}/jobs` creates a `deep_probe` job with operator auth.
 - `POST /api/nodes/{nodeId}/config-apply` creates a signed config apply job with operator auth.
+- `GET /api/nodes/{nodeId}/backups` lists server-known rollback backup references.
+- `POST /api/nodes/{nodeId}/restart` and `POST /api/nodes/{nodeId}/rollback` create allowlisted restart and explicit rollback jobs.
+- `GET /api/rollouts`, `POST /api/rollouts`, `GET /api/rollouts/{rolloutId}`, and `POST /api/rollouts/{rolloutId}/actions` manage staged rollouts.
+- `GET /api/config/desired/history` lists desired config history; `POST /api/config/desired/revert` restores a history entry.
 - `GET /api/audit?nodeId=...&action=...&limit=...` lists audit events with additive filters.
+- `POST /api/events/tickets` creates a short-lived browser SSE ticket; `GET /api/events` streams `node`, `job`, and `rollout` events as `text/event-stream`.
 - `GET /api/sidecar/jobs/next?nodeId=...` and `POST /api/sidecar/jobs/{jobId}/result` power sidecar polling.
+
+Mutating operator endpoints require an operator bearer token unless the server
+is explicitly started with the development-only unauthenticated operator API
+flag. Enrollment and failed operator-auth attempts are rate limited by remote
+address and return `429` with `Retry-After` when the fixed window is exhausted.
+
+### Labels And Rollouts
+
+Labels are operator-managed node metadata. Set them with the Web node detail
+view, `sideplane node label`, or `PUT /api/nodes/{nodeId}/labels`. Selector
+queries use exact comma-separated `key=value` matches and require every supplied
+label to match.
+
+Rollouts apply one provider/model target to nodes selected by labels or by
+explicit IDs. Batches run sequentially, `batchSize` defaults to `1`, dry-run is
+the default, and live mode still requires the signed config-apply pipeline plus
+sidecar `--allow-live-apply`. A failed, timed-out, or offline batch pauses the
+rollout with failing node IDs; automatic rollback is intentionally not part of
+the rollout engine. See [Fleet rollouts](docs/fleet-rollouts.md).
+
+### Live Refresh
+
+The Web UI uses SSE when an operator token is present. Browser clients request a
+short-lived event ticket, then connect to `/api/events`; API clients can also
+use a bearer token directly. When SSE is unavailable, the UI falls back to
+bounded polling for fleet, rollout, audit, and active job state.
 
 ## CLI Reference
 
@@ -235,6 +276,9 @@ Generate shell completion with `sideplane completion bash` or
 | `sideplane probe <nodeId>` | Create a deep-probe job. | `--server`, `--operator-token`, `--wait`, `--json` |
 | `sideplane jobs list <nodeId>` | List node jobs with optional filters. | `--server`, `--operator-token`, `--limit`, `--status`, `--json` |
 | `sideplane audit list` | List audit events newest first. | `--server`, `--node-id`, `--action`, `--limit`, `--json` |
+| `sideplane token create` | Create a named operator token shown once. | `--server`, `--operator-token`, `--name`, `--json` |
+| `sideplane token list` | List named operator token metadata. | `--server`, `--operator-token`, `--json` |
+| `sideplane token revoke <id>` | Revoke a named operator token. | `--server`, `--operator-token`, `--json` |
 | `sideplane rollout create` | Create a staged provider/model rollout. | `--server`, `--operator-token`, `--selector`, `--node`, `--provider`, `--model`, `--runtime-type`, `--profile`, `--batch-size`, `--live`, `--yes`, `--health-timeout`, `--json` |
 | `sideplane rollout list` | List staged rollouts. | `--server`, `--operator-token`, `--json` |
 | `sideplane rollout status <id>` | Show rollout batches and per-node progress. | `--server`, `--operator-token`, `--watch`, `--json` |
@@ -243,6 +287,8 @@ Generate shell completion with `sideplane completion bash` or
 | `sideplane config apply <nodeId>` | Create a dry-run or live config apply job. | `--server`, `--operator-token`, `--runtime-type`, `--profile`, `--config-path`, `--live`, `--yes`, `--wait`, `--json` |
 | `sideplane config get` | Show desired configuration. | `--server`, `--json` |
 | `sideplane config set` | Update global desired provider/model. | `--server`, `--operator-token`, `--provider`, `--model` |
+| `sideplane config history` | List desired config history. | `--server`, `--operator-token`, `--limit`, `--offset`, `--json` |
+| `sideplane config revert <historyId>` | Revert desired configuration. | `--server`, `--operator-token`, `--yes` |
 | `sideplane config-file path` | Print the resolved CLI config path. | none |
 | `sideplane completion bash/zsh` | Print a shell completion script. | none |
 | `sideplane node inspect <nodeId>` | Show detailed node state and runtime status. | `--server`, `--json` |
@@ -256,13 +302,26 @@ Generate shell completion with `sideplane completion bash` or
 
 The Web UI is intentionally a compact infrastructure console. It includes:
 
-- Fleet search and sortable node columns.
+- Fleet overview metrics, search, label selector filtering, and sortable node columns.
+- Node label editing and backup inventory discovery.
 - Node job history with server-side `limit` and `status` query support.
 - Expandable job result rows for deep-probe and config-apply details.
+- A signed config wizard with desired config history and revert controls.
+- Rollout creation, batch progress, pause/resume/abort controls, and node drill-down.
 - Activity history filters by node ID and action.
+- Enrollment-token creation and named operator token management.
+- Live refresh over SSE with polling fallback.
 - Keyboard shortcuts: `f`/`1` opens Fleet, `a`/`2` opens Activity, `e`/`3`
   opens Enrollment, `r` refreshes the current view, and `Esc` returns from a
   node detail view to Fleet.
+
+## Observability
+
+`/metrics` exposes Prometheus text format, including HTTP request counters, job
+counters, and fleet freshness/drift gauges. The optional Docker Compose
+observability override adds Prometheus and Grafana with a pre-provisioned
+Sideplane dashboard. The Web Fleet view mirrors the most important overview
+numbers for operators who are not watching Prometheus directly.
 
 For systemd deployment files, see `deployments/systemd/`. The root
 `install.sh` creates the `sideplane` user/group, `/etc/sideplane`,
@@ -275,6 +334,8 @@ workflow.
 
 - Operator-token auth protects mutating operator endpoints.
 - One-time enrollment tokens are stored hashed and exchanged for long-lived node credentials.
+- Named operator tokens are stored hashed, listed as metadata only, and can be revoked independently.
+- Enrollment attempts and failed operator auth are rate limited by remote address.
 - Configuration plans are signed by the server and verified by the sidecar.
 - The sidecar defaults to dry-run config apply; live apply requires explicit `--allow-live-apply`.
 - The sidecar uses adapter-specific allowlisted operations and does not expose arbitrary shell execution.
@@ -285,6 +346,7 @@ workflow.
 ## Docs
 
 - [Contributor guide](CONTRIBUTING.md)
+- [Fleet rollouts](docs/fleet-rollouts.md)
 - [Signed config apply pipeline](docs/config-apply-pipeline.md)
 - [Live-write preflight](docs/live-write-preflight.md)
 - [Read-only sidecar deployment](docs/read-only-sidecar-deployment.md)
