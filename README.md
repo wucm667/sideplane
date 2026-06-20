@@ -72,7 +72,9 @@ docker compose \
 Prometheus scrapes `server:8080/metrics` and listens on
 `http://localhost:9090`. Grafana listens on `http://localhost:3001` with a
 pre-provisioned Sideplane dashboard; set `GRAFANA_ADMIN_PASSWORD` before
-starting the override if the default local password is not appropriate.
+starting the override if the default local password is not appropriate. The
+dashboard includes fleet freshness, drift, heartbeat/job rates, active rollout
+state, rollout outcomes, and alert webhook delivery outcomes.
 
 ### Local Development
 
@@ -397,7 +399,8 @@ The Web UI is intentionally a compact infrastructure console. It includes:
 ## Observability
 
 `/metrics` exposes Prometheus text format, including HTTP request counters, job
-counters, and fleet freshness/drift gauges. The optional Docker Compose
+counters, fleet freshness/drift gauges, runtime health, rollout state/outcome
+metrics, and alert webhook delivery outcomes. The optional Docker Compose
 observability override adds Prometheus and Grafana with a pre-provisioned
 Sideplane dashboard. The Web Fleet view mirrors the most important overview
 numbers for operators who are not watching Prometheus directly.
