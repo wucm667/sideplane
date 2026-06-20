@@ -728,6 +728,9 @@ func TestRolloutCreateDryRunDefault(t *testing.T) {
 		if req.Spec.Live {
 			t.Fatalf("live = true, want dry-run default")
 		}
+		if req.Spec.AllowOverlap {
+			t.Fatalf("allowOverlap = true, want false by default")
+		}
 		if len(req.Spec.NodeIDs) != 1 || req.Spec.NodeIDs[0] != "node-a" {
 			t.Fatalf("node IDs = %#v, want node-a", req.Spec.NodeIDs)
 		}
@@ -826,6 +829,9 @@ func TestRolloutCreateJSONUsesSelectorAndLiveOptions(t *testing.T) {
 		if !req.Spec.Live || req.Spec.RuntimeType != "openclaw" || req.Spec.Profile != "worker" {
 			t.Fatalf("spec = %+v, want live openclaw/worker", req.Spec)
 		}
+		if !req.Spec.AllowOverlap {
+			t.Fatalf("allowOverlap = false, want true")
+		}
 		if req.Spec.BatchSize != 2 || req.Spec.HealthTimeout != 30*time.Second {
 			t.Fatalf("batch/timeout = %d/%s, want 2/30s", req.Spec.BatchSize, req.Spec.HealthTimeout)
 		}
@@ -855,6 +861,7 @@ func TestRolloutCreateJSONUsesSelectorAndLiveOptions(t *testing.T) {
 		"--start-at", startAt.Format(time.RFC3339),
 		"--live",
 		"--yes",
+		"--allow-overlap",
 		"--json",
 	}, &stdout, &stderr)
 	if code != 0 {
@@ -866,6 +873,41 @@ func TestRolloutCreateJSONUsesSelectorAndLiveOptions(t *testing.T) {
 	}
 	if got.Rollout.ID != "rollout-json" {
 		t.Fatalf("rollout ID = %q, want rollout-json", got.Rollout.ID)
+	}
+}
+
+func TestRolloutCreatePrintsConflictMessage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/rollouts" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		if err := json.NewEncoder(w).Encode(protocol.APIError{
+			Code:    "conflict",
+			Message: "rollout overlaps active target(s): node-a in rollout rollout-active (running); set allowOverlap=true to override",
+		}); err != nil {
+			t.Fatalf("encode conflict response: %v", err)
+		}
+	}))
+	defer server.Close()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{
+		"rollout", "create",
+		"--server", server.URL,
+		"--node", "node-a",
+		"--provider", "openai",
+		"--model", "gpt-4o",
+	}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("run returned 0, want conflict failure")
+	}
+	for _, want := range []string{"server returned status 409", "node-a", "rollout-active", "allowOverlap=true"} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Fatalf("stderr missing %q:\n%s", want, stderr.String())
+		}
 	}
 }
 

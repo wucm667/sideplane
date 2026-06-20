@@ -503,16 +503,17 @@ func runRolloutCreate(args []string, stdout io.Writer, stderr io.Writer) int {
 	live := flags.Bool("live", false, "request live config apply instead of dry-run")
 	yes := flags.Bool("yes", false, "confirm live rollout")
 	autoRollback := flags.Bool("auto-rollback", false, "on a live batch failure, roll back already-applied nodes before pausing")
+	allowOverlap := flags.Bool("allow-overlap", false, "allow creating a rollout that overlaps active target nodes")
 	healthTimeout := flags.Duration("health-timeout", 0, "batch health timeout; server default is used when omitted")
 	startAtFlag := flags.String("start-at", "", "optional RFC3339 rollout start time")
 	template := flags.String("template", "", "rollout template id to prefill the spec; other spec flags are ignored")
 	jsonOutput := flags.Bool("json", false, "print raw JSON response")
-	usage := "sideplane rollout create (--template ID | (--selector key=value[,key2=value2] | --node NODE [--node NODE...]) --provider PROVIDER --model MODEL) [--runtime-type TYPE] [--profile PROFILE] [--batch-size N] [--start-at RFC3339] [--live --yes] [--auto-rollback] [--health-timeout DURATION] [--server URL] [--operator-token TOKEN] [--json]"
+	usage := "sideplane rollout create (--template ID | (--selector key=value[,key2=value2] | --node NODE [--node NODE...]) --provider PROVIDER --model MODEL) [--runtime-type TYPE] [--profile PROFILE] [--batch-size N] [--start-at RFC3339] [--live --yes] [--auto-rollback] [--allow-overlap] [--health-timeout DURATION] [--server URL] [--operator-token TOKEN] [--json]"
 	if commandHelpRequested(args) {
 		printCommandHelp(stdout, usage, flags)
 		return 0
 	}
-	if err := parseCommandFlags(flags, args, "live", "yes", "auto-rollback", "json"); err != nil {
+	if err := parseCommandFlags(flags, args, "live", "yes", "auto-rollback", "allow-overlap", "json"); err != nil {
 		return 2
 	}
 	if flags.NArg() != 0 {
@@ -581,6 +582,7 @@ func runRolloutCreate(args []string, stdout io.Writer, stderr io.Writer) int {
 		BatchSize:             *batchSize,
 		Live:                  *live,
 		AutoRollbackOnFailure: *autoRollback,
+		AllowOverlap:          *allowOverlap,
 		HealthTimeout:         *healthTimeout,
 		StartAt:               startAt,
 	}}

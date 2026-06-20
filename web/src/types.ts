@@ -84,6 +84,7 @@ export interface RolloutSpec {
   startAt?: string
   live: boolean
   autoRollbackOnFailure?: boolean
+  allowOverlap?: boolean
   healthTimeout?: number
 }
 

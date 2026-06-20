@@ -155,6 +155,7 @@ function RolloutCreateForm({
   const [live, setLive] = useState(false)
   const [confirmedLive, setConfirmedLive] = useState(false)
   const [autoRollback, setAutoRollback] = useState(false)
+  const [allowOverlap, setAllowOverlap] = useState(false)
   const [formError, setFormError] = useState<string | null>(null)
   const [templates, setTemplates] = useState<RolloutTemplate[]>([])
   const [selectedTemplate, setSelectedTemplate] = useState('')
@@ -208,6 +209,7 @@ function RolloutCreateForm({
       startAt: parsedStartAt.value,
       live,
       autoRollbackOnFailure: live ? autoRollback : undefined,
+      allowOverlap: allowOverlap || undefined,
     }
   }
 
@@ -296,11 +298,13 @@ function RolloutCreateForm({
         startAt: parsedStartAt.value,
         live,
         autoRollbackOnFailure: live ? autoRollback : undefined,
+        allowOverlap: allowOverlap || undefined,
       },
     })
     if (rollout) {
       setConfirmedLive(false)
       setAutoRollback(false)
+      setAllowOverlap(false)
     }
   }
 
@@ -362,6 +366,10 @@ function RolloutCreateForm({
               auto-rollback
             </label>
           )}
+          <label className="flex h-9 items-center gap-2 rounded-lg border border-[var(--sp-border)] bg-[var(--sp-surface-2)] px-3 text-xs text-[var(--sp-muted)]">
+            <input type="checkbox" checked={allowOverlap} onChange={(event) => setAllowOverlap(event.target.checked)} />
+            allow overlap
+          </label>
         </div>
       </div>
       <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-[var(--sp-border)] pt-3">
@@ -438,6 +446,11 @@ function RolloutDetail({
               {rollout.spec.autoRollbackOnFailure && (
                 <span className="rounded border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[11px] font-semibold text-amber-700">
                   auto-rollback
+                </span>
+              )}
+              {rollout.spec.allowOverlap && (
+                <span className="rounded border border-[var(--sp-border)] bg-[var(--sp-surface-2)] px-2 py-0.5 text-[11px] font-semibold text-[var(--sp-muted)]">
+                  overlap allowed
                 </span>
               )}
             </div>
