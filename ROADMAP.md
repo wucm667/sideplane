@@ -14,33 +14,34 @@ Build a small, self-hosted control plane that can answer:
 The current repository includes these foundations:
 
 - Go monorepo with `sideplane-server`, `sideplane-sidecar`, and `sideplane` CLI binaries.
-- SQLite store with migrations, heartbeat retention, enrollment tokens, node credentials, jobs, desired config, and audit events.
-- REST API, health/readiness endpoints, Prometheus-compatible metrics, structured request logging, and security response headers.
+- SQLite store with migrations, heartbeat retention, enrollment tokens, named operator tokens, node credentials, node labels, jobs, desired config history, rollout state, and audit events.
+- REST API, OpenAPI contract, health/readiness endpoints, server-sent events with polling fallback, Prometheus-compatible metrics, structured request logging, rate limits, and security response headers.
 - Sidecar-initiated enrollment, heartbeat, job polling, deep probe, signed config apply, dry-run/live apply gating, backup, restart, health check, and automatic rollback on failed live apply.
-- Adapter interfaces with Hermes and OpenClaw read-only discovery/config snapshot support.
-- Compact React/Vite Web UI for fleet inventory, node detail, config diff/apply wizard, audit history, keyboard navigation, node removal, and job expansion.
-- Docker Compose deployment, Linux systemd units, install script, and server-embedded Web assets.
+- Adapter interfaces with Hermes and OpenClaw read-only discovery/config snapshot support plus allowlisted restart controller support.
+- Operator-managed labels and selector filtering for fleet views and staged rollouts.
+- Backup inventory discovery from config-apply results with stable rollback references.
+- Staged provider/model fleet rollouts with sequential batches, dry-run default, live drift health gates, pause/resume/abort controls, and explicit non-goal of automatic batch rollback.
+- Compact React/Vite Web UI for fleet overview metrics, node detail, labels, backup discovery, config diff/apply wizard, desired config history/revert, rollouts, audit history, enrollment, named tokens, keyboard navigation, node removal, and job expansion.
+- CLI coverage for fleet status, labels, rollouts, backups, named tokens, desired config history/revert, config files, and shell completion.
+- Docker Compose deployment, optional Prometheus/Grafana observability assets, Linux systemd units, install script, and server-embedded Web assets.
 
 ## MVP Hardening Next
 
 Near-term work should make the existing operator path more complete and easier
 to verify:
 
-- Document the current REST API with OpenAPI and generate stable TypeScript API types for the Web UI.
-- Standardize JSON API error responses and secret redaction across API, audit, logs, CLI, and Web display.
-- Expand CLI operator coverage for node inspection, job/audit listing, config preview/apply, restart, rollback, and help output.
-- Scale Web history views with compact filters, load-more controls, copyable identifiers, and clearer token handling.
-- Add standalone restart and explicit rollback workflows while preserving dry-run defaults and fake-safe tests.
-- Improve sidecar doctor/read-only smoke workflows, store migration visibility, SQLite reliability settings, retention pruning, and bounded metrics.
-- Harden adapter validation, request size limits, auth comparisons, path-safety tests, Docker/systemd packaging, release artifacts, and install checksum verification.
-- Add focused Web smoke tests, end-to-end API/CLI regression coverage, contribution docs, templates, and changelog updates.
+- Expand end-to-end API/CLI/Web regression coverage around rollout edge cases, token revocation, SSE reconnect, and desired-config revert.
+- Improve sidecar doctor/read-only smoke workflows, store migration visibility, SQLite reliability settings, and retention observability.
+- Continue hardening adapter validation, request-size limits, auth comparisons, path-safety tests, Docker/systemd packaging, release artifacts, and install checksum verification.
+- Add release-oriented docs for operating rollouts, recovering from paused batches, and upgrading server/sidecar binaries.
+- Keep UI density and accessibility polished as more operator workflows move from CLI to Web.
 
 ## Later
 
 - PostgreSQL support after the SQLite MVP is boring and durable.
 - macOS launchd and Windows service support.
 - Multi-user/RBAC for small teams.
-- Rollout waves and canaries after single-node safe apply is proven.
+- Advanced rollout automation after the explicit pause/review path is proven.
 - Additional runtime adapters.
 - Secret backend integrations using references rather than an in-product secret manager.
 
@@ -51,5 +52,6 @@ to verify:
 - Chat UI
 - Prompt workspace
 - Agent task board
+- Multi-tenant SaaS control plane
 - Marketplace/plugin ecosystem
-- Kubernetes-first deployment
+- Kubernetes-first deployment or operator
