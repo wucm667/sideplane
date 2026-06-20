@@ -54,6 +54,22 @@ healthcheck. The sidecar starts after the server is healthy, waits quietly for
 `/data/sidecar.json`, then begins outbound heartbeat and job polling with
 env-var configuration.
 
+Optional Prometheus and Grafana services are available through a compose
+override and do not change the default compose stack:
+
+```bash
+docker compose \
+  -f deployments/docker-compose/docker-compose.yml \
+  -f deployments/docker-compose/observability.override.yml \
+  --profile observability \
+  up -d --build
+```
+
+Prometheus scrapes `server:8080/metrics` and listens on
+`http://localhost:9090`. Grafana listens on `http://localhost:3001` with a
+pre-provisioned Sideplane dashboard; set `GRAFANA_ADMIN_PASSWORD` before
+starting the override if the default local password is not appropriate.
+
 ### Local Development
 
 Run the server with SQLite. By default the Go binary serves the embedded Web

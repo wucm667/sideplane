@@ -1,0 +1,38 @@
+services:
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    profiles:
+      - observability
+    depends_on:
+      - server
+    ports:
+      - "9090:9090"
+    volumes:
+      - ../observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - sideplane-prometheus-data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.console.libraries=/usr/share/prometheus/console_libraries
+      - --web.console.templates=/usr/share/prometheus/consoles
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    profiles:
+      - observability
+    depends_on:
+      - prometheus
+    ports:
+      - "3001:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-sideplane}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - sideplane-grafana-data:/var/lib/grafana
+      - ../observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../observability/grafana-dashboard.json:/var/lib/grafana/dashboards/sideplane.json:ro
+
+volumes:
+  sideplane-prometheus-data:
+  sideplane-grafana-data:
