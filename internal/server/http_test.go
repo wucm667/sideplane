@@ -3116,8 +3116,12 @@ func TestMetricsExposesCounters(t *testing.T) {
 		"sideplane_jobs_completed_total",
 		"sideplane_jobs_failed_total",
 		"sideplane_job_late_results_total",
+		"sideplane_rollout_terminal_total",
+		"sideplane_webhook_deliveries_total",
 		"sideplane_config_apply_rolled_back_total",
 		"sideplane_runtime_health",
+		"sideplane_rollouts_active",
+		"sideplane_rollouts",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("metrics body missing %q\n%s", want, body)
@@ -3240,6 +3244,22 @@ func TestMetricsExposeFleetGauges(t *testing.T) {
 	}
 	seedRuntimeConfigSnapshot(t, nodeStore, "node-fresh-drift", "anthropic", "claude-3-7-sonnet")
 	seedRuntimeConfigSnapshot(t, nodeStore, "node-stale", "openai", "gpt-4o")
+	for _, state := range []protocol.RolloutState{
+		protocol.RolloutStatePending,
+		protocol.RolloutStateScheduled,
+		protocol.RolloutStateRunning,
+		protocol.RolloutStateCompleted,
+		protocol.RolloutStateAborted,
+	} {
+		if _, err := nodeStore.CreateRollout(context.Background(), protocol.Rollout{
+			ID:        "rollout-" + string(state),
+			State:     state,
+			CreatedAt: now,
+			UpdatedAt: now,
+		}); err != nil {
+			t.Fatalf("create %s rollout: %v", state, err)
+		}
+	}
 
 	handler, err := NewHandlerWithStoreAndFreshnessPolicy(nodeStore, FreshnessPolicy{
 		StaleAfter:   2 * time.Minute,
@@ -3264,6 +3284,12 @@ func TestMetricsExposeFleetGauges(t *testing.T) {
 		`sideplane_fleet_nodes_drifted 1`,
 		`sideplane_runtime_health{runtime_type="hermes",state="degraded"} 1`,
 		`sideplane_runtime_health{runtime_type="openclaw",state="unknown"} 1`,
+		`sideplane_rollouts_active 3`,
+		`sideplane_rollouts{state="pending"} 1`,
+		`sideplane_rollouts{state="scheduled"} 1`,
+		`sideplane_rollouts{state="running"} 1`,
+		`sideplane_rollouts{state="completed"} 1`,
+		`sideplane_rollouts{state="aborted"} 1`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("metrics body missing %q\n%s", want, body)
@@ -3810,10 +3836,12 @@ func TestRolloutAPICreateListGetActionsAndAudit(t *testing.T) {
 	if err := nodeStore.SetNodeLabels(context.Background(), "node-b", map[string]string{"role": "stable"}); err != nil {
 		t.Fatalf("set node-b labels: %v", err)
 	}
+	metrics := NewMetrics()
 	handler, err := NewHandlerWithConfig(HandlerConfig{
 		Store:         nodeStore,
 		Freshness:     DefaultFreshnessPolicy(),
 		OperatorToken: "dev-token",
+		Metrics:       metrics,
 	})
 	if err != nil {
 		t.Fatalf("build handler: %v", err)
@@ -3898,6 +3926,7 @@ func TestRolloutAPICreateListGetActionsAndAudit(t *testing.T) {
 	if final == nil || final.State != protocol.RolloutStateAborted {
 		t.Fatalf("final rollout = %#v, want aborted", final)
 	}
+	assertMetricsContains(t, metrics, `sideplane_rollout_terminal_total{state="aborted"} 1`)
 	events, err := nodeStore.ListAuditEventsFiltered(context.Background(), store.AuditFilter{Action: audit.ActionRolloutCreate, Limit: 10})
 	if err != nil {
 		t.Fatalf("list rollout create audit: %v", err)

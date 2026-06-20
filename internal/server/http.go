@@ -79,6 +79,7 @@ type HandlerConfig struct {
 	DisableSigningKey               bool
 	RateLimits                      RateLimitConfig
 	Events                          *EventHub
+	Metrics                         *Metrics
 	Logger                          *slog.Logger
 }
 
@@ -104,6 +105,10 @@ func NewHandlerWithConfig(cfg HandlerConfig) (http.Handler, error) {
 		keyPair = loaded
 	}
 	rateLimits := normalizeRateLimitConfig(cfg.RateLimits)
+	metrics := cfg.Metrics
+	if metrics == nil {
+		metrics = NewMetrics()
+	}
 
 	handler := &handler{
 		store:               cfg.Store,
@@ -114,7 +119,7 @@ func NewHandlerWithConfig(cfg HandlerConfig) (http.Handler, error) {
 		eventTickets:        newEventTicketStore(),
 		enrollmentLimiter:   newFixedWindowRateLimiter(rateLimits.enrollmentLimit, rateLimits.window, rateLimits.now),
 		operatorAuthLimiter: newFixedWindowRateLimiter(rateLimits.operatorAuthLimit, rateLimits.window, rateLimits.now),
-		metrics:             NewMetrics(),
+		metrics:             metrics,
 		timedOutJobs:        map[string]struct{}{},
 		logger:              cfg.Logger,
 	}
@@ -228,6 +233,8 @@ func (h *handler) metricsEndpoint(w http.ResponseWriter, r *http.Request) {
 type fleetMetricsSnapshot struct {
 	nodesByState         map[protocol.NodeState]int
 	runtimeHealthByState map[labelPair]int
+	rolloutsByState      map[string]int
+	activeRollouts       int
 	driftedNodes         int
 	outdatedSidecars     int
 }
@@ -255,6 +262,7 @@ func (h *handler) collectFleetMetrics(ctx context.Context) (fleetMetricsSnapshot
 			protocol.NodeStateOffline: 0,
 		},
 		runtimeHealthByState: map[labelPair]int{},
+		rolloutsByState:      newRolloutMetricStateCounts(),
 	}
 	for _, node := range nodes {
 		snapshot.nodesByState[node.State]++
@@ -277,7 +285,31 @@ func (h *handler) collectFleetMetrics(ctx context.Context) (fleetMetricsSnapshot
 			snapshot.outdatedSidecars++
 		}
 	}
+	if err := h.collectRolloutMetrics(ctx, &snapshot); err != nil {
+		return fleetMetricsSnapshot{}, err
+	}
 	return snapshot, nil
+}
+
+func (h *handler) collectRolloutMetrics(ctx context.Context, snapshot *fleetMetricsSnapshot) error {
+	offset := 0
+	for {
+		list, err := h.store.ListRollouts(ctx, store.RolloutFilter{Limit: store.MaxRolloutListLimit, Offset: offset})
+		if err != nil {
+			return err
+		}
+		for _, rollout := range list.Rollouts {
+			state := rolloutMetricStateLabel(rollout.State)
+			snapshot.rolloutsByState[state]++
+			if rolloutMetricStateActive(state) {
+				snapshot.activeRollouts++
+			}
+		}
+		offset += len(list.Rollouts)
+		if len(list.Rollouts) == 0 || offset >= list.Total {
+			return nil
+		}
+	}
 }
 
 // sidecarOutdated reports whether a node's reported sidecar version differs from
@@ -307,20 +339,28 @@ func writeFleetMetrics(w http.ResponseWriter, snapshot fleetMetricsSnapshot) {
 	fmt.Fprintln(w, "# TYPE sideplane_runtime_health gauge")
 	if len(snapshot.runtimeHealthByState) == 0 {
 		fmt.Fprintln(w, `sideplane_runtime_health{runtime_type="none",state="none"} 0`)
-		return
-	}
-	samples := make([]pairCounterSample, 0, len(snapshot.runtimeHealthByState))
-	for labels, value := range snapshot.runtimeHealthByState {
-		samples = append(samples, pairCounterSample{left: labels.left, right: labels.right, value: int64(value)})
-	}
-	sort.Slice(samples, func(i, j int) bool {
-		if samples[i].left == samples[j].left {
-			return samples[i].right < samples[j].right
+	} else {
+		samples := make([]pairCounterSample, 0, len(snapshot.runtimeHealthByState))
+		for labels, value := range snapshot.runtimeHealthByState {
+			samples = append(samples, pairCounterSample{left: labels.left, right: labels.right, value: int64(value)})
 		}
-		return samples[i].left < samples[j].left
-	})
-	for _, sample := range samples {
-		fmt.Fprintf(w, "sideplane_runtime_health{runtime_type=%q,state=%q} %d\n", sample.left, sample.right, sample.value)
+		sort.Slice(samples, func(i, j int) bool {
+			if samples[i].left == samples[j].left {
+				return samples[i].right < samples[j].right
+			}
+			return samples[i].left < samples[j].left
+		})
+		for _, sample := range samples {
+			fmt.Fprintf(w, "sideplane_runtime_health{runtime_type=%q,state=%q} %d\n", sample.left, sample.right, sample.value)
+		}
+	}
+	fmt.Fprintln(w, "# HELP sideplane_rollouts_active Active non-terminal rollouts.")
+	fmt.Fprintln(w, "# TYPE sideplane_rollouts_active gauge")
+	fmt.Fprintf(w, "sideplane_rollouts_active %d\n", snapshot.activeRollouts)
+	fmt.Fprintln(w, "# HELP sideplane_rollouts Rollouts by lifecycle state.")
+	fmt.Fprintln(w, "# TYPE sideplane_rollouts gauge")
+	for _, state := range rolloutMetricStates {
+		fmt.Fprintf(w, "sideplane_rollouts{state=%q} %d\n", state, snapshot.rolloutsByState[state])
 	}
 }
 
@@ -330,6 +370,52 @@ func runtimeHealthStateLabel(state protocol.RuntimeHealthState) string {
 		return string(state)
 	default:
 		return string(protocol.RuntimeHealthUnknown)
+	}
+}
+
+var rolloutMetricStates = []string{
+	string(protocol.RolloutStatePending),
+	string(protocol.RolloutStateScheduled),
+	string(protocol.RolloutStateRunning),
+	string(protocol.RolloutStatePaused),
+	string(protocol.RolloutStateCompleted),
+	string(protocol.RolloutStateFailed),
+	string(protocol.RolloutStateAborted),
+	"unknown",
+}
+
+func newRolloutMetricStateCounts() map[string]int {
+	counts := make(map[string]int, len(rolloutMetricStates))
+	for _, state := range rolloutMetricStates {
+		counts[state] = 0
+	}
+	return counts
+}
+
+func rolloutMetricStateLabel(state protocol.RolloutState) string {
+	switch state {
+	case protocol.RolloutStatePending,
+		protocol.RolloutStateScheduled,
+		protocol.RolloutStateRunning,
+		protocol.RolloutStatePaused,
+		protocol.RolloutStateCompleted,
+		protocol.RolloutStateFailed,
+		protocol.RolloutStateAborted:
+		return string(state)
+	default:
+		return "unknown"
+	}
+}
+
+func rolloutMetricStateActive(state string) bool {
+	switch state {
+	case string(protocol.RolloutStatePending),
+		string(protocol.RolloutStateScheduled),
+		string(protocol.RolloutStateRunning),
+		string(protocol.RolloutStatePaused):
+		return true
+	default:
+		return false
 	}
 }
 
@@ -1039,6 +1125,7 @@ func (h *handler) rolloutAction(w http.ResponseWriter, r *http.Request, rolloutI
 		return
 	}
 	now := time.Now().UTC()
+	previousState := rollout.State
 	action := ""
 	switch req.Action {
 	case protocol.RolloutActionPause:
@@ -1061,6 +1148,9 @@ func (h *handler) rolloutAction(w http.ResponseWriter, r *http.Request, rolloutI
 		}
 		writeAPIError(w, http.StatusInternalServerError, "update rollout")
 		return
+	}
+	if previousState != rollout.State {
+		h.metrics.IncRolloutTerminal(string(rollout.State))
 	}
 	h.audit(r.Context(), protocol.AuditEvent{
 		Actor:     audit.ActorOperator,

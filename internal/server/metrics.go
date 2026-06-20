@@ -19,18 +19,22 @@ type Metrics struct {
 	jobsCompleted         map[string]int64
 	jobsFailed            map[string]int64
 	lateJobResults        map[labelPair]int64
+	rolloutTerminal       map[string]int64
+	webhookDeliveries     map[string]int64
 	configApplyRolledBack int64
 }
 
 // NewMetrics returns an initialized Metrics registry.
 func NewMetrics() *Metrics {
 	return &Metrics{
-		heartbeats:       map[string]int64{},
-		jobsCreated:      map[string]int64{},
-		sidecarJobClaims: map[string]int64{},
-		jobsCompleted:    map[string]int64{},
-		jobsFailed:       map[string]int64{},
-		lateJobResults:   map[labelPair]int64{},
+		heartbeats:        map[string]int64{},
+		jobsCreated:       map[string]int64{},
+		sidecarJobClaims:  map[string]int64{},
+		jobsCompleted:     map[string]int64{},
+		jobsFailed:        map[string]int64{},
+		lateJobResults:    map[labelPair]int64{},
+		rolloutTerminal:   map[string]int64{},
+		webhookDeliveries: map[string]int64{},
 	}
 }
 
@@ -104,6 +108,34 @@ func (m *Metrics) IncConfigApplyRolledBack() {
 	m.mu.Unlock()
 }
 
+// IncRolloutTerminal records a rollout reaching a terminal state.
+func (m *Metrics) IncRolloutTerminal(state string) {
+	if m == nil {
+		return
+	}
+	label := rolloutTerminalMetricLabel(state)
+	if label == "" {
+		return
+	}
+	m.mu.Lock()
+	m.rolloutTerminal[label]++
+	m.mu.Unlock()
+}
+
+// IncWebhookDelivery records the final outcome for an alert webhook delivery.
+func (m *Metrics) IncWebhookDelivery(status string) {
+	if m == nil {
+		return
+	}
+	label := webhookDeliveryMetricLabel(status)
+	if label == "" {
+		return
+	}
+	m.mu.Lock()
+	m.webhookDeliveries[label]++
+	m.mu.Unlock()
+}
+
 // WriteProm renders the metrics in Prometheus text exposition format.
 func (m *Metrics) WriteProm(w http.ResponseWriter) {
 	m.mu.Lock()
@@ -113,6 +145,8 @@ func (m *Metrics) WriteProm(w http.ResponseWriter) {
 	completed := snapshotCounter(m.jobsCompleted)
 	failed := snapshotCounter(m.jobsFailed)
 	lateResults := snapshotPairCounter(m.lateJobResults)
+	rolloutTerminal := snapshotCounter(m.rolloutTerminal)
+	webhookDeliveries := snapshotCounter(m.webhookDeliveries)
 	rolledBack := m.configApplyRolledBack
 	m.mu.Unlock()
 
@@ -123,10 +157,30 @@ func (m *Metrics) WriteProm(w http.ResponseWriter) {
 	writeCounter(w, "sideplane_jobs_completed_total", "Jobs completed by type.", completed)
 	writeCounter(w, "sideplane_jobs_failed_total", "Jobs failed by type.", failed)
 	writePairCounter(w, "sideplane_job_late_results_total", "Sidecar job results received after server-side timeout.", "type", "status", lateResults)
+	writeCounterWithLabel(w, "sideplane_rollout_terminal_total", "Rollouts that reached a terminal state by state.", "state", rolloutTerminal)
+	writeCounterWithLabel(w, "sideplane_webhook_deliveries_total", "Alert webhook deliveries by final status.", "status", webhookDeliveries)
 
 	fmt.Fprintln(w, "# HELP sideplane_config_apply_rolled_back_total Config applies that rolled back to backup.")
 	fmt.Fprintln(w, "# TYPE sideplane_config_apply_rolled_back_total counter")
 	fmt.Fprintf(w, "sideplane_config_apply_rolled_back_total %d\n", rolledBack)
+}
+
+func rolloutTerminalMetricLabel(state string) string {
+	switch state {
+	case "completed", "failed", "aborted":
+		return state
+	default:
+		return ""
+	}
+}
+
+func webhookDeliveryMetricLabel(status string) string {
+	switch status {
+	case "succeeded", "failed", "dropped":
+		return status
+	default:
+		return ""
+	}
 }
 
 func writeBuildInfo(w http.ResponseWriter) {

@@ -210,6 +210,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		logger.Error("read sqlite schema version", "db", *dbPath, "error", err)
 		return 1
 	}
+	metrics := server.NewMetrics()
 
 	handler, err := server.NewHandlerWithConfig(server.HandlerConfig{
 		Store:                           nodeStore,
@@ -224,7 +225,8 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 			DisableEnrollment:   *enrollmentRateLimit == 0,
 			DisableOperatorAuth: *operatorAuthRateLimit == 0,
 		},
-		Logger: logger,
+		Metrics: metrics,
+		Logger:  logger,
 	})
 	if err != nil {
 		logger.Error("configure freshness policy", "error", err)
@@ -274,12 +276,14 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		Store:      nodeStore,
 		Freshness:  freshness,
 		SigningKey: signingKey,
+		Metrics:    metrics,
 		Interval:   *rolloutInterval,
 		Logger:     logger,
 	})
 	server.StartAlertDispatcher(ctx, server.AlertDispatcherConfig{
-		Store:  nodeStore,
-		Logger: logger,
+		Store:   nodeStore,
+		Metrics: metrics,
+		Logger:  logger,
 	})
 
 	logger.Info(

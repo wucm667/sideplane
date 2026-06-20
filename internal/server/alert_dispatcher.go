@@ -39,6 +39,7 @@ type AlertDispatcherConfig struct {
 	Backoff     time.Duration
 	Timeout     time.Duration
 	Now         func() time.Time
+	Metrics     *Metrics
 }
 
 type alertDelivery struct {
@@ -59,6 +60,7 @@ type alertDispatcher struct {
 	maxAttempts int
 	backoff     time.Duration
 	now         func() time.Time
+	metrics     *Metrics
 }
 
 // StartAlertDispatcher subscribes to the event hub and delivers alert webhooks
@@ -117,6 +119,7 @@ func newAlertDispatcher(cfg AlertDispatcherConfig) *alertDispatcher {
 		maxAttempts: maxAttempts,
 		backoff:     backoff,
 		now:         now,
+		metrics:     cfg.Metrics,
 	}
 }
 
@@ -192,6 +195,7 @@ func (d *alertDispatcher) enqueue(delivery alertDelivery) {
 	select {
 	case d.queue <- delivery:
 	default:
+		d.metrics.IncWebhookDelivery("dropped")
 		d.logger.Warn("alert webhook queue full; dropping delivery", "webhook", delivery.webhookID, "event", delivery.payload.Event)
 	}
 }
@@ -200,6 +204,7 @@ func (d *alertDispatcher) enqueue(delivery alertDelivery) {
 func (d *alertDispatcher) deliver(ctx context.Context, delivery alertDelivery) {
 	body, err := json.Marshal(delivery.payload)
 	if err != nil {
+		d.metrics.IncWebhookDelivery("failed")
 		return
 	}
 	signature := ""
@@ -214,9 +219,11 @@ func (d *alertDispatcher) deliver(ctx context.Context, delivery alertDelivery) {
 		}
 		ok, retryable := d.attempt(ctx, delivery.target.URL, body, signature)
 		if ok {
+			d.metrics.IncWebhookDelivery("succeeded")
 			return
 		}
 		if !retryable {
+			d.metrics.IncWebhookDelivery("failed")
 			d.logger.Warn("alert webhook permanent failure", "webhook", delivery.webhookID, "event", delivery.payload.Event)
 			return
 		}
@@ -228,6 +235,7 @@ func (d *alertDispatcher) deliver(ctx context.Context, delivery alertDelivery) {
 			}
 		}
 	}
+	d.metrics.IncWebhookDelivery("dropped")
 	d.logger.Warn("alert webhook dropped after retries", "webhook", delivery.webhookID, "event", delivery.payload.Event, "attempts", d.maxAttempts)
 }
 

@@ -126,7 +126,18 @@ func TestRolloutOrchestratorDispatchesExistingConfigApplyPipeline(t *testing.T) 
 		BatchSize:     1,
 		HealthTimeout: time.Minute,
 	}, now)
-	orchestrator := newTestRolloutOrchestrator(nodeStore, keyPair, now)
+	metrics := NewMetrics()
+	orchestrator := NewRolloutOrchestrator(RolloutOrchestratorConfig{
+		Store: nodeStore,
+		Freshness: FreshnessPolicy{
+			StaleAfter:   time.Minute,
+			OfflineAfter: 5 * time.Minute,
+			Now:          func() time.Time { return now },
+		},
+		SigningKey: keyPair,
+		Metrics:    metrics,
+		Now:        func() time.Time { return now },
+	})
 
 	if err := orchestrator.ReconcileOnce(ctx); err != nil {
 		t.Fatalf("reconcile dispatch: %v", err)
@@ -184,6 +195,7 @@ func TestRolloutOrchestratorDispatchesExistingConfigApplyPipeline(t *testing.T) 
 	if completed.Batches[0].Nodes["node-a"].State != protocol.RolloutNodeStateSucceeded {
 		t.Fatalf("node state = %q, want succeeded", completed.Batches[0].Nodes["node-a"].State)
 	}
+	assertMetricsContains(t, metrics, `sideplane_rollout_terminal_total{state="completed"} 1`)
 }
 
 func TestRolloutOrchestratorWaitsForScheduledStart(t *testing.T) {

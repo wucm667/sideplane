@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -37,7 +38,8 @@ func TestAlertDispatcherSignsAndDeliversPayload(t *testing.T) {
 		t.Fatalf("create webhook: %v", err)
 	}
 
-	d := newAlertDispatcher(AlertDispatcherConfig{Store: nodeStore, Client: receiver.Client(), Backoff: time.Millisecond})
+	metrics := NewMetrics()
+	d := newAlertDispatcher(AlertDispatcherConfig{Store: nodeStore, Client: receiver.Client(), Backoff: time.Millisecond, Metrics: metrics})
 	d.handleEvent(context.Background(), "rollout", mustJSON(t, map[string]string{"rolloutId": "rollout_1", "state": "paused"}))
 	// Drain the queue synchronously.
 	select {
@@ -63,6 +65,7 @@ func TestAlertDispatcherSignsAndDeliversPayload(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("receiver did not get delivery")
 	}
+	assertMetricsContains(t, metrics, `sideplane_webhook_deliveries_total{status="succeeded"} 1`)
 }
 
 func TestAlertDispatcherRetriesOn5xxThenSucceeds(t *testing.T) {
@@ -95,7 +98,8 @@ func TestAlertDispatcherDropsAfterPersistentFailure(t *testing.T) {
 	}))
 	defer receiver.Close()
 
-	d := newAlertDispatcher(AlertDispatcherConfig{Store: store.NewMemoryNodeStore(), Client: receiver.Client(), Backoff: time.Millisecond, MaxAttempts: 3})
+	metrics := NewMetrics()
+	d := newAlertDispatcher(AlertDispatcherConfig{Store: store.NewMemoryNodeStore(), Client: receiver.Client(), Backoff: time.Millisecond, MaxAttempts: 3, Metrics: metrics})
 	d.deliver(context.Background(), alertDelivery{
 		webhookID: "whk_1",
 		target:    store.AlertWebhookTarget{URL: receiver.URL},
@@ -104,6 +108,7 @@ func TestAlertDispatcherDropsAfterPersistentFailure(t *testing.T) {
 	if got := calls.Load(); got != 3 {
 		t.Fatalf("receiver calls = %d, want exactly MaxAttempts=3", got)
 	}
+	assertMetricsContains(t, metrics, `sideplane_webhook_deliveries_total{status="dropped"} 1`)
 }
 
 func TestAlertDispatcherDoesNotRetry4xx(t *testing.T) {
@@ -114,7 +119,8 @@ func TestAlertDispatcherDoesNotRetry4xx(t *testing.T) {
 	}))
 	defer receiver.Close()
 
-	d := newAlertDispatcher(AlertDispatcherConfig{Store: store.NewMemoryNodeStore(), Client: receiver.Client(), Backoff: time.Millisecond, MaxAttempts: 4})
+	metrics := NewMetrics()
+	d := newAlertDispatcher(AlertDispatcherConfig{Store: store.NewMemoryNodeStore(), Client: receiver.Client(), Backoff: time.Millisecond, MaxAttempts: 4, Metrics: metrics})
 	d.deliver(context.Background(), alertDelivery{
 		webhookID: "whk_1",
 		target:    store.AlertWebhookTarget{URL: receiver.URL},
@@ -123,10 +129,12 @@ func TestAlertDispatcherDoesNotRetry4xx(t *testing.T) {
 	if got := calls.Load(); got != 1 {
 		t.Fatalf("receiver calls = %d, want 1 (4xx is permanent)", got)
 	}
+	assertMetricsContains(t, metrics, `sideplane_webhook_deliveries_total{status="failed"} 1`)
 }
 
 func TestAlertDispatcherEnqueueNeverBlocksProducers(t *testing.T) {
-	d := newAlertDispatcher(AlertDispatcherConfig{Store: store.NewMemoryNodeStore(), QueueSize: 1})
+	metrics := NewMetrics()
+	d := newAlertDispatcher(AlertDispatcherConfig{Store: store.NewMemoryNodeStore(), QueueSize: 1, Metrics: metrics})
 	done := make(chan struct{})
 	go func() {
 		// More deliveries than the queue can hold; excess is dropped, not blocked.
@@ -140,6 +148,7 @@ func TestAlertDispatcherEnqueueNeverBlocksProducers(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("enqueue blocked when queue was full")
 	}
+	assertMetricsContains(t, metrics, `sideplane_webhook_deliveries_total{status="dropped"}`)
 }
 
 func TestAlertDispatcherSuppressesMaintenanceNodeAlertsOnly(t *testing.T) {
@@ -251,6 +260,15 @@ func assertNoAlertDelivery(t *testing.T, d *alertDispatcher) {
 	case delivery := <-d.queue:
 		t.Fatalf("unexpected alert delivery: %+v", delivery.payload)
 	default:
+	}
+}
+
+func assertMetricsContains(t *testing.T, metrics *Metrics, want string) {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	metrics.WriteProm(rec)
+	if !strings.Contains(rec.Body.String(), want) {
+		t.Fatalf("metrics body missing %q\n%s", want, rec.Body.String())
 	}
 }
 

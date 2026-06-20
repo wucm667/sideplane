@@ -22,6 +22,7 @@ type RolloutOrchestratorConfig struct {
 	Freshness  FreshnessPolicy
 	SigningKey spcrypto.KeyPair
 	Events     *EventHub
+	Metrics    *Metrics
 	Interval   time.Duration
 	Logger     *slog.Logger
 	Now        func() time.Time
@@ -59,6 +60,7 @@ type RolloutOrchestrator struct {
 	signingKey spcrypto.KeyPair
 	logger     *slog.Logger
 	events     *EventHub
+	metrics    *Metrics
 	now        func() time.Time
 	engine     rollout.Engine
 }
@@ -77,6 +79,7 @@ func NewRolloutOrchestrator(cfg RolloutOrchestratorConfig) *RolloutOrchestrator 
 		freshness:  cfg.Freshness,
 		signingKey: cfg.SigningKey,
 		events:     eventHubOrDefault(cfg.Events),
+		metrics:    cfg.Metrics,
 		logger:     cfg.Logger,
 		now:        now,
 	}
@@ -116,6 +119,7 @@ func (o *RolloutOrchestrator) ReconcileOnce(ctx context.Context) error {
 			return err
 		}
 		if current.State != next.State {
+			o.metrics.IncRolloutTerminal(string(next.State))
 			publishRolloutEvent(o.events, next)
 		}
 	}
