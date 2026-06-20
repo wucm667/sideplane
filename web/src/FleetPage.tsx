@@ -61,7 +61,6 @@ export default function FleetPage() {
     setNodeJobStatusFilter,
     setOperatorToken,
     setSelector,
-    stats,
     theme,
     toggleTheme,
     view,
@@ -140,8 +139,8 @@ export default function FleetPage() {
               loading={loading}
               nodes={nodes}
               refreshing={refreshing}
+              rollouts={rollouts}
               selector={selector}
-              stats={stats}
               onOpenNode={openNode}
               onRefresh={() => refreshFleet()}
               onSelectorChange={setSelector}

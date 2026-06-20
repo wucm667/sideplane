@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   compactHash,
+  fleetOverviewMetrics,
   formatRelativeTime,
   groupRows,
   jobBadgeClasses,
@@ -10,7 +11,7 @@ import {
   snapshotForRuntime,
   stateBadgeClasses,
 } from '../helpers.ts'
-import type { Job, JobStatus, NodeState, NodeStatus, RuntimeConfigSnapshot, RuntimeStatus } from '../types.ts'
+import type { Job, JobStatus, NodeState, NodeStatus, Rollout, RuntimeConfigSnapshot, RuntimeStatus } from '../types.ts'
 
 describe('formatRelativeTime', () => {
   beforeEach(() => {
@@ -134,6 +135,37 @@ describe('fleet helper summaries', () => {
     expect(normalizeNodeListResponse(nodes)).toEqual(nodes)
     expect(normalizeNodeListResponse({ nodes, total: 1, limit: 100, offset: 0 })).toEqual(nodes)
   })
+
+  it('aggregates fleet overview metrics from loaded client data', () => {
+    const nodes = [
+      node({ nodeId: 'node-a', state: 'fresh', drift: true, runtimes: [runtime({ type: 'hermes' })] }),
+      node({ nodeId: 'node-b', state: 'stale', runtimes: [runtime({ type: 'openclaw' }), runtime({ type: 'hermes' })] }),
+      node({ nodeId: 'node-c', state: 'offline' }),
+    ]
+
+    expect(fleetOverviewMetrics(nodes, {
+      'node-a': [
+        job({ id: 'job-pending', status: 'pending' }),
+        job({ id: 'job-done', status: 'completed' }),
+      ],
+      'node-b': [job({ id: 'job-claimed', status: 'claimed' })],
+    }, [
+      rollout('running'),
+      rollout('paused'),
+      rollout('completed'),
+    ])).toEqual({
+      totalNodes: 3,
+      freshNodes: 1,
+      staleNodes: 1,
+      offlineNodes: 1,
+      driftedNodes: 1,
+      runtimeCount: 3,
+      activeJobs: 2,
+      activeRollouts: 2,
+      runningRollouts: 1,
+      pausedRollouts: 1,
+    })
+  })
 })
 
 function job(overrides: Partial<Job>): Job {
@@ -170,5 +202,21 @@ function runtime(overrides: Partial<RuntimeStatus>): RuntimeStatus {
     model: '',
     configHash: '',
     ...overrides,
+  }
+}
+
+function rollout(state: Rollout['state']): Rollout {
+  return {
+    id: `rollout-${state}`,
+    state,
+    spec: {
+      runtimeType: 'hermes',
+      profile: 'default',
+      target: { provider: 'openai', model: 'gpt-4o' },
+      live: false,
+    },
+    batches: [],
+    createdAt: '2026-06-19T12:00:00Z',
+    updatedAt: '2026-06-19T12:00:00Z',
   }
 }

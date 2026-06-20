@@ -23,6 +23,19 @@ export interface RollbackCandidate {
   createdAt?: string
 }
 
+export interface FleetOverviewMetrics {
+  totalNodes: number
+  freshNodes: number
+  staleNodes: number
+  offlineNodes: number
+  driftedNodes: number
+  runtimeCount: number
+  activeJobs: number
+  activeRollouts: number
+  runningRollouts: number
+  pausedRollouts: number
+}
+
 interface EventTicketResponse {
   ticket: string
   expiresAt: string
@@ -269,6 +282,25 @@ export function groupRows(nodes: NodeStatus[]) {
     }
   }
   return Array.from(groups.entries()).map(([name, count]) => ({ name, count }))
+}
+
+export function fleetOverviewMetrics(nodes: NodeStatus[], jobsByNode: Record<string, Job[]>, rollouts: Rollout[]): FleetOverviewMetrics {
+  return {
+    totalNodes: nodes.length,
+    freshNodes: nodes.filter((node) => node.state === 'fresh').length,
+    staleNodes: nodes.filter((node) => node.state === 'stale').length,
+    offlineNodes: nodes.filter((node) => node.state === 'offline').length,
+    driftedNodes: nodes.filter((node) => node.drift).length,
+    runtimeCount: nodes.reduce((total, node) => total + (node.runtimes?.length ?? 0), 0),
+    activeJobs: Object.values(jobsByNode).reduce((total, jobs) => total + jobs.filter(isActiveJob).length, 0),
+    activeRollouts: rollouts.filter(isActiveRollout).length,
+    runningRollouts: rollouts.filter((rollout) => rollout.state === 'running').length,
+    pausedRollouts: rollouts.filter((rollout) => rollout.state === 'paused').length,
+  }
+}
+
+function isActiveRollout(rollout: Rollout): boolean {
+  return rollout.state === 'pending' || rollout.state === 'running' || rollout.state === 'paused'
 }
 
 export function snapshotForRuntime(runtime: RuntimeStatus, snapshots: RuntimeConfigSnapshot[]): RuntimeConfigSnapshot | undefined {

@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
-import { compactHash, formatDate, formatRelativeTime, hasActiveDeepProbe, runtimeKey, runtimeLabel, stateBadgeClasses } from '../helpers.ts'
-import type { Job, NodeStatus } from '../types.ts'
+import { compactHash, fleetOverviewMetrics, formatDate, formatRelativeTime, hasActiveDeepProbe, runtimeKey, runtimeLabel, stateBadgeClasses } from '../helpers.ts'
+import type { FleetOverviewMetrics } from '../helpers.ts'
+import type { Job, NodeStatus, Rollout } from '../types.ts'
 
 type SortKey = 'node' | 'state' | 'heartbeat'
 type SortDirection = 'asc' | 'desc'
@@ -19,8 +20,8 @@ interface FleetOverviewProps {
   loading: boolean
   nodes: NodeStatus[]
   refreshing: boolean
+  rollouts: Rollout[]
   selector: string
-  stats: { healthy: number; stale: number; offline: number; drift: number }
   onOpenNode: (nodeId: string) => void
   onRefresh: () => void
   onSelectorChange: (selector: string) => void
@@ -34,8 +35,8 @@ export function FleetOverview({
   loading,
   nodes,
   refreshing,
+  rollouts,
   selector,
-  stats,
   onOpenNode,
   onRefresh,
   onSelectorChange,
@@ -44,6 +45,7 @@ export function FleetOverview({
   const [searchQuery, setSearchQuery] = useState('')
   const filteredNodes = useMemo(() => filterNodes(nodes, searchQuery), [nodes, searchQuery])
   const sortedNodes = useMemo(() => sortNodes(filteredNodes, sort.key, sort.direction), [filteredNodes, sort])
+  const metrics = useMemo(() => fleetOverviewMetrics(nodes, jobsByNode, rollouts), [jobsByNode, nodes, rollouts])
 
   const toggleSort = (key: SortKey) => {
     setSort((current) => ({
@@ -70,12 +72,7 @@ export function FleetOverview({
         </button>
       </div>
 
-      <div className="mb-5 grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <SummaryCard label="Healthy" value={stats.healthy} dotClass="bg-emerald-500" />
-        <SummaryCard label="Config drift" value={stats.drift} dotClass="bg-amber-500" />
-        <SummaryCard label="Stale" value={stats.stale} dotClass="bg-amber-500" />
-        <SummaryCard label="Offline" value={stats.offline} dotClass="bg-rose-500" />
-      </div>
+      <FleetMetricsPanel metrics={metrics} />
 
       {bannerText && (
         <div className="mb-5 rounded-xl border border-amber-500/35 bg-amber-500/10 px-4 py-3 text-sm font-medium text-[var(--sp-text)]">
@@ -189,14 +186,62 @@ function SortHeader({ active, direction, label, onClick }: { active: boolean; di
   )
 }
 
-function SummaryCard({ label, value, dotClass }: { label: string; value: number; dotClass: string }) {
+function FleetMetricsPanel({ metrics }: { metrics: FleetOverviewMetrics }) {
+  const rolloutDetail = metrics.activeRollouts > 0
+    ? `${metrics.runningRollouts} running · ${metrics.pausedRollouts} paused`
+    : 'none active'
+
   return (
-    <div className="rounded-xl border border-[var(--sp-border)] bg-[var(--sp-surface)] px-4 py-4">
+    <section className="mb-5 overflow-hidden rounded-xl border border-[var(--sp-border)] bg-[var(--sp-surface)] shadow-sm">
+      <div className="grid divide-y divide-[var(--sp-border)] sm:grid-cols-2 sm:divide-x sm:divide-y-0 xl:grid-cols-4">
+        <MetricCell
+          accentClass="bg-emerald-500"
+          detail={`${metrics.freshNodes} fresh · ${metrics.staleNodes} stale · ${metrics.offlineNodes} offline`}
+          label="Fleet nodes"
+          value={metrics.totalNodes}
+        />
+        <MetricCell
+          accentClass={metrics.driftedNodes > 0 ? 'bg-amber-500' : 'bg-emerald-500'}
+          detail={`${metrics.runtimeCount} runtimes observed`}
+          label="Config drift"
+          value={metrics.driftedNodes}
+        />
+        <MetricCell
+          accentClass={metrics.activeJobs > 0 ? 'bg-sky-500' : 'bg-[var(--sp-faint)]'}
+          detail="pending or claimed jobs"
+          label="Active jobs"
+          value={metrics.activeJobs}
+        />
+        <MetricCell
+          accentClass={metrics.activeRollouts > 0 ? 'bg-sky-500' : 'bg-[var(--sp-faint)]'}
+          detail={rolloutDetail}
+          label="Rollout activity"
+          value={metrics.activeRollouts}
+        />
+      </div>
+    </section>
+  )
+}
+
+function MetricCell({
+  accentClass,
+  detail,
+  label,
+  value,
+}: {
+  accentClass: string
+  detail: string
+  label: string
+  value: number
+}) {
+  return (
+    <div className="min-h-[92px] px-4 py-4">
       <div className="flex items-center gap-2 text-xs font-medium text-[var(--sp-muted)]">
-        <span className={`h-2 w-2 rounded-full ${dotClass}`} />
-        {label}
+        <span className={`h-2 w-2 rounded-full ${accentClass}`} />
+        <span>{label}</span>
       </div>
       <div className="mt-2 font-mono text-3xl font-bold tracking-tight">{value}</div>
+      <div className="mt-1 truncate text-xs text-[var(--sp-faint)]" title={detail}>{detail}</div>
     </div>
   )
 }
