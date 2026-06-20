@@ -56,6 +56,18 @@ scripts/smoke-readonly.sh
 
 Before sending a PR, run the smallest focused test for the code you changed and at least one broader gate, usually `go test ./...` plus the relevant web command.
 
+## Operations Notes
+
+Database backup and restore use the SQLite store directly:
+
+- On demand: `sideplane-server backup --db ./sideplane.db --out ./backup.db`
+  writes an online, transactionally consistent copy (`VACUUM INTO`). The
+  destination must not already exist.
+- Scheduled: run the server with `--backup-dir <dir>` and a positive
+  `--backup-interval`; the server retains the last `--backup-retention` copies.
+- Restore is offline: stop the server, replace the `--db` file with a backup
+  copy, then start the server again. Do not swap the file while the server runs.
+
 ## No Live Writes In Tests
 
 Tests must not:

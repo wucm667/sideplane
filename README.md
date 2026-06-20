@@ -154,7 +154,8 @@ Server flags can be configured with environment variables. Explicit CLI flags ta
 Matching flags are available on `sideplane-server`: `--addr`, `--db`,
 `--web-dir`, `--operator-token`, `--signing-key`, `--stale-after`,
 `--offline-after`, `--heartbeat-retention`, `--job-retention`,
-`--audit-retention`, `--rollout-interval`, `--enrollment-rate-limit`,
+`--audit-retention`, `--rollout-interval`, `--backup-dir`,
+`--backup-interval`, `--backup-retention`, `--enrollment-rate-limit`,
 `--operator-auth-rate-limit`, `--rate-limit-window`, and
 `--allow-unauthenticated-operator-api`.
 
@@ -226,8 +227,35 @@ Core endpoints:
 
 Mutating operator endpoints require an operator bearer token unless the server
 is explicitly started with the development-only unauthenticated operator API
-flag. Enrollment and failed operator-auth attempts are rate limited by remote
-address and return `429` with `Retry-After` when the fixed window is exhausted.
+flag. Operator tokens carry a scope: `admin` (full access) or `readonly`
+(GET/list endpoints only; mutating endpoints return `403`). The env/flag
+bootstrap token is always `admin`. Enrollment and failed operator-auth attempts
+are rate limited by remote address and return `429` with `Retry-After` when the
+fixed window is exhausted.
+
+### Database Backup And Restore
+
+The SQLite store can be snapshotted online while the server runs:
+
+- On demand: `sideplane-server backup --db ./sideplane.db --out ./sideplane-backup.db`
+  writes a transactionally consistent copy (SQLite `VACUUM INTO`) without
+  serving HTTP. The destination must not already exist.
+- Scheduled: start the server with `--backup-dir <dir>` and a positive
+  `--backup-interval` (for example `1h`). Each tick writes a timestamped copy
+  into the directory and prunes all but the most recent `--backup-retention`
+  backups (default `7`). Periodic backups are off unless both are set.
+
+To restore, stop the server, replace the database file with a backup copy, then
+start the server again:
+
+```bash
+sudo systemctl stop sideplane-server   # or stop the container
+cp ./sideplane-backup.db ./sideplane.db
+sudo systemctl start sideplane-server
+```
+
+Restoring while the server is running is not supported; the server is the source
+of truth for desired state and must not be reading the file mid-swap.
 
 ### Labels And Rollouts
 
