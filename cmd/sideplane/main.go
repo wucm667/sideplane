@@ -1083,10 +1083,11 @@ func runNodeLabel(args []string, stdout io.Writer, stderr io.Writer) int {
 
 	serverURL := flags.String("server", "", "Sideplane server URL; can also be set with SIDEPLANE_SERVER_URL")
 	operatorTokenFlag := flags.String("operator-token", "", "operator bearer token; can also be set with SIDEPLANE_OPERATOR_TOKEN")
+	selector := flags.String("selector", "", "label selector for bulk assignment, for example role=canary,zone=lab")
 	var removeLabels stringList
 	flags.Var(&removeLabels, "remove", "label key to remove; may be repeated")
 	jsonOutput := flags.Bool("json", false, "print raw JSON response")
-	usage := "sideplane node label <nodeId> key=value [key2=value2 ...] [--remove key] [--server URL] [--operator-token TOKEN] [--json]"
+	usage := "sideplane node label (<nodeId> | --selector key=value[,key2=value2]) key=value [key2=value2 ...] [--remove key] [--server URL] [--operator-token TOKEN] [--json]"
 	if commandHelpRequested(args) {
 		printCommandHelp(stdout, usage, flags)
 		return 0
@@ -1094,6 +1095,50 @@ func runNodeLabel(args []string, stdout io.Writer, stderr io.Writer) int {
 	if err := parseCommandFlags(flags, args, "json"); err != nil {
 		return 2
 	}
+
+	server := serverURLValue(*serverURL)
+	operatorToken := operatorTokenValue(*operatorTokenFlag)
+
+	if strings.TrimSpace(*selector) != "" {
+		if len(removeLabels) > 0 {
+			fmt.Fprintln(stderr, "node label: --remove is not supported with --selector")
+			return 1
+		}
+		if flags.NArg() == 0 {
+			fmt.Fprintln(stderr, "node label: provide key=value assignments to apply")
+			return 1
+		}
+		selectorMap, err := parseCLISelector(*selector)
+		if err != nil {
+			fmt.Fprintf(stderr, "node label: %v\n", err)
+			return 1
+		}
+		applied := map[string]string{}
+		for _, assignment := range flags.Args() {
+			key, value, ok := strings.Cut(assignment, "=")
+			key = strings.TrimSpace(key)
+			if !ok || key == "" {
+				fmt.Fprintf(stderr, "node label: invalid label %q, want key=value\n", assignment)
+				return 1
+			}
+			applied[key] = strings.TrimSpace(value)
+		}
+		resp, body, err := putJSON[protocol.BulkNodeLabelsResponse](context.Background(), server, "/api/nodes/labels", protocol.BulkNodeLabelsRequest{
+			Selector: selectorMap,
+			Labels:   applied,
+		}, operatorToken)
+		if err != nil {
+			fmt.Fprintf(stderr, "node label: %v\n", err)
+			return 1
+		}
+		if *jsonOutput {
+			writeRawJSON(stdout, body)
+			return 0
+		}
+		fmt.Fprintf(stdout, "Applied %d label(s) to %d node(s).\n", len(applied), resp.Updated)
+		return 0
+	}
+
 	if flags.NArg() < 1 {
 		fmt.Fprintln(stderr, "usage: "+usage)
 		return 1
@@ -1109,8 +1154,6 @@ func runNodeLabel(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 
 	labels := map[string]string{}
-	server := serverURLValue(*serverURL)
-	operatorToken := operatorTokenValue(*operatorTokenFlag)
 	path := "/api/nodes/" + url.PathEscape(nodeID) + "/labels"
 	current, _, err := getJSON[protocol.NodeLabelsResponse](context.Background(), server, path, operatorToken)
 	if err != nil {
@@ -1495,9 +1538,10 @@ func runProbe(args []string, stdout io.Writer, stderr io.Writer) int {
 
 	serverURL := flags.String("server", "", "Sideplane server URL; can also be set with SIDEPLANE_SERVER_URL")
 	operatorTokenFlag := flags.String("operator-token", "", "operator bearer token; can also be set with SIDEPLANE_OPERATOR_TOKEN")
+	selector := flags.String("selector", "", "label selector for a bulk probe, for example role=canary,zone=lab")
 	wait := flags.Bool("wait", false, "poll until the deep probe job completes or fails")
 	jsonOutput := flags.Bool("json", false, "print JSON output")
-	usage := "sideplane probe <nodeId> [--server URL] [--operator-token TOKEN] [--wait] [--json]"
+	usage := "sideplane probe (<nodeId> | --selector key=value[,key2=value2]) [--server URL] [--operator-token TOKEN] [--wait] [--json]"
 	if commandHelpRequested(args) {
 		printCommandHelp(stdout, usage, flags)
 		return 0
@@ -1505,6 +1549,40 @@ func runProbe(args []string, stdout io.Writer, stderr io.Writer) int {
 	if err := parseCommandFlags(flags, args, "json", "wait"); err != nil {
 		return 2
 	}
+
+	server := serverURLValue(*serverURL)
+	operatorToken := operatorTokenValue(*operatorTokenFlag)
+
+	if strings.TrimSpace(*selector) != "" {
+		if flags.NArg() != 0 {
+			fmt.Fprintln(stderr, "probe: nodeId and --selector are mutually exclusive")
+			return 1
+		}
+		if *wait {
+			fmt.Fprintln(stderr, "probe: --wait is not supported with --selector")
+			return 1
+		}
+		selectorMap, err := parseCLISelector(*selector)
+		if err != nil {
+			fmt.Fprintf(stderr, "probe: %v\n", err)
+			return 1
+		}
+		resp, body, err := postJSON[protocol.BulkJobResponse](context.Background(), server, "/api/jobs/bulk", protocol.BulkJobRequest{
+			Selector: selectorMap,
+			Type:     protocol.JobTypeDeepProbe,
+		}, operatorToken)
+		if err != nil {
+			fmt.Fprintf(stderr, "probe: %v\n", err)
+			return 1
+		}
+		if *jsonOutput {
+			writeRawJSON(stdout, body)
+			return 0
+		}
+		printBulkJobSummary(stdout, resp)
+		return 0
+	}
+
 	if flags.NArg() != 1 {
 		fmt.Fprintln(stderr, "usage: "+usage)
 		return 1
@@ -1516,8 +1594,6 @@ func runProbe(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 1
 	}
 
-	server := serverURLValue(*serverURL)
-	operatorToken := operatorTokenValue(*operatorTokenFlag)
 	path := "/api/nodes/" + url.PathEscape(nodeID) + "/jobs"
 	job, body, err := postJSON[protocol.Job](context.Background(), server, path, protocol.CreateJobRequest{
 		Type: protocol.JobTypeDeepProbe,
@@ -2019,6 +2095,16 @@ func writeJSONValue(w io.Writer, value any) {
 	encoder := json.NewEncoder(w)
 	encoder.SetIndent("", "  ")
 	encoder.Encode(value)
+}
+
+func printBulkJobSummary(w io.Writer, resp protocol.BulkJobResponse) {
+	fmt.Fprintf(w, "Created %d job(s) across %d matched node(s).\n", resp.Created, len(resp.Jobs))
+	table := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(table, "NODE\tJOB\tERROR")
+	for _, result := range resp.Jobs {
+		fmt.Fprintf(table, "%s\t%s\t%s\n", valueOrDash(result.NodeID), valueOrDash(result.JobID), valueOrDash(result.Error))
+	}
+	table.Flush()
 }
 
 func printOperatorTokenCreated(w io.Writer, resp protocol.CreateOperatorTokenResponse) {

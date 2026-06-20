@@ -129,6 +129,22 @@ export interface RolloutActionResponse {
   rollout: Rollout
 }
 
+export interface BulkJobResult {
+  nodeId: string
+  jobId?: string
+  error?: string
+}
+
+export interface BulkJobResponse {
+  jobs: BulkJobResult[]
+  created: number
+}
+
+export interface BulkNodeLabelsResponse {
+  nodeIds: string[]
+  updated: number
+}
+
 export type OperatorTokenScope = 'admin' | 'readonly'
 
 export interface OperatorToken {

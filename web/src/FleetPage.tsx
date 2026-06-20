@@ -138,6 +138,7 @@ export default function FleetPage() {
               jobsByNode={jobsByNode}
               loading={loading}
               nodes={nodes}
+              operatorToken={operatorToken}
               refreshing={refreshing}
               rollouts={rollouts}
               selector={selector}
