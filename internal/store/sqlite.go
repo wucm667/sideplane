@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -997,6 +998,143 @@ WHERE id = ? AND (revoked_at IS NULL OR revoked_at = '')
 		return ErrOperatorTokenNotFound
 	}
 	return nil
+}
+
+// CreateAlertWebhook stores an outbound alert webhook configuration.
+func (s *SQLiteNodeStore) CreateAlertWebhook(ctx context.Context, req protocol.CreateAlertWebhookRequest, now time.Time) (protocol.AlertWebhook, error) {
+	if s == nil || s.db == nil {
+		return protocol.AlertWebhook{}, errors.New("sqlite node store is closed")
+	}
+	req, err := ValidateAlertWebhookRequest(req)
+	if err != nil {
+		return protocol.AlertWebhook{}, err
+	}
+	id, err := newRandomID("whk_")
+	if err != nil {
+		return protocol.AlertWebhook{}, err
+	}
+	eventsJSON, err := json.Marshal(req.Events)
+	if err != nil {
+		return protocol.AlertWebhook{}, fmt.Errorf("encode webhook events: %w", err)
+	}
+	createdAt := now.UTC()
+	if _, err := s.db.ExecContext(ctx, `
+INSERT INTO alert_webhooks (id, url, events_json, secret, disabled, created_at)
+VALUES (?, ?, ?, ?, 0, ?)
+`, id, req.URL, string(eventsJSON), req.Secret, formatDBTime(createdAt)); err != nil {
+		return protocol.AlertWebhook{}, fmt.Errorf("insert alert webhook: %w", err)
+	}
+	return protocol.AlertWebhook{
+		ID:        id,
+		URL:       req.URL,
+		Events:    append([]protocol.AlertEventType(nil), req.Events...),
+		HasSecret: req.Secret != "",
+		Disabled:  false,
+		CreatedAt: createdAt,
+	}, nil
+}
+
+// ListAlertWebhooks returns alert webhook metadata newest-first without secrets.
+func (s *SQLiteNodeStore) ListAlertWebhooks(ctx context.Context) ([]protocol.AlertWebhook, error) {
+	if s == nil || s.db == nil {
+		return nil, errors.New("sqlite node store is closed")
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT id, url, events_json, secret, disabled, created_at
+FROM alert_webhooks
+ORDER BY created_at DESC, id DESC
+`)
+	if err != nil {
+		return nil, fmt.Errorf("query alert webhooks: %w", err)
+	}
+	defer rows.Close()
+	webhooks := []protocol.AlertWebhook{}
+	for rows.Next() {
+		webhook, _, err := scanSQLiteAlertWebhook(rows)
+		if err != nil {
+			return nil, err
+		}
+		webhooks = append(webhooks, webhook)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate alert webhooks: %w", err)
+	}
+	return webhooks, nil
+}
+
+// DeleteAlertWebhook removes an alert webhook by ID.
+func (s *SQLiteNodeStore) DeleteAlertWebhook(ctx context.Context, id string) error {
+	if s == nil || s.db == nil {
+		return errors.New("sqlite node store is closed")
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return ErrAlertWebhookNotFound
+	}
+	result, err := s.db.ExecContext(ctx, `DELETE FROM alert_webhooks WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("delete alert webhook: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("count alert webhook delete: %w", err)
+	}
+	if affected == 0 {
+		return ErrAlertWebhookNotFound
+	}
+	return nil
+}
+
+// ListAlertWebhookTargets returns enabled webhooks subscribed to event with secrets.
+func (s *SQLiteNodeStore) ListAlertWebhookTargets(ctx context.Context, event protocol.AlertEventType) ([]AlertWebhookTarget, error) {
+	if s == nil || s.db == nil {
+		return nil, errors.New("sqlite node store is closed")
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT id, url, events_json, secret, disabled, created_at
+FROM alert_webhooks
+WHERE disabled = 0
+ORDER BY id ASC
+`)
+	if err != nil {
+		return nil, fmt.Errorf("query alert webhook targets: %w", err)
+	}
+	defer rows.Close()
+	targets := make([]AlertWebhookTarget, 0)
+	for rows.Next() {
+		webhook, secret, err := scanSQLiteAlertWebhook(rows)
+		if err != nil {
+			return nil, err
+		}
+		if !slices.Contains(webhook.Events, event) {
+			continue
+		}
+		targets = append(targets, AlertWebhookTarget{ID: webhook.ID, URL: webhook.URL, Secret: secret})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate alert webhook targets: %w", err)
+	}
+	return targets, nil
+}
+
+func scanSQLiteAlertWebhook(scanner sqliteScanner) (protocol.AlertWebhook, string, error) {
+	var webhook protocol.AlertWebhook
+	var eventsJSON, secret, createdAtText string
+	var disabled int
+	if err := scanner.Scan(&webhook.ID, &webhook.URL, &eventsJSON, &secret, &disabled, &createdAtText); err != nil {
+		return protocol.AlertWebhook{}, "", err
+	}
+	if err := json.Unmarshal([]byte(eventsJSON), &webhook.Events); err != nil {
+		return protocol.AlertWebhook{}, "", fmt.Errorf("decode webhook events: %w", err)
+	}
+	createdAt, err := parseDBTime(createdAtText)
+	if err != nil {
+		return protocol.AlertWebhook{}, "", fmt.Errorf("parse webhook created_at: %w", err)
+	}
+	webhook.CreatedAt = createdAt
+	webhook.Disabled = disabled != 0
+	webhook.HasSecret = secret != ""
+	return webhook, secret, nil
 }
 
 // GetJob retrieves a job by ID.

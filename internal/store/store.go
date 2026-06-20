@@ -3,6 +3,8 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
+	neturl "net/url"
 	"strings"
 	"time"
 
@@ -59,7 +61,78 @@ var (
 	ErrOperatorTokenNotFound = errors.New("operator token not found")
 	// ErrDesiredConfigHistoryNotFound means the requested desired config history entry does not exist.
 	ErrDesiredConfigHistoryNotFound = errors.New("desired config history not found")
+	// ErrAlertWebhookNotFound means the requested alert webhook does not exist.
+	ErrAlertWebhookNotFound = errors.New("alert webhook not found")
 )
+
+const (
+	// MaxAlertWebhookURLLength bounds operator-supplied webhook URLs.
+	MaxAlertWebhookURLLength = 2048
+	// MaxAlertWebhookSecretLength bounds operator-supplied webhook secrets.
+	MaxAlertWebhookSecretLength = 512
+)
+
+// AlertWebhookTarget is the store-internal delivery target for one enabled
+// webhook subscribed to an event, including its signing secret. It is never
+// exposed through the operator API.
+type AlertWebhookTarget struct {
+	ID     string
+	URL    string
+	Secret string
+}
+
+// ValidateAlertWebhookRequest normalizes and validates a webhook create request.
+func ValidateAlertWebhookRequest(req protocol.CreateAlertWebhookRequest) (protocol.CreateAlertWebhookRequest, error) {
+	req.URL = strings.TrimSpace(req.URL)
+	if req.URL == "" {
+		return req, errors.New("webhook url is required")
+	}
+	if len(req.URL) > MaxAlertWebhookURLLength {
+		return req, errors.New("webhook url is too long")
+	}
+	parsed, err := neturl.Parse(req.URL)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return req, errors.New("webhook url must be a valid http or https url")
+	}
+	events, err := NormalizeAlertEvents(req.Events)
+	if err != nil {
+		return req, err
+	}
+	req.Events = events
+	req.Secret = strings.TrimSpace(req.Secret)
+	if len(req.Secret) > MaxAlertWebhookSecretLength {
+		return req, errors.New("webhook secret is too long")
+	}
+	return req, nil
+}
+
+// NormalizeAlertEvents validates and deduplicates a webhook event subscription.
+func NormalizeAlertEvents(events []protocol.AlertEventType) ([]protocol.AlertEventType, error) {
+	if len(events) == 0 {
+		return nil, errors.New("at least one event is required")
+	}
+	seen := make(map[protocol.AlertEventType]bool, len(events))
+	out := make([]protocol.AlertEventType, 0, len(events))
+	for _, event := range events {
+		if !protocol.ValidAlertEventType(event) {
+			return nil, fmt.Errorf("unknown alert event %q", event)
+		}
+		if seen[event] {
+			continue
+		}
+		seen[event] = true
+		out = append(out, event)
+	}
+	return out, nil
+}
+
+// AlertWebhookStore persists operator-configured outbound alert webhooks.
+type AlertWebhookStore interface {
+	CreateAlertWebhook(ctx context.Context, req protocol.CreateAlertWebhookRequest, now time.Time) (protocol.AlertWebhook, error)
+	ListAlertWebhooks(ctx context.Context) ([]protocol.AlertWebhook, error)
+	DeleteAlertWebhook(ctx context.Context, id string) error
+	ListAlertWebhookTargets(ctx context.Context, event protocol.AlertEventType) ([]AlertWebhookTarget, error)
+}
 
 func jobClaimLease(jobType protocol.JobType) time.Duration {
 	if jobType == protocol.JobTypeConfigApply {
@@ -376,4 +449,5 @@ type Store interface {
 	AuditStore
 	DesiredConfigStore
 	HealthStore
+	AlertWebhookStore
 }

@@ -340,6 +340,82 @@ func TestMemoryOperatorTokenFlow(t *testing.T) {
 	}
 }
 
+func TestMemoryNodeStoreAlertWebhookLifecycle(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryNodeStore()
+	now := time.Date(2026, 6, 18, 12, 0, 0, 0, time.UTC)
+
+	created, err := store.CreateAlertWebhook(ctx, protocol.CreateAlertWebhookRequest{
+		URL:    "https://hooks.example.com/sideplane",
+		Events: []protocol.AlertEventType{protocol.AlertEventNodeOffline, protocol.AlertEventNodeOffline, protocol.AlertEventRolloutFailed},
+		Secret: "shhh",
+	}, now)
+	if err != nil {
+		t.Fatalf("create webhook: %v", err)
+	}
+	if created.ID == "" || !created.HasSecret || created.Disabled {
+		t.Fatalf("created webhook = %+v, want id, hasSecret, enabled", created)
+	}
+	if len(created.Events) != 2 {
+		t.Fatalf("created events = %+v, want deduplicated to 2", created.Events)
+	}
+
+	// Metadata listing never exposes the secret value.
+	listed, err := store.ListAlertWebhooks(ctx)
+	if err != nil {
+		t.Fatalf("list webhooks: %v", err)
+	}
+	if len(listed) != 1 || listed[0].ID != created.ID || !listed[0].HasSecret {
+		t.Fatalf("listed webhooks = %+v, want created metadata", listed)
+	}
+
+	// Delivery targets include the secret and filter by subscribed event.
+	targets, err := store.ListAlertWebhookTargets(ctx, protocol.AlertEventNodeOffline)
+	if err != nil {
+		t.Fatalf("list targets: %v", err)
+	}
+	if len(targets) != 1 || targets[0].Secret != "shhh" || targets[0].URL != "https://hooks.example.com/sideplane" {
+		t.Fatalf("offline targets = %+v, want webhook with secret", targets)
+	}
+	driftTargets, err := store.ListAlertWebhookTargets(ctx, protocol.AlertEventNodeDrift)
+	if err != nil {
+		t.Fatalf("list drift targets: %v", err)
+	}
+	if len(driftTargets) != 0 {
+		t.Fatalf("drift targets = %+v, want none (not subscribed)", driftTargets)
+	}
+
+	if err := store.DeleteAlertWebhook(ctx, created.ID); err != nil {
+		t.Fatalf("delete webhook: %v", err)
+	}
+	if err := store.DeleteAlertWebhook(ctx, created.ID); !errors.Is(err, ErrAlertWebhookNotFound) {
+		t.Fatalf("double delete err = %v, want ErrAlertWebhookNotFound", err)
+	}
+}
+
+func TestMemoryNodeStoreAlertWebhookValidation(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryNodeStore()
+	now := time.Date(2026, 6, 18, 12, 0, 0, 0, time.UTC)
+
+	cases := []struct {
+		name string
+		req  protocol.CreateAlertWebhookRequest
+	}{
+		{name: "empty url", req: protocol.CreateAlertWebhookRequest{Events: []protocol.AlertEventType{protocol.AlertEventNodeOffline}}},
+		{name: "bad scheme", req: protocol.CreateAlertWebhookRequest{URL: "ftp://x.example.com", Events: []protocol.AlertEventType{protocol.AlertEventNodeOffline}}},
+		{name: "no events", req: protocol.CreateAlertWebhookRequest{URL: "https://x.example.com"}},
+		{name: "unknown event", req: protocol.CreateAlertWebhookRequest{URL: "https://x.example.com", Events: []protocol.AlertEventType{"node.exploded"}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := store.CreateAlertWebhook(ctx, tc.req, now); err == nil {
+				t.Fatalf("expected validation error for %s", tc.name)
+			}
+		})
+	}
+}
+
 func TestMemoryNodeStoreDeleteNodeRemovesAssociatedData(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemoryNodeStore()

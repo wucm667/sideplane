@@ -27,6 +27,12 @@ type MemoryNodeStore struct {
 	auditEvents      []protocol.AuditEvent
 	desiredConfig    protocol.DesiredConfig
 	desiredHistory   []protocol.DesiredConfigHistoryEntry
+	alertWebhooks    map[string]memoryAlertWebhook
+}
+
+type memoryAlertWebhook struct {
+	Metadata protocol.AlertWebhook
+	Secret   string
 }
 
 type memoryEnrollmentToken struct {
@@ -481,6 +487,84 @@ func (s *MemoryNodeStore) UpdateOperatorTokenLastUsed(_ context.Context, tokenID
 	token.Metadata.LastUsedAt = &lastUsedAt
 	s.operatorTokens[tokenID] = token
 	return nil
+}
+
+// CreateAlertWebhook stores an outbound alert webhook configuration.
+func (s *MemoryNodeStore) CreateAlertWebhook(_ context.Context, req protocol.CreateAlertWebhookRequest, now time.Time) (protocol.AlertWebhook, error) {
+	req, err := ValidateAlertWebhookRequest(req)
+	if err != nil {
+		return protocol.AlertWebhook{}, err
+	}
+	id, err := newRandomID("whk_")
+	if err != nil {
+		return protocol.AlertWebhook{}, err
+	}
+	metadata := protocol.AlertWebhook{
+		ID:        id,
+		URL:       req.URL,
+		Events:    append([]protocol.AlertEventType(nil), req.Events...),
+		HasSecret: req.Secret != "",
+		Disabled:  false,
+		CreatedAt: now.UTC(),
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.alertWebhooks == nil {
+		s.alertWebhooks = make(map[string]memoryAlertWebhook)
+	}
+	s.alertWebhooks[id] = memoryAlertWebhook{Metadata: cloneAlertWebhook(metadata), Secret: req.Secret}
+	return cloneAlertWebhook(metadata), nil
+}
+
+// ListAlertWebhooks returns alert webhook metadata newest-first without secrets.
+func (s *MemoryNodeStore) ListAlertWebhooks(context.Context) ([]protocol.AlertWebhook, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	webhooks := make([]protocol.AlertWebhook, 0, len(s.alertWebhooks))
+	for _, webhook := range s.alertWebhooks {
+		webhooks = append(webhooks, cloneAlertWebhook(webhook.Metadata))
+	}
+	sort.Slice(webhooks, func(i, j int) bool {
+		if !webhooks[i].CreatedAt.Equal(webhooks[j].CreatedAt) {
+			return webhooks[i].CreatedAt.After(webhooks[j].CreatedAt)
+		}
+		return webhooks[i].ID > webhooks[j].ID
+	})
+	return webhooks, nil
+}
+
+// DeleteAlertWebhook removes an alert webhook by ID.
+func (s *MemoryNodeStore) DeleteAlertWebhook(_ context.Context, id string) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return ErrAlertWebhookNotFound
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.alertWebhooks[id]; !ok {
+		return ErrAlertWebhookNotFound
+	}
+	delete(s.alertWebhooks, id)
+	return nil
+}
+
+// ListAlertWebhookTargets returns enabled webhooks subscribed to event with secrets.
+func (s *MemoryNodeStore) ListAlertWebhookTargets(_ context.Context, event protocol.AlertEventType) ([]AlertWebhookTarget, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	targets := make([]AlertWebhookTarget, 0)
+	for _, webhook := range s.alertWebhooks {
+		if webhook.Metadata.Disabled {
+			continue
+		}
+		if !slices.Contains(webhook.Metadata.Events, event) {
+			continue
+		}
+		targets = append(targets, AlertWebhookTarget{ID: webhook.Metadata.ID, URL: webhook.Metadata.URL, Secret: webhook.Secret})
+	}
+	sort.Slice(targets, func(i, j int) bool { return targets[i].ID < targets[j].ID })
+	return targets, nil
 }
 
 // GetJob retrieves a job by ID.
@@ -1065,6 +1149,12 @@ func cloneNodeStatus(node protocol.NodeStatus) protocol.NodeStatus {
 	node.Runtimes = cloneRuntimeStatuses(node.Runtimes)
 	node.Labels = cloneLabels(node.Labels)
 	return node
+}
+
+func cloneAlertWebhook(webhook protocol.AlertWebhook) protocol.AlertWebhook {
+	clone := webhook
+	clone.Events = append([]protocol.AlertEventType(nil), webhook.Events...)
+	return clone
 }
 
 func cloneOperatorToken(token protocol.OperatorToken) protocol.OperatorToken {

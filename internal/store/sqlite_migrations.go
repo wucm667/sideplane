@@ -233,6 +233,24 @@ ON heartbeats(node_id, observed_at DESC)`,
 			`ALTER TABLE operator_tokens ADD COLUMN scope TEXT NOT NULL DEFAULT 'admin'`,
 		},
 	},
+	{
+		version: 13,
+		name:    "create alert webhooks table",
+		statements: []string{
+			`
+	CREATE TABLE IF NOT EXISTS alert_webhooks (
+		id TEXT PRIMARY KEY,
+		url TEXT NOT NULL,
+		events_json TEXT NOT NULL,
+		secret TEXT NOT NULL DEFAULT '',
+		disabled INTEGER NOT NULL DEFAULT 0,
+		created_at TEXT NOT NULL
+	)`,
+			`
+	CREATE INDEX IF NOT EXISTS idx_alert_webhooks_created_at
+	ON alert_webhooks(created_at DESC, id DESC)`,
+		},
+	},
 }
 
 // LatestSQLiteSchemaVersion returns the newest migration version compiled into

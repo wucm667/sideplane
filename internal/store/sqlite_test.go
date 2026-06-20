@@ -51,6 +51,9 @@ func TestSQLiteNodeStoreMigratesAndPersistsHeartbeat(t *testing.T) {
 	assertSQLiteMigrationApplied(t, ctx, first.db, 9)
 	assertSQLiteMigrationApplied(t, ctx, first.db, 10)
 	assertSQLiteMigrationApplied(t, ctx, first.db, 11)
+	assertSQLiteTableExists(t, ctx, first.db, "alert_webhooks")
+	assertSQLiteMigrationApplied(t, ctx, first.db, 12)
+	assertSQLiteMigrationApplied(t, ctx, first.db, 13)
 
 	observedAt := time.Date(2026, 6, 16, 1, 2, 3, 0, time.UTC)
 	sentAt := observedAt.Add(-time.Second)
@@ -395,6 +398,51 @@ func TestSQLiteNodeStoreBackupToProducesConsistentCopy(t *testing.T) {
 	}
 	if len(tokens) != 1 || tokens[0].Name != "ops" || tokens[0].Scope != protocol.OperatorTokenScopeReadonly {
 		t.Fatalf("backup operator tokens = %+v, want readonly ops", tokens)
+	}
+}
+
+func TestSQLiteNodeStoreAlertWebhookPersistsAcrossReopen(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "sideplane.db")
+	first, err := OpenSQLiteNodeStore(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	now := time.Date(2026, 6, 18, 12, 0, 0, 0, time.UTC)
+	created, err := first.CreateAlertWebhook(ctx, protocol.CreateAlertWebhookRequest{
+		URL:    "https://hooks.example.com/sp",
+		Events: []protocol.AlertEventType{protocol.AlertEventRolloutPaused},
+		Secret: "topsecret",
+	}, now)
+	if err != nil {
+		t.Fatalf("create webhook: %v", err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatalf("close first store: %v", err)
+	}
+
+	second, err := OpenSQLiteNodeStore(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("reopen sqlite store: %v", err)
+	}
+	defer second.Close()
+
+	listed, err := second.ListAlertWebhooks(ctx)
+	if err != nil {
+		t.Fatalf("list webhooks: %v", err)
+	}
+	if len(listed) != 1 || listed[0].ID != created.ID || !listed[0].HasSecret {
+		t.Fatalf("listed webhooks = %+v, want persisted metadata", listed)
+	}
+	targets, err := second.ListAlertWebhookTargets(ctx, protocol.AlertEventRolloutPaused)
+	if err != nil {
+		t.Fatalf("list targets: %v", err)
+	}
+	if len(targets) != 1 || targets[0].Secret != "topsecret" {
+		t.Fatalf("targets = %+v, want persisted secret for signing", targets)
+	}
+	if none, err := second.ListAlertWebhookTargets(ctx, protocol.AlertEventNodeDrift); err != nil || len(none) != 0 {
+		t.Fatalf("drift targets = %+v err=%v, want none", none, err)
 	}
 }
 
