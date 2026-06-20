@@ -220,6 +220,11 @@ Core endpoints:
 - `GET /api/nodes/{nodeId}/backups` lists server-known rollback backup references.
 - `POST /api/nodes/{nodeId}/restart` and `POST /api/nodes/{nodeId}/rollback` create allowlisted restart and explicit rollback jobs.
 - `GET /api/rollouts`, `POST /api/rollouts`, `GET /api/rollouts/{rolloutId}`, and `POST /api/rollouts/{rolloutId}/actions` manage staged rollouts.
+- `POST /api/jobs/bulk` and `PUT /api/nodes/labels` perform bulk deep probes and label assignment by selector or node set.
+- `GET/POST /api/rollout-templates` and `DELETE /api/rollout-templates/{templateId}` manage reusable rollout templates.
+- `GET/POST /api/webhooks` and `DELETE /api/webhooks/{webhookId}` manage outbound alert webhooks.
+- `GET /api/audit/export?format=ndjson|csv` streams the filtered audit log.
+- `GET/PUT /api/settings` reads and updates server settings such as the expected sidecar version.
 - `GET /api/config/desired/history` lists desired config history; `POST /api/config/desired/revert` restores a history entry.
 - `GET /api/audit?nodeId=...&action=...&limit=...` lists audit events with additive filters.
 - `POST /api/events/tickets` creates a short-lived browser SSE ticket; `GET /api/events` streams `node`, `job`, and `rollout` events as `text/event-stream`.
@@ -268,8 +273,11 @@ Rollouts apply one provider/model target to nodes selected by labels or by
 explicit IDs. Batches run sequentially, `batchSize` defaults to `1`, dry-run is
 the default, and live mode still requires the signed config-apply pipeline plus
 sidecar `--allow-live-apply`. A failed, timed-out, or offline batch pauses the
-rollout with failing node IDs; automatic rollback is intentionally not part of
-the rollout engine. See [Fleet rollouts](docs/fleet-rollouts.md).
+rollout with failing node IDs. Opt into `autoRollbackOnFailure` (CLI
+`--auto-rollback`) to roll back already-applied nodes of a failed live batch
+before pausing. Reusable specs can be saved as rollout templates and referenced
+by `templateId` when creating a rollout. See
+[Fleet rollouts](docs/fleet-rollouts.md).
 
 ### Live Refresh
 
@@ -301,17 +309,18 @@ Generate shell completion with `sideplane completion bash` or
 | Command | Purpose | Key flags |
 | --- | --- | --- |
 | `sideplane fleet status` | Show fleet node status. | `--server`, `--selector`, `--json` |
-| `sideplane probe <nodeId>` | Create a deep-probe job. | `--server`, `--operator-token`, `--wait`, `--json` |
+| `sideplane probe <nodeId>` | Create a deep-probe job, or a bulk probe with `--selector`. | `--server`, `--operator-token`, `--selector`, `--wait`, `--json` |
 | `sideplane jobs list <nodeId>` | List node jobs with optional filters. | `--server`, `--operator-token`, `--limit`, `--status`, `--json` |
 | `sideplane audit list` | List audit events newest first. | `--server`, `--node-id`, `--action`, `--limit`, `--json` |
 | `sideplane audit export` | Export the audit log as ndjson or csv. | `--server`, `--operator-token`, `--format`, `--out`, `--node-id`, `--action`, `--limit` |
-| `sideplane token create` | Create a named operator token shown once. | `--server`, `--operator-token`, `--name`, `--json` |
+| `sideplane token create` | Create a named operator token shown once. | `--server`, `--operator-token`, `--name`, `--scope`, `--json` |
 | `sideplane token list` | List named operator token metadata. | `--server`, `--operator-token`, `--json` |
 | `sideplane token revoke <id>` | Revoke a named operator token. | `--server`, `--operator-token`, `--json` |
-| `sideplane rollout create` | Create a staged provider/model rollout. | `--server`, `--operator-token`, `--selector`, `--node`, `--provider`, `--model`, `--runtime-type`, `--profile`, `--batch-size`, `--live`, `--yes`, `--health-timeout`, `--json` |
+| `sideplane rollout create` | Create a staged provider/model rollout, or use `--template`. | `--server`, `--operator-token`, `--template`, `--selector`, `--node`, `--provider`, `--model`, `--runtime-type`, `--profile`, `--batch-size`, `--live`, `--yes`, `--auto-rollback`, `--health-timeout`, `--json` |
 | `sideplane rollout list` | List staged rollouts. | `--server`, `--operator-token`, `--json` |
 | `sideplane rollout status <id>` | Show rollout batches and per-node progress. | `--server`, `--operator-token`, `--watch`, `--json` |
 | `sideplane rollout pause/resume/abort <id>` | Control a rollout. | `--server`, `--operator-token`, `--json` |
+| `sideplane rollout template create/list/delete` | Manage reusable rollout templates. | `--server`, `--operator-token`, `--name`, `--json` |
 | `sideplane config preview <nodeId>` | Show effective desired config and diff. | `--server`, `--runtime-type`, `--profile`, `--actual-hash`, `--json` |
 | `sideplane config apply <nodeId>` | Create a dry-run or live config apply job. | `--server`, `--operator-token`, `--runtime-type`, `--profile`, `--config-path`, `--live`, `--yes`, `--wait`, `--json` |
 | `sideplane config get` | Show desired configuration. | `--server`, `--json` |
@@ -321,10 +330,12 @@ Generate shell completion with `sideplane completion bash` or
 | `sideplane config-file path` | Print the resolved CLI config path. | none |
 | `sideplane completion bash/zsh` | Print a shell completion script. | none |
 | `sideplane node inspect <nodeId>` | Show detailed node state and runtime status. | `--server`, `--json` |
-| `sideplane node label <nodeId>` | Set or remove operator-managed labels. | `--server`, `--operator-token`, `--remove`, `--json` |
+| `sideplane node label <nodeId>` | Set or remove labels, or apply in bulk with `--selector`. | `--server`, `--operator-token`, `--selector`, `--remove`, `--json` |
 | `sideplane node remove <nodeId>` | Remove a decommissioned node record. | `--server`, `--operator-token`, `--yes` |
 | `sideplane backups list <nodeId>` | List rollback backups for a node. | `--server`, `--operator-token`, `--limit`, `--json` |
 | `sideplane enrollment create` | Create a one-time sidecar enrollment token. | `--server`, `--operator-token`, `--expires-in` |
+| `sideplane webhook create/list/delete` | Manage alert webhooks. | `--server`, `--operator-token`, `--url`, `--event`, `--sign`, `--json` |
+| `sideplane settings get/set` | Show or update server settings (expected sidecar version). | `--server`, `--operator-token`, `--expected-sidecar-version`, `--json` |
 | `sideplane version` | Print CLI version. | none |
 
 ## Web Operator Notes
@@ -375,6 +386,7 @@ workflow.
 ## Docs
 
 - [Contributor guide](CONTRIBUTING.md)
+- [Operations guide](docs/operations.md)
 - [Fleet rollouts](docs/fleet-rollouts.md)
 - [Signed config apply pipeline](docs/config-apply-pipeline.md)
 - [Live-write preflight](docs/live-write-preflight.md)

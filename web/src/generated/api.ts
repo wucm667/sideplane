@@ -29,9 +29,12 @@ export interface CreateEnrollmentTokenResponse {
   expiresAt: string;
 }
 
+export type OperatorTokenScope = "admin" | "readonly";
+
 export interface OperatorToken {
   id: string;
   name: string;
+  scope: OperatorTokenScope;
   createdAt: string;
   lastUsedAt?: string;
   revokedAt?: string;
@@ -39,6 +42,7 @@ export interface OperatorToken {
 
 export interface CreateOperatorTokenRequest {
   name: string;
+  scope?: OperatorTokenScope;
 }
 
 export interface CreateOperatorTokenResponse {
@@ -92,7 +96,7 @@ export interface NodeStatus {
   lastError?: string;
 }
 
-export type NodeStatusWithDrift = NodeStatus & { drift: boolean };
+export type NodeStatusWithDrift = NodeStatus & { drift: boolean; sidecarOutdated?: boolean };
 
 export interface ListNodesResponse {
   nodes: NodeStatusWithDrift[];
@@ -267,6 +271,7 @@ export interface RolloutSpec {
   target: ProviderModelConfig;
   batchSize?: number;
   live: boolean;
+  autoRollbackOnFailure?: boolean;
   healthTimeout?: number;
 }
 
@@ -277,6 +282,8 @@ export interface RolloutNodeProgress {
   lastError?: string;
   startedAt?: string;
   finishedAt?: string;
+  rollbackJobId?: string;
+  rolledBack?: boolean;
 }
 
 export interface RolloutBatch {
@@ -300,6 +307,90 @@ export interface Rollout {
 
 export interface CreateRolloutRequest {
   spec: RolloutSpec;
+  templateId?: string;
+}
+
+export interface RolloutTemplate {
+  id: string;
+  name: string;
+  spec: RolloutSpec;
+  createdAt: string;
+}
+
+export interface CreateRolloutTemplateRequest {
+  name: string;
+  spec: RolloutSpec;
+}
+
+export interface CreateRolloutTemplateResponse {
+  template: RolloutTemplate;
+}
+
+export interface ListRolloutTemplatesResponse {
+  templates: RolloutTemplate[];
+}
+
+export interface BulkJobRequest {
+  selector?: Labels;
+  nodeIds?: string[];
+  type: "deep_probe";
+}
+
+export interface BulkJobResult {
+  nodeId: string;
+  jobId?: string;
+  error?: string;
+}
+
+export interface BulkJobResponse {
+  jobs: BulkJobResult[];
+  created: number;
+}
+
+export interface BulkNodeLabelsRequest {
+  selector?: Labels;
+  nodeIds?: string[];
+  labels: Labels;
+}
+
+export interface BulkNodeLabelsResponse {
+  nodeIds: string[];
+  updated: number;
+}
+
+export type AlertEventType = "node.offline" | "node.drift" | "rollout.paused" | "rollout.failed";
+
+export interface AlertWebhook {
+  id: string;
+  url: string;
+  events: AlertEventType[];
+  hasSecret: boolean;
+  disabled: boolean;
+  createdAt: string;
+}
+
+export interface CreateAlertWebhookRequest {
+  url: string;
+  events: AlertEventType[];
+  sign?: boolean;
+  secret?: string;
+}
+
+export interface CreateAlertWebhookResponse {
+  webhook: AlertWebhook;
+  secret?: string;
+}
+
+export interface ListAlertWebhooksResponse {
+  webhooks: AlertWebhook[];
+}
+
+export interface ServerSettings {
+  expectedSidecarVersion: string;
+}
+
+export interface UpdateServerSettingsRequest {
+  expectedSidecarVersion: string;
 }
 
 export interface CreateRolloutResponse {

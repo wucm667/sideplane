@@ -944,6 +944,210 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ListAuditEventsResponse"
+  /api/audit/export:
+    get:
+      tags: [Operator]
+      summary: Export the audit log as ndjson or csv.
+      operationId: exportAuditEvents
+      parameters:
+        - name: format
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [ndjson, csv]
+            default: ndjson
+        - name: nodeId
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: action
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        "200":
+          description: Streamed audit log.
+          content:
+            application/x-ndjson:
+              schema:
+                type: string
+            text/csv:
+              schema:
+                type: string
+  /api/jobs/bulk:
+    post:
+      tags: [Operator]
+      summary: Create one job per matched node.
+      operationId: createBulkJobs
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BulkJobRequest"
+      responses:
+        "201":
+          description: Bulk job creation result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BulkJobResponse"
+        "400":
+          $ref: "#/components/responses/APIError"
+  /api/nodes/labels:
+    put:
+      tags: [Operator]
+      summary: Apply labels to a node selection.
+      operationId: bulkNodeLabels
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BulkNodeLabelsRequest"
+      responses:
+        "200":
+          description: Bulk label assignment result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BulkNodeLabelsResponse"
+        "400":
+          $ref: "#/components/responses/APIError"
+  /api/webhooks:
+    get:
+      tags: [Operator]
+      summary: List alert webhooks.
+      operationId: listAlertWebhooks
+      responses:
+        "200":
+          description: Alert webhooks.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListAlertWebhooksResponse"
+    post:
+      tags: [Operator]
+      summary: Create an alert webhook.
+      operationId: createAlertWebhook
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateAlertWebhookRequest"
+      responses:
+        "201":
+          description: Created alert webhook; signing secret returned once.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateAlertWebhookResponse"
+        "400":
+          $ref: "#/components/responses/APIError"
+  /api/webhooks/{webhookId}:
+    delete:
+      tags: [Operator]
+      summary: Delete an alert webhook.
+      operationId: deleteAlertWebhook
+      parameters:
+        - name: webhookId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Deleted.
+        "404":
+          $ref: "#/components/responses/APIError"
+  /api/settings:
+    get:
+      tags: [Operator]
+      summary: Get operator-tunable server settings.
+      operationId: getServerSettings
+      responses:
+        "200":
+          description: Server settings.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServerSettings"
+    put:
+      tags: [Operator]
+      summary: Update operator-tunable server settings.
+      operationId: updateServerSettings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateServerSettingsRequest"
+      responses:
+        "200":
+          description: Updated server settings.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServerSettings"
+        "400":
+          $ref: "#/components/responses/APIError"
+  /api/rollout-templates:
+    get:
+      tags: [Operator]
+      summary: List rollout templates.
+      operationId: listRolloutTemplates
+      responses:
+        "200":
+          description: Rollout templates.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListRolloutTemplatesResponse"
+    post:
+      tags: [Operator]
+      summary: Create a rollout template.
+      operationId: createRolloutTemplate
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateRolloutTemplateRequest"
+      responses:
+        "201":
+          description: Created rollout template.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateRolloutTemplateResponse"
+        "400":
+          $ref: "#/components/responses/APIError"
+  /api/rollout-templates/{templateId}:
+    delete:
+      tags: [Operator]
+      summary: Delete a rollout template.
+      operationId: deleteRolloutTemplate
+      parameters:
+        - name: templateId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Deleted.
+        "404":
+          $ref: "#/components/responses/APIError"
   /api/signing-key:
     get:
       tags: [Sidecar]
@@ -1057,14 +1261,20 @@ components:
         expiresAt:
           type: string
           format: date-time
+    OperatorTokenScope:
+      type: string
+      enum: [admin, readonly]
+      description: admin grants full access; readonly allows GET/list endpoints only.
     OperatorToken:
       type: object
-      required: [id, name, createdAt]
+      required: [id, name, scope, createdAt]
       properties:
         id:
           type: string
         name:
           type: string
+        scope:
+          $ref: "#/components/schemas/OperatorTokenScope"
         createdAt:
           type: string
           format: date-time
@@ -1080,6 +1290,8 @@ components:
       properties:
         name:
           type: string
+        scope:
+          $ref: "#/components/schemas/OperatorTokenScope"
     CreateOperatorTokenResponse:
       type: object
       required: [operatorToken, token]
@@ -1183,6 +1395,9 @@ components:
           properties:
             drift:
               type: boolean
+            sidecarOutdated:
+              type: boolean
+              description: True when an expected sidecar version is set and this node's version differs.
     ListNodesResponse:
       type: object
       required: [nodes, total, limit, offset]
@@ -1520,6 +1735,10 @@ components:
         live:
           type: boolean
           default: false
+        autoRollbackOnFailure:
+          type: boolean
+          default: false
+          description: When true, a failed live batch rolls back already-applied nodes before pausing.
         healthTimeout:
           type: integer
           format: int64
@@ -1543,6 +1762,11 @@ components:
         finishedAt:
           type: string
           format: date-time
+        rollbackJobId:
+          type: string
+          description: Rollback job dispatched by auto-rollback for this node, if any.
+        rolledBack:
+          type: boolean
     RolloutBatch:
       type: object
       required: [index, nodeIds, state, nodes]
@@ -1594,6 +1818,165 @@ components:
       properties:
         spec:
           $ref: "#/components/schemas/RolloutSpec"
+        templateId:
+          type: string
+          description: When set, the referenced template's spec prefills the rollout.
+    RolloutTemplate:
+      type: object
+      required: [id, name, spec, createdAt]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        spec:
+          $ref: "#/components/schemas/RolloutSpec"
+        createdAt:
+          type: string
+          format: date-time
+    CreateRolloutTemplateRequest:
+      type: object
+      required: [name, spec]
+      properties:
+        name:
+          type: string
+        spec:
+          $ref: "#/components/schemas/RolloutSpec"
+    CreateRolloutTemplateResponse:
+      type: object
+      required: [template]
+      properties:
+        template:
+          $ref: "#/components/schemas/RolloutTemplate"
+    ListRolloutTemplatesResponse:
+      type: object
+      required: [templates]
+      properties:
+        templates:
+          type: array
+          items:
+            $ref: "#/components/schemas/RolloutTemplate"
+    BulkJobRequest:
+      type: object
+      required: [type]
+      properties:
+        selector:
+          $ref: "#/components/schemas/Labels"
+        nodeIds:
+          type: array
+          items:
+            type: string
+        type:
+          type: string
+          enum: [deep_probe]
+    BulkJobResult:
+      type: object
+      required: [nodeId]
+      properties:
+        nodeId:
+          type: string
+        jobId:
+          type: string
+        error:
+          type: string
+    BulkJobResponse:
+      type: object
+      required: [jobs, created]
+      properties:
+        jobs:
+          type: array
+          items:
+            $ref: "#/components/schemas/BulkJobResult"
+        created:
+          type: integer
+    BulkNodeLabelsRequest:
+      type: object
+      required: [labels]
+      properties:
+        selector:
+          $ref: "#/components/schemas/Labels"
+        nodeIds:
+          type: array
+          items:
+            type: string
+        labels:
+          $ref: "#/components/schemas/Labels"
+    BulkNodeLabelsResponse:
+      type: object
+      required: [nodeIds, updated]
+      properties:
+        nodeIds:
+          type: array
+          items:
+            type: string
+        updated:
+          type: integer
+    AlertEventType:
+      type: string
+      enum: [node.offline, node.drift, rollout.paused, rollout.failed]
+    AlertWebhook:
+      type: object
+      required: [id, url, events, hasSecret, disabled, createdAt]
+      properties:
+        id:
+          type: string
+        url:
+          type: string
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/AlertEventType"
+        hasSecret:
+          type: boolean
+        disabled:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+    CreateAlertWebhookRequest:
+      type: object
+      required: [url, events]
+      properties:
+        url:
+          type: string
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/AlertEventType"
+        sign:
+          type: boolean
+          description: When true and no secret is provided, the server generates one and returns it once.
+        secret:
+          type: string
+    CreateAlertWebhookResponse:
+      type: object
+      required: [webhook]
+      properties:
+        webhook:
+          $ref: "#/components/schemas/AlertWebhook"
+        secret:
+          type: string
+          description: Signing secret, returned only once at creation time.
+    ListAlertWebhooksResponse:
+      type: object
+      required: [webhooks]
+      properties:
+        webhooks:
+          type: array
+          items:
+            $ref: "#/components/schemas/AlertWebhook"
+    ServerSettings:
+      type: object
+      required: [expectedSidecarVersion]
+      properties:
+        expectedSidecarVersion:
+          type: string
+    UpdateServerSettingsRequest:
+      type: object
+      required: [expectedSidecarVersion]
+      properties:
+        expectedSidecarVersion:
+          type: string
     CreateRolloutResponse:
       type: object
       required: [rollout]
