@@ -20,9 +20,10 @@ The current repository includes these foundations:
 - Adapter interfaces with Hermes and OpenClaw read-only discovery/config snapshot support plus allowlisted restart controller support.
 - Operator-managed labels and selector filtering for fleet views and staged rollouts.
 - Backup inventory discovery from config-apply results with stable rollback references.
-- Staged provider/model fleet rollouts with sequential batches, dry-run default, live drift health gates, pause/resume/abort controls, and explicit non-goal of automatic batch rollback.
-- Compact React/Vite Web UI for fleet overview metrics, node detail, labels, backup discovery, config diff/apply wizard, desired config history/revert, rollouts, audit history, enrollment, named tokens, keyboard navigation, node removal, and job expansion.
-- CLI coverage for fleet status, labels, rollouts, backups, named tokens, desired config history/revert, config files, and shell completion.
+- Staged provider/model fleet rollouts with sequential batches, dry-run default, live drift health gates, pause/resume/abort controls, opt-in auto-rollback of a failed live batch's already-applied nodes, and reusable rollout templates.
+- Production-ops surface: scoped operator tokens (admin/readonly), online SQLite backup with on-demand and scheduled retention, bulk deep probes and label assignment by selector, outbound alert webhooks with optional HMAC signing, audit-log export (ndjson/csv), and expected-sidecar-version drift flagging.
+- Compact React/Vite Web UI for fleet overview metrics, node detail, labels, backup discovery, config diff/apply wizard, desired config history/revert, rollouts, audit history, enrollment, named tokens with scopes, alert webhooks, server settings, fleet multi-select bulk actions, a Cmd/Ctrl-K command palette, keyboard navigation, node removal, and job expansion.
+- CLI coverage for fleet status, labels, bulk probe/label, rollouts and rollout templates, backups, named tokens with scopes, audit list/export, alert webhooks, server settings, desired config history/revert, config files, and shell completion.
 - Docker Compose deployment, optional Prometheus/Grafana observability assets, Linux systemd units, install script, and server-embedded Web assets.
 
 ## MVP Hardening Next
@@ -55,3 +56,4 @@ to verify:
 - Multi-tenant SaaS control plane
 - Marketplace/plugin ecosystem
 - Kubernetes-first deployment or operator
+- Sidecar binary self-update (the server flags version drift; it never downloads or runs new binaries)

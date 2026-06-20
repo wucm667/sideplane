@@ -15,6 +15,12 @@ This project follows the spirit of Keep a Changelog and will use semantic versio
 - Added per-node rollback backup inventory and staged fleet rollouts with create/list/get/action APIs plus background reconciliation.
 - Added bounded request body reads, paginated node jobs, paginated fleet node listing, audit filtering, heartbeat/job/audit retention pruning, and `/readyz` store connectivity checks.
 - Added Prometheus-compatible metrics for build info, heartbeats, job lifecycle counters, late job results, rollback counters, fleet freshness, and drift.
+- Added opt-in rollout auto-rollback that rolls back a failed live batch's already-applied nodes before pausing, without recursion or touching real machines.
+- Added admin/readonly operator token scopes with method-based enforcement and acting-token attribution in audit events.
+- Added online SQLite backup with an on-demand `sideplane-server backup` subcommand and a scheduled, retention-pruned backup goroutine.
+- Added bulk job creation (`/api/jobs/bulk`) and bulk label assignment (`/api/nodes/labels`) by selector or node set.
+- Added outbound alert webhooks with a non-blocking, retry/timeout dispatcher and optional HMAC-SHA256 signing, plus webhook CRUD endpoints.
+- Added audit-log export (`/api/audit/export`) streaming ndjson or csv with redaction, expected-sidecar-version settings with an outdated gauge, and reusable rollout templates with `templateId` prefill.
 
 ### Sidecar
 
@@ -28,6 +34,7 @@ This project follows the spirit of Keep a Changelog and will use semantic versio
 - Added `fleet status`, `node inspect`, `node remove`, `probe`, `jobs list`, `audit list`, `config get`, `config set`, `config preview`, `config apply`, `restart`, `rollback`, enrollment token creation, and version output.
 - Added node label management, backup listing, rollout create/list/status/pause/resume/abort, named operator token create/list/revoke, desired config history/revert, config file loading, and shell completion generation.
 - Added table and JSON output paths, wait/poll flows for operator jobs, bounded list flags, and compatibility with legacy and paginated node-list responses.
+- Added bulk `probe --selector` and `node label --selector`, operator token `--scope`, rollout `--auto-rollback` and `--template`, `rollout template` create/list/delete, `audit export`, `webhook` create/list/delete, and `settings` get/set.
 
 ### Web UI
 
@@ -36,6 +43,7 @@ This project follows the spirit of Keep a Changelog and will use semantic versio
 - Added staged rollout creation/progress/actions, SSE live refresh with polling fallback, and fleet overview metrics.
 - Added OpenAPI-generated TypeScript API types.
 - Added Playwright visual smoke coverage for Fleet, Node detail, Activity, Enrollment, Config wizard, and Rollouts at desktop and mobile widths.
+- Added operator token scope controls, alert webhook management, server settings, fleet multi-select bulk probe/label actions, sidecar-outdated badges, rollout template save/picker, and a Cmd/Ctrl-K command palette.
 
 ### Infrastructure
 
