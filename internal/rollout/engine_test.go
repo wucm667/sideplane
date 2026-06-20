@@ -3,6 +3,7 @@ package rollout
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -178,6 +179,90 @@ func TestResumeRedispatchesUnfinishedNodesAndAbortTerminates(t *testing.T) {
 	}
 }
 
+func TestEngineAutoRollbackOnLiveBatchFailure(t *testing.T) {
+	// Two nodes share one batch: node-a applies cleanly, node-b then fails,
+	// so node-a is the "already applied" node eligible for auto-rollback.
+	driveToFailure := func(t *testing.T, autoRollback, live bool, rollbackErr error) (protocol.Rollout, *fakeRollbacker) {
+		t.Helper()
+		clock := &fakeClock{now: time.Date(2026, 6, 19, 12, 0, 0, 0, time.UTC)}
+		dispatcher := &fakeDispatcher{}
+		health := &fakeHealth{byJob: map[string]NodeHealth{}}
+		rollbacker := &fakeRollbacker{err: rollbackErr}
+		engine := Engine{Clock: clock, Dispatcher: dispatcher, Health: health, Rollback: rollbacker}
+		rollout := rolloutForEngineTest([]string{"node-a", "node-b"}, 2, live, clock.Now())
+		rollout.Spec.AutoRollbackOnFailure = autoRollback
+
+		var err error
+		rollout, err = engine.Step(context.Background(), rollout)
+		if err != nil {
+			t.Fatalf("dispatch step: %v", err)
+		}
+		health.byJob[dispatcher.jobs["node-a"]] = NodeHealth{ApplySucceeded: true}
+		health.byJob[dispatcher.jobs["node-b"]] = NodeHealth{ApplyFailed: true, Error: "apply failed"}
+		clock.advance(time.Second)
+		rollout, err = engine.Step(context.Background(), rollout)
+		if err != nil {
+			t.Fatalf("evaluate step: %v", err)
+		}
+		if rollout.State != protocol.RolloutStatePaused {
+			t.Fatalf("state = %q, want paused", rollout.State)
+		}
+		return rollout, rollbacker
+	}
+
+	t.Run("enabled live failure triggers rollback of applied node", func(t *testing.T) {
+		rollout, rollbacker := driveToFailure(t, true, true, nil)
+		if rollbacker.calls != 1 {
+			t.Fatalf("rollback calls = %d, want 1 (only the applied node)", rollbacker.calls)
+		}
+		nodeA := rollout.Batches[0].Nodes["node-a"]
+		if !nodeA.RolledBack || nodeA.RollbackJobID == "" {
+			t.Fatalf("node-a = %#v, want rolled back with job id", nodeA)
+		}
+		nodeB := rollout.Batches[0].Nodes["node-b"]
+		if nodeB.RolledBack || nodeB.RollbackJobID != "" {
+			t.Fatalf("node-b = %#v, want failing node not rolled back", nodeB)
+		}
+		if want := "auto-rollback attempted for 1 node(s)"; !strings.Contains(rollout.PauseReason, want) {
+			t.Fatalf("pause reason = %q, want it to mention %q", rollout.PauseReason, want)
+		}
+	})
+
+	t.Run("disabled does not roll back", func(t *testing.T) {
+		rollout, rollbacker := driveToFailure(t, false, true, nil)
+		if rollbacker.calls != 0 {
+			t.Fatalf("rollback calls = %d, want 0 when disabled", rollbacker.calls)
+		}
+		if nodeA := rollout.Batches[0].Nodes["node-a"]; nodeA.RolledBack {
+			t.Fatalf("node-a = %#v, want no rollback when disabled", nodeA)
+		}
+		if strings.Contains(rollout.PauseReason, "auto-rollback") {
+			t.Fatalf("pause reason = %q, want no rollback note when disabled", rollout.PauseReason)
+		}
+	})
+
+	t.Run("dry-run never rolls back", func(t *testing.T) {
+		_, rollbacker := driveToFailure(t, true, false, nil)
+		if rollbacker.calls != 0 {
+			t.Fatalf("rollback calls = %d, want 0 for dry-run rollout", rollbacker.calls)
+		}
+	})
+
+	t.Run("rollback dispatch failure does not recurse", func(t *testing.T) {
+		rollout, rollbacker := driveToFailure(t, true, true, fmt.Errorf("dispatch boom"))
+		if rollbacker.calls != 1 {
+			t.Fatalf("rollback calls = %d, want exactly 1 (no retry/recursion)", rollbacker.calls)
+		}
+		nodeA := rollout.Batches[0].Nodes["node-a"]
+		if nodeA.RolledBack || nodeA.RollbackJobID != "" {
+			t.Fatalf("node-a = %#v, want not marked rolled back on dispatch failure", nodeA)
+		}
+		if nodeA.LastError == "" {
+			t.Fatalf("node-a last error empty, want rollback dispatch failure recorded")
+		}
+	})
+}
+
 func rolloutForEngineTest(nodeIDs []string, batchSize int, live bool, now time.Time) protocol.Rollout {
 	return protocol.Rollout{
 		ID:    "rollout-test",
@@ -228,4 +313,23 @@ type fakeHealth struct {
 
 func (h *fakeHealth) NodeHealth(_ context.Context, _ protocol.Rollout, node protocol.RolloutNodeProgress) (NodeHealth, error) {
 	return h.byJob[node.JobID], nil
+}
+
+type fakeRollbacker struct {
+	jobs  map[string]string
+	err   error
+	calls int
+}
+
+func (r *fakeRollbacker) DispatchRollback(_ context.Context, _ protocol.Rollout, nodeID string) (string, error) {
+	r.calls++
+	if r.err != nil {
+		return "", r.err
+	}
+	if r.jobs == nil {
+		r.jobs = map[string]string{}
+	}
+	jobID := fmt.Sprintf("rollback-%s", nodeID)
+	r.jobs[nodeID] = jobID
+	return jobID, nil
 }

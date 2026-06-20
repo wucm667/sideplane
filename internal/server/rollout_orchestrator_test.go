@@ -247,6 +247,102 @@ func TestRolloutOrchestratorPausesOnApplyFailureAndStopsDispatch(t *testing.T) {
 	}
 }
 
+func TestRolloutOrchestratorAutoRollbackDispatchesRollbackJob(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 6, 18, 13, 0, 0, 0, time.UTC)
+	nodeStore := store.NewMemoryNodeStore()
+	enrollRolloutNode(t, nodeStore, "node-a", now)
+	enrollRolloutNode(t, nodeStore, "node-b", now)
+	seedRolloutProbe(t, nodeStore, "node-a", "hermes", "", "/etc/sideplane-test/a.json", now)
+	seedRolloutProbe(t, nodeStore, "node-b", "hermes", "", "/etc/sideplane-test/b.json", now)
+	created := createTestRollout(t, nodeStore, protocol.RolloutSpec{
+		NodeIDs:               []string{"node-a", "node-b"},
+		RuntimeType:           "hermes",
+		Target:                protocol.ProviderModelConfig{Provider: "openai", Model: "gpt-4o"},
+		BatchSize:             2,
+		Live:                  true,
+		AutoRollbackOnFailure: true,
+		HealthTimeout:         time.Minute,
+	}, now)
+	orchestrator := newTestRolloutOrchestrator(nodeStore, generateRolloutSigningKey(t), now)
+
+	// Dispatch config-apply for both nodes in the single batch.
+	if err := orchestrator.ReconcileOnce(ctx); err != nil {
+		t.Fatalf("reconcile dispatch: %v", err)
+	}
+	dispatched := getRolloutForOrchestratorTest(t, nodeStore, created.ID)
+	applyJobID := dispatched.Batches[0].Nodes["node-a"].JobID
+	failJobID := dispatched.Batches[0].Nodes["node-b"].JobID
+
+	// node-a applies cleanly with a known backup, and its runtime now matches
+	// the target so the live rollout sees no drift.
+	if _, err := nodeStore.ClaimNextJob(ctx, "node-a", now.Add(time.Second)); err != nil {
+		t.Fatalf("claim node-a apply: %v", err)
+	}
+	applyResult, err := json.Marshal(protocol.ConfigApplyResult{
+		PlanID:     "plan-a",
+		BackupPath: "/etc/sideplane-test/a.json.bak",
+	})
+	if err != nil {
+		t.Fatalf("marshal node-a apply result: %v", err)
+	}
+	if err := nodeStore.CompleteJob(ctx, applyJobID, protocol.JobResultRequest{Status: protocol.JobStatusCompleted, ResultJSON: string(applyResult)}, now.Add(2*time.Second)); err != nil {
+		t.Fatalf("complete node-a apply: %v", err)
+	}
+	if _, err := nodeStore.RecordHeartbeat(ctx, protocol.HeartbeatRequest{
+		NodeID:   "node-a",
+		Runtimes: []protocol.RuntimeStatus{{Name: "default", Type: "hermes", Provider: "openai", Model: "gpt-4o"}},
+	}, now.Add(2*time.Second)); err != nil {
+		t.Fatalf("record node-a matching heartbeat: %v", err)
+	}
+
+	// node-b fails its apply, which fails the batch.
+	if _, err := nodeStore.ClaimNextJob(ctx, "node-b", now.Add(time.Second)); err != nil {
+		t.Fatalf("claim node-b apply: %v", err)
+	}
+	if err := nodeStore.FailJob(ctx, failJobID, protocol.JobResultRequest{Status: protocol.JobStatusFailed, Error: "validation failed"}, now.Add(2*time.Second)); err != nil {
+		t.Fatalf("fail node-b apply: %v", err)
+	}
+
+	orchestrator.now = func() time.Time { return now.Add(3 * time.Second) }
+	orchestrator.freshness.Now = orchestrator.now
+	if err := orchestrator.ReconcileOnce(ctx); err != nil {
+		t.Fatalf("reconcile failure: %v", err)
+	}
+
+	paused := getRolloutForOrchestratorTest(t, nodeStore, created.ID)
+	if paused.State != protocol.RolloutStatePaused {
+		t.Fatalf("rollout state = %q, want paused", paused.State)
+	}
+	if !strings.Contains(paused.PauseReason, "auto-rollback attempted") {
+		t.Fatalf("pause reason = %q, want auto-rollback note", paused.PauseReason)
+	}
+	nodeA := paused.Batches[0].Nodes["node-a"]
+	if !nodeA.RolledBack || nodeA.RollbackJobID == "" {
+		t.Fatalf("node-a = %+v, want rolled back with job id", nodeA)
+	}
+	if nodeB := paused.Batches[0].Nodes["node-b"]; nodeB.RolledBack {
+		t.Fatalf("node-b = %+v, want failing node not rolled back", nodeB)
+	}
+	rollbackJob, err := nodeStore.GetJob(ctx, nodeA.RollbackJobID)
+	if err != nil {
+		t.Fatalf("get rollback job: %v", err)
+	}
+	if rollbackJob == nil || rollbackJob.Type != protocol.JobTypeRollback {
+		t.Fatalf("rollback job = %+v, want a rollback job", rollbackJob)
+	}
+	var payload protocol.RollbackJobPayload
+	if err := json.Unmarshal([]byte(rollbackJob.PayloadJSON), &payload); err != nil {
+		t.Fatalf("decode rollback payload: %v", err)
+	}
+	if payload.DryRun {
+		t.Fatalf("rollback payload = %+v, want live rollback for live rollout", payload)
+	}
+	if payload.BackupPath != "/etc/sideplane-test/a.json.bak" {
+		t.Fatalf("rollback payload backup path = %q, want node-a backup", payload.BackupPath)
+	}
+}
+
 func TestRolloutOrchestratorSkipsPausedRollouts(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 6, 18, 12, 0, 0, 0, time.UTC)

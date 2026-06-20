@@ -27,6 +27,13 @@ type HealthReader interface {
 	NodeHealth(ctx context.Context, rollout protocol.Rollout, node protocol.RolloutNodeProgress) (NodeHealth, error)
 }
 
+// DispatchRollback creates one per-node rollback job restoring the most recent
+// pre-rollout backup, returning the rollback job ID. It is used only for
+// opt-in auto-rollback of already-applied nodes in a failed live batch.
+type DispatchRollback interface {
+	DispatchRollback(ctx context.Context, rollout protocol.Rollout, nodeID string) (jobID string, err error)
+}
+
 // NodeHealth is the engine's normalized view of apply-job and node health.
 type NodeHealth struct {
 	ApplySucceeded bool
@@ -42,6 +49,10 @@ type Engine struct {
 	Clock      Clock
 	Dispatcher DispatchConfigApply
 	Health     HealthReader
+	// Rollback is optional. When set, a live rollout with
+	// AutoRollbackOnFailure enabled rolls back already-applied nodes of a
+	// failed batch before pausing.
+	Rollback DispatchRollback
 }
 
 // PlanBatches splits resolved node IDs into sequential rollout batches.
@@ -197,7 +208,7 @@ func (e Engine) evaluateBatch(ctx context.Context, rollout protocol.Rollout, bat
 			node.LastError = "health timeout exceeded"
 			node.FinishedAt = now
 			batch.Nodes[nodeID] = node
-			return pauseRollout(rollout, now, "health timeout exceeded", []string{nodeID}), true
+			return e.pauseBatchFailure(ctx, rollout, batchIndex, now, "health timeout exceeded", []string{nodeID}), true
 		}
 		health, err := e.Health.NodeHealth(ctx, rollout, node)
 		if err != nil {
@@ -205,7 +216,7 @@ func (e Engine) evaluateBatch(ctx context.Context, rollout protocol.Rollout, bat
 			node.LastError = err.Error()
 			node.FinishedAt = now
 			batch.Nodes[nodeID] = node
-			return pauseRollout(rollout, now, "health check failed: "+err.Error(), []string{nodeID}), true
+			return e.pauseBatchFailure(ctx, rollout, batchIndex, now, "health check failed: "+err.Error(), []string{nodeID}), true
 		}
 		switch {
 		case health.Offline:
@@ -213,13 +224,13 @@ func (e Engine) evaluateBatch(ctx context.Context, rollout protocol.Rollout, bat
 			node.LastError = firstNonEmpty(health.Error, "node offline")
 			node.FinishedAt = now
 			batch.Nodes[nodeID] = node
-			return pauseRollout(rollout, now, "node offline", []string{nodeID}), true
+			return e.pauseBatchFailure(ctx, rollout, batchIndex, now, "node offline", []string{nodeID}), true
 		case health.ApplyFailed:
 			node.State = protocol.RolloutNodeStateFailed
 			node.LastError = firstNonEmpty(health.Error, "config apply failed")
 			node.FinishedAt = now
 			batch.Nodes[nodeID] = node
-			return pauseRollout(rollout, now, "config apply failed", []string{nodeID}), true
+			return e.pauseBatchFailure(ctx, rollout, batchIndex, now, "config apply failed", []string{nodeID}), true
 		case health.ApplySucceeded && (!rollout.Spec.Live || !health.Drift):
 			node.State = protocol.RolloutNodeStateSucceeded
 			node.FinishedAt = now
@@ -241,7 +252,7 @@ func (e Engine) dispatchPending(ctx context.Context, rollout protocol.Rollout, b
 		}
 		jobID, err := e.Dispatcher.DispatchConfigApply(ctx, rollout, nodeID)
 		if err != nil {
-			return pauseRollout(rollout, now, "dispatch failed: "+err.Error(), []string{nodeID}), nil
+			return e.pauseBatchFailure(ctx, rollout, batchIndex, now, "dispatch failed: "+err.Error(), []string{nodeID}), nil
 		}
 		node.NodeID = nodeID
 		node.JobID = jobID
@@ -250,6 +261,38 @@ func (e Engine) dispatchPending(ctx context.Context, rollout protocol.Rollout, b
 		batch.Nodes[nodeID] = node
 	}
 	return rollout, nil
+}
+
+// pauseBatchFailure dispatches per-node rollbacks for already-applied nodes of
+// a failed live batch (only when opted in) and then pauses the rollout. The
+// rollback dispatch is best-effort and never retried, so a rollback failure
+// cannot trigger another rollback. Dry-run rollouts are never rolled back.
+func (e Engine) pauseBatchFailure(ctx context.Context, rollout protocol.Rollout, batchIndex int, now time.Time, reason string, failingNodeIDs []string) protocol.Rollout {
+	attempted := 0
+	if rollout.Spec.Live && rollout.Spec.AutoRollbackOnFailure && e.Rollback != nil && batchIndex >= 0 && batchIndex < len(rollout.Batches) {
+		batch := &rollout.Batches[batchIndex]
+		for _, nodeID := range batch.NodeIDs {
+			node := batch.Nodes[nodeID]
+			// Only already-applied nodes carry the new (failed) config; the
+			// failing node itself never applied successfully.
+			if node.State != protocol.RolloutNodeStateSucceeded || node.RolledBack || node.RollbackJobID != "" {
+				continue
+			}
+			jobID, err := e.Rollback.DispatchRollback(ctx, rollout, nodeID)
+			attempted++
+			if err != nil {
+				node.LastError = firstNonEmpty(node.LastError, "auto-rollback dispatch failed: "+err.Error())
+			} else {
+				node.RollbackJobID = jobID
+				node.RolledBack = true
+			}
+			batch.Nodes[nodeID] = node
+		}
+	}
+	if attempted > 0 {
+		reason = strings.TrimSpace(reason) + fmt.Sprintf("; auto-rollback attempted for %d node(s)", attempted)
+	}
+	return pauseRollout(rollout, now, reason, failingNodeIDs)
 }
 
 func pauseRollout(rollout protocol.Rollout, now time.Time, reason string, nodeIDs []string) protocol.Rollout {

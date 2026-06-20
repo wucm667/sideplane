@@ -83,7 +83,7 @@ func NewRolloutOrchestrator(cfg RolloutOrchestratorConfig) *RolloutOrchestrator 
 	if o.logger == nil {
 		o.logger = discardLogger()
 	}
-	o.engine = rollout.Engine{Clock: o, Dispatcher: o, Health: o}
+	o.engine = rollout.Engine{Clock: o, Dispatcher: o, Health: o, Rollback: o}
 	return o
 }
 
@@ -125,6 +125,61 @@ func (o *RolloutOrchestrator) ReconcileOnce(ctx context.Context) error {
 // DispatchConfigApply implements rollout.DispatchConfigApply.
 func (o *RolloutOrchestrator) DispatchConfigApply(ctx context.Context, ro protocol.Rollout, nodeID string) (string, error) {
 	job, err := createSignedConfigApplyJob(ctx, o.store, o.signingKey, nodeID, ro.Spec.RuntimeType, ro.Spec.Profile, ro.Spec.Target, !ro.Spec.Live, o.Now())
+	if err != nil {
+		return "", err
+	}
+	publishJobEvent(o.events, job)
+	return job.ID, nil
+}
+
+// DispatchRollback implements rollout.DispatchRollback. It enqueues a live
+// per-node rollback job restoring the node's most recent pre-rollout backup via
+// the existing rollback pipeline. No real machine is touched here; the sidecar
+// executes the job through its normal channel.
+func (o *RolloutOrchestrator) DispatchRollback(ctx context.Context, ro protocol.Rollout, nodeID string) (string, error) {
+	runtimeType := strings.TrimSpace(ro.Spec.RuntimeType)
+	profile := strings.TrimSpace(ro.Spec.Profile)
+	jobs, err := o.store.ListNodeJobs(ctx, nodeID)
+	if err != nil {
+		return "", err
+	}
+	var backup protocol.RollbackBackup
+	found := false
+	for _, candidate := range store.ListRollbackBackups(jobs) {
+		if runtimeType != "" && candidate.RuntimeType != "" && candidate.RuntimeType != runtimeType {
+			continue
+		}
+		if profile != "" && candidate.Profile != "" && candidate.Profile != profile {
+			continue
+		}
+		backup = candidate
+		found = true
+		break
+	}
+	if !found {
+		return "", fmt.Errorf("no rollback backup known for node %s", nodeID)
+	}
+	if runtimeType == "" {
+		runtimeType = backup.RuntimeType
+	}
+	if profile == "" {
+		profile = backup.Profile
+	}
+	payload, err := json.Marshal(protocol.RollbackJobPayload{
+		RuntimeType: runtimeType,
+		Profile:     profile,
+		BackupRef:   backup.Ref,
+		ConfigPath:  backup.ConfigPath,
+		BackupPath:  backup.BackupPath,
+		DryRun:      false,
+	})
+	if err != nil {
+		return "", err
+	}
+	job, err := o.store.CreateJob(ctx, protocol.CreateJobRequest{
+		Type:        protocol.JobTypeRollback,
+		PayloadJSON: string(payload),
+	}, nodeID, o.Now())
 	if err != nil {
 		return "", err
 	}
