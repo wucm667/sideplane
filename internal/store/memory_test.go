@@ -860,6 +860,68 @@ func TestMemoryDesiredConfigPersistsCopy(t *testing.T) {
 	}
 }
 
+func TestMemoryDesiredConfigHistoryAndRevert(t *testing.T) {
+	assertDesiredConfigHistoryAndRevert(t, NewMemoryNodeStore())
+}
+
+func assertDesiredConfigHistoryAndRevert(t *testing.T, nodeStore Store) {
+	t.Helper()
+	ctx := context.Background()
+	first := protocol.DesiredConfig{
+		Global: protocol.ProviderModelConfig{Provider: "openai", Model: "gpt-4o"},
+	}
+	second := protocol.DesiredConfig{
+		Global: protocol.ProviderModelConfig{Provider: "anthropic", Model: "claude-sonnet-4"},
+	}
+	if err := nodeStore.SetDesiredConfig(ctx, first, time.Date(2026, 6, 18, 12, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("set first desired config: %v", err)
+	}
+	if err := nodeStore.SetDesiredConfig(ctx, second, time.Date(2026, 6, 18, 12, 1, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("set second desired config: %v", err)
+	}
+
+	page, err := nodeStore.ListDesiredConfigHistory(ctx, DesiredConfigHistoryFilter{Limit: 1})
+	if err != nil {
+		t.Fatalf("list desired config history: %v", err)
+	}
+	if page.Total != 2 || page.Limit != 1 || len(page.History) != 1 {
+		t.Fatalf("history page = %+v, want total 2 limit 1 length 1", page)
+	}
+	if page.History[0].Config.Global.Model != "claude-sonnet-4" || page.History[0].Actor != desiredConfigHistoryActorOperator || !strings.HasPrefix(page.History[0].DesiredHash, "sha256:") {
+		t.Fatalf("newest history entry = %+v, want second config/operator/hash", page.History[0])
+	}
+
+	full, err := nodeStore.ListDesiredConfigHistory(ctx, DesiredConfigHistoryFilter{Limit: 10})
+	if err != nil {
+		t.Fatalf("list full desired config history: %v", err)
+	}
+	if len(full.History) != 2 {
+		t.Fatalf("full history length = %d, want 2", len(full.History))
+	}
+	firstHistoryID := full.History[1].ID
+	reverted, err := nodeStore.RevertDesiredConfig(ctx, firstHistoryID)
+	if err != nil {
+		t.Fatalf("revert desired config: %v", err)
+	}
+	if reverted.ID == firstHistoryID || reverted.Config.Global.Model != "gpt-4o" {
+		t.Fatalf("reverted history = %+v, want new entry for first config", reverted)
+	}
+	current, err := nodeStore.GetDesiredConfig(ctx)
+	if err != nil {
+		t.Fatalf("get reverted desired config: %v", err)
+	}
+	if current.Global.Provider != "openai" || current.Global.Model != "gpt-4o" {
+		t.Fatalf("current desired config = %+v, want first config", current)
+	}
+	after, err := nodeStore.ListDesiredConfigHistory(ctx, DesiredConfigHistoryFilter{Limit: 10})
+	if err != nil {
+		t.Fatalf("list history after revert: %v", err)
+	}
+	if after.Total != 3 || len(after.History) != 3 || after.History[0].ID != reverted.ID {
+		t.Fatalf("history after revert = %+v, want appended revert entry first", after)
+	}
+}
+
 func rolloutForStoreTest(id string, state protocol.RolloutState, createdAt time.Time) protocol.Rollout {
 	return protocol.Rollout{
 		ID:    id,

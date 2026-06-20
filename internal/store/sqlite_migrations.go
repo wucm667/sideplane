@@ -210,6 +210,22 @@ ON heartbeats(node_id, observed_at DESC)`,
 	ON operator_tokens(revoked_at)`,
 		},
 	},
+	{
+		version: 11,
+		name:    "create desired config history table",
+		statements: []string{
+			`
+	CREATE TABLE IF NOT EXISTS desired_config_history (
+		id TEXT PRIMARY KEY,
+		config_json TEXT NOT NULL,
+		updated_at TEXT NOT NULL,
+		actor TEXT NOT NULL
+	)`,
+			`
+	CREATE INDEX IF NOT EXISTS idx_desired_config_history_updated_at
+	ON desired_config_history(updated_at DESC, id DESC)`,
+		},
+	},
 }
 
 // LatestSQLiteSchemaVersion returns the newest migration version compiled into

@@ -21,6 +21,10 @@ const (
 	DefaultRolloutListLimit = 50
 	// MaxRolloutListLimit is the largest rollout page size accepted by the store.
 	MaxRolloutListLimit = 500
+	// DefaultDesiredConfigHistoryListLimit is the bounded default for desired config history.
+	DefaultDesiredConfigHistoryListLimit = 50
+	// MaxDesiredConfigHistoryListLimit is the largest desired config history page size.
+	MaxDesiredConfigHistoryListLimit = 500
 	// DefaultNodeListLimit is the bounded default for fleet inventory listing.
 	DefaultNodeListLimit = 100
 	// MaxNodeListLimit is the largest fleet inventory page size accepted by the store.
@@ -53,6 +57,8 @@ var (
 	ErrRolloutNotFound = errors.New("rollout not found")
 	// ErrOperatorTokenNotFound means the requested operator token does not exist.
 	ErrOperatorTokenNotFound = errors.New("operator token not found")
+	// ErrDesiredConfigHistoryNotFound means the requested desired config history entry does not exist.
+	ErrDesiredConfigHistoryNotFound = errors.New("desired config history not found")
 )
 
 func jobClaimLease(jobType protocol.JobType) time.Duration {
@@ -308,6 +314,35 @@ type AuditFilter struct {
 type DesiredConfigStore interface {
 	GetDesiredConfig(ctx context.Context) (protocol.DesiredConfig, error)
 	SetDesiredConfig(ctx context.Context, desired protocol.DesiredConfig, now time.Time) error
+	ListDesiredConfigHistory(ctx context.Context, filter DesiredConfigHistoryFilter) (DesiredConfigHistoryList, error)
+	RevertDesiredConfig(ctx context.Context, historyID string) (protocol.DesiredConfigHistoryEntry, error)
+}
+
+// DesiredConfigHistoryFilter constrains desired-config history listing.
+type DesiredConfigHistoryFilter struct {
+	Limit  int
+	Offset int
+}
+
+// DesiredConfigHistoryList is a paginated desired-config history snapshot.
+type DesiredConfigHistoryList struct {
+	History []protocol.DesiredConfigHistoryEntry
+	Total   int
+	Limit   int
+	Offset  int
+}
+
+func NormalizeDesiredConfigHistoryFilter(filter DesiredConfigHistoryFilter) DesiredConfigHistoryFilter {
+	if filter.Limit <= 0 {
+		filter.Limit = DefaultDesiredConfigHistoryListLimit
+	}
+	if filter.Limit > MaxDesiredConfigHistoryListLimit {
+		filter.Limit = MaxDesiredConfigHistoryListLimit
+	}
+	if filter.Offset < 0 {
+		filter.Offset = 0
+	}
+	return filter
 }
 
 // HealthStore reports whether the persistence layer is reachable.

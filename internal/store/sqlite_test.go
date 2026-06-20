@@ -39,6 +39,7 @@ func TestSQLiteNodeStoreMigratesAndPersistsHeartbeat(t *testing.T) {
 	assertSQLiteTableExists(t, ctx, first.db, "node_labels")
 	assertSQLiteTableExists(t, ctx, first.db, "rollouts")
 	assertSQLiteTableExists(t, ctx, first.db, "operator_tokens")
+	assertSQLiteTableExists(t, ctx, first.db, "desired_config_history")
 	assertSQLiteMigrationApplied(t, ctx, first.db, 1)
 	assertSQLiteMigrationApplied(t, ctx, first.db, 2)
 	assertSQLiteMigrationApplied(t, ctx, first.db, 3)
@@ -49,6 +50,7 @@ func TestSQLiteNodeStoreMigratesAndPersistsHeartbeat(t *testing.T) {
 	assertSQLiteMigrationApplied(t, ctx, first.db, 8)
 	assertSQLiteMigrationApplied(t, ctx, first.db, 9)
 	assertSQLiteMigrationApplied(t, ctx, first.db, 10)
+	assertSQLiteMigrationApplied(t, ctx, first.db, 11)
 
 	observedAt := time.Date(2026, 6, 16, 1, 2, 3, 0, time.UTC)
 	sentAt := observedAt.Add(-time.Second)
@@ -1473,6 +1475,17 @@ func TestSQLiteDesiredConfigPersistsAcrossReopen(t *testing.T) {
 	if got.Global.Provider != "openai" || got.NodeOverrides["node-a"].Model != "gpt-5-mini" || got.NodeRuntimeProfileOverrides["node-a/hermes/default"].Model != "claude-sonnet-4" {
 		t.Fatalf("desired config = %#v, want persisted provider/model", got)
 	}
+}
+
+func TestSQLiteDesiredConfigHistoryAndRevert(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenSQLiteNodeStore(ctx, filepath.Join(t.TempDir(), "sideplane.db"))
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	defer store.Close()
+
+	assertDesiredConfigHistoryAndRevert(t, store)
 }
 
 func TestSQLiteConcurrentHeartbeatWrites(t *testing.T) {

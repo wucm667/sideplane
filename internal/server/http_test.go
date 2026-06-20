@@ -1029,6 +1029,105 @@ func TestDesiredConfigPutRejectsUnsafeProviderModelValues(t *testing.T) {
 	}
 }
 
+func TestDesiredConfigHistoryRequiresAuth(t *testing.T) {
+	handler, err := NewHandlerWithStoreAndFreshnessPolicyAndOperatorToken(store.NewMemoryNodeStore(), DefaultFreshnessPolicy(), "dev-token")
+	if err != nil {
+		t.Fatalf("build handler: %v", err)
+	}
+
+	tests := []struct {
+		name string
+		req  *http.Request
+	}{
+		{name: "history", req: httptest.NewRequest(http.MethodGet, "/api/config/desired/history", nil)},
+		{name: "revert", req: httptest.NewRequest(http.MethodPost, "/api/config/desired/revert", strings.NewReader(`{"historyId":"deshist_1"}`))},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, tt.req)
+			assertStatus(t, rec, http.StatusUnauthorized)
+		})
+	}
+}
+
+func TestDesiredConfigHistoryListAndRevert(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	handler, err := NewHandlerWithStoreAndFreshnessPolicyAndOperatorToken(nodeStore, DefaultFreshnessPolicy(), "dev-token")
+	if err != nil {
+		t.Fatalf("build handler: %v", err)
+	}
+
+	for _, payload := range []string{
+		`{"global":{"provider":"openai","model":"gpt-4o"}}`,
+		`{"global":{"provider":"anthropic","model":"claude-sonnet-4"}}`,
+	} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPut, "/api/config/desired", strings.NewReader(payload))
+		req.Header.Set("Authorization", "Bearer dev-token")
+		handler.ServeHTTP(rec, req)
+		assertStatus(t, rec, http.StatusOK)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/config/desired/history?limit=1&offset=1", nil)
+	req.Header.Set("Authorization", "Bearer dev-token")
+	handler.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusOK)
+	var historyResp protocol.ListDesiredConfigHistoryResponse
+	if err := json.NewDecoder(rec.Body).Decode(&historyResp); err != nil {
+		t.Fatalf("decode history response: %v", err)
+	}
+	if historyResp.Total != 2 || historyResp.Limit != 1 || historyResp.Offset != 1 || len(historyResp.History) != 1 {
+		t.Fatalf("history response = %+v, want page 1 of total 2", historyResp)
+	}
+	firstHistory := historyResp.History[0]
+	if firstHistory.Config.Global.Model != "gpt-4o" || !strings.HasPrefix(firstHistory.DesiredHash, "sha256:") {
+		t.Fatalf("first history = %+v, want gpt-4o with hash", firstHistory)
+	}
+
+	body, err := json.Marshal(protocol.RevertDesiredConfigRequest{HistoryID: firstHistory.ID})
+	if err != nil {
+		t.Fatalf("marshal revert request: %v", err)
+	}
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/config/desired/revert", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer dev-token")
+	handler.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusOK)
+	var revertResp protocol.RevertDesiredConfigResponse
+	if err := json.NewDecoder(rec.Body).Decode(&revertResp); err != nil {
+		t.Fatalf("decode revert response: %v", err)
+	}
+	if revertResp.Desired.Global.Model != "gpt-4o" || revertResp.History.ID == firstHistory.ID {
+		t.Fatalf("revert response = %+v, want new gpt-4o history entry", revertResp)
+	}
+
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/config/desired", nil))
+	assertStatus(t, rec, http.StatusOK)
+	var desired protocol.DesiredConfig
+	if err := json.NewDecoder(rec.Body).Decode(&desired); err != nil {
+		t.Fatalf("decode desired response: %v", err)
+	}
+	if desired.Global.Provider != "openai" || desired.Global.Model != "gpt-4o" {
+		t.Fatalf("desired config = %+v, want reverted gpt-4o", desired)
+	}
+
+	events, err := nodeStore.ListAuditEventsFiltered(context.Background(), store.AuditFilter{Action: audit.ActionDesiredConfigRevert, Limit: 10})
+	if err != nil {
+		t.Fatalf("list audit events: %v", err)
+	}
+	if len(events) != 1 || !strings.Contains(events[0].Detail, "historyId="+firstHistory.ID) {
+		t.Fatalf("revert audit events = %+v, want historyId detail", events)
+	}
+	for _, forbidden := range []string{"openai", "gpt-4o"} {
+		if strings.Contains(events[0].Detail, forbidden) {
+			t.Fatalf("revert audit detail leaked desired value %q: %s", forbidden, events[0].Detail)
+		}
+	}
+}
+
 func TestEffectiveConfigPreviewDoesNotPersistDesiredConfig(t *testing.T) {
 	nodeStore := store.NewMemoryNodeStore()
 	enrollTestNode(t, nodeStore, "node-preview")
@@ -3799,4 +3898,12 @@ func (s staticNodeStore) GetDesiredConfig(context.Context) (protocol.DesiredConf
 
 func (s staticNodeStore) SetDesiredConfig(context.Context, protocol.DesiredConfig, time.Time) error {
 	return nil
+}
+
+func (s staticNodeStore) ListDesiredConfigHistory(context.Context, store.DesiredConfigHistoryFilter) (store.DesiredConfigHistoryList, error) {
+	return store.DesiredConfigHistoryList{}, nil
+}
+
+func (s staticNodeStore) RevertDesiredConfig(context.Context, string) (protocol.DesiredConfigHistoryEntry, error) {
+	return protocol.DesiredConfigHistoryEntry{}, nil
 }

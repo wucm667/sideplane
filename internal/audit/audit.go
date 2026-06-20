@@ -45,4 +45,6 @@ const (
 	ActionRolloutAbort = "rollout.abort"
 	// ActionDesiredConfigUpdate records operator updates to desired config.
 	ActionDesiredConfigUpdate = "config.desired.update"
+	// ActionDesiredConfigRevert records operator reverts to desired config.
+	ActionDesiredConfigRevert = "config.desired.revert"
 )

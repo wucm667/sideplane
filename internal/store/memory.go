@@ -26,6 +26,7 @@ type MemoryNodeStore struct {
 	rollouts         map[string]protocol.Rollout
 	auditEvents      []protocol.AuditEvent
 	desiredConfig    protocol.DesiredConfig
+	desiredHistory   []protocol.DesiredConfigHistoryEntry
 }
 
 type memoryEnrollmentToken struct {
@@ -948,11 +949,76 @@ func (s *MemoryNodeStore) GetDesiredConfig(_ context.Context) (protocol.DesiredC
 }
 
 // SetDesiredConfig replaces the layered desired runtime config.
-func (s *MemoryNodeStore) SetDesiredConfig(_ context.Context, desired protocol.DesiredConfig, _ time.Time) error {
+func (s *MemoryNodeStore) SetDesiredConfig(_ context.Context, desired protocol.DesiredConfig, now time.Time) error {
+	entry, err := newDesiredConfigHistoryEntry(desired, desiredConfigHistoryActorOperator, now)
+	if err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.desiredConfig = cloneDesiredConfig(desired)
+	s.desiredConfig = cloneDesiredConfig(entry.Config)
+	s.desiredHistory = append(s.desiredHistory, cloneDesiredConfigHistoryEntry(entry))
 	return nil
+}
+
+// ListDesiredConfigHistory returns a bounded desired-config history page.
+func (s *MemoryNodeStore) ListDesiredConfigHistory(_ context.Context, filter DesiredConfigHistoryFilter) (DesiredConfigHistoryList, error) {
+	filter = NormalizeDesiredConfigHistoryFilter(filter)
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	history := make([]protocol.DesiredConfigHistoryEntry, len(s.desiredHistory))
+	for i, entry := range s.desiredHistory {
+		history[i] = cloneDesiredConfigHistoryEntry(entry)
+	}
+	slices.SortStableFunc(history, func(a, b protocol.DesiredConfigHistoryEntry) int {
+		if a.UpdatedAt.Equal(b.UpdatedAt) {
+			return strings.Compare(b.ID, a.ID)
+		}
+		if a.UpdatedAt.After(b.UpdatedAt) {
+			return -1
+		}
+		return 1
+	})
+	total := len(history)
+	start := filter.Offset
+	if start > total {
+		start = total
+	}
+	end := start + filter.Limit
+	if end > total {
+		end = total
+	}
+	return DesiredConfigHistoryList{
+		History: history[start:end],
+		Total:   total,
+		Limit:   filter.Limit,
+		Offset:  filter.Offset,
+	}, nil
+}
+
+// RevertDesiredConfig restores a past desired-config version and records a new history entry.
+func (s *MemoryNodeStore) RevertDesiredConfig(_ context.Context, historyID string) (protocol.DesiredConfigHistoryEntry, error) {
+	historyID = strings.TrimSpace(historyID)
+	if historyID == "" {
+		return protocol.DesiredConfigHistoryEntry{}, ErrDesiredConfigHistoryNotFound
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, entry := range s.desiredHistory {
+		if entry.ID != historyID {
+			continue
+		}
+		reverted, err := newDesiredConfigHistoryEntry(entry.Config, desiredConfigHistoryActorOperator, time.Now().UTC())
+		if err != nil {
+			return protocol.DesiredConfigHistoryEntry{}, err
+		}
+		s.desiredConfig = cloneDesiredConfig(reverted.Config)
+		s.desiredHistory = append(s.desiredHistory, cloneDesiredConfigHistoryEntry(reverted))
+		return cloneDesiredConfigHistoryEntry(reverted), nil
+	}
+	return protocol.DesiredConfigHistoryEntry{}, ErrDesiredConfigHistoryNotFound
 }
 
 func cloneDesiredConfig(desired protocol.DesiredConfig) protocol.DesiredConfig {
@@ -976,6 +1042,16 @@ func cloneDesiredConfig(desired protocol.DesiredConfig) protocol.DesiredConfig {
 		}
 	}
 	return clone
+}
+
+func cloneDesiredConfigHistoryEntry(entry protocol.DesiredConfigHistoryEntry) protocol.DesiredConfigHistoryEntry {
+	return protocol.DesiredConfigHistoryEntry{
+		ID:          entry.ID,
+		Config:      cloneDesiredConfig(entry.Config),
+		DesiredHash: entry.DesiredHash,
+		UpdatedAt:   entry.UpdatedAt,
+		Actor:       entry.Actor,
+	}
 }
 
 func cloneNodeStatus(node protocol.NodeStatus) protocol.NodeStatus {

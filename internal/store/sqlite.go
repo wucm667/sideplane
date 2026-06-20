@@ -1679,19 +1679,136 @@ func (s *SQLiteNodeStore) SetDesiredConfig(ctx context.Context, desired protocol
 	if s == nil || s.db == nil {
 		return errors.New("sqlite node store is closed")
 	}
-	payload, err := json.Marshal(desired)
+	entry, err := newDesiredConfigHistoryEntry(desired, desiredConfigHistoryActorOperator, now)
+	if err != nil {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin desired config transaction: %w", err)
+	}
+	defer tx.Rollback()
+	if err := insertDesiredConfigTx(ctx, tx, entry); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit desired config transaction: %w", err)
+	}
+	return nil
+}
+
+// ListDesiredConfigHistory returns a bounded desired-config history page.
+func (s *SQLiteNodeStore) ListDesiredConfigHistory(ctx context.Context, filter DesiredConfigHistoryFilter) (DesiredConfigHistoryList, error) {
+	if s == nil || s.db == nil {
+		return DesiredConfigHistoryList{}, errors.New("sqlite node store is closed")
+	}
+	filter = NormalizeDesiredConfigHistoryFilter(filter)
+
+	var total int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM desired_config_history`).Scan(&total); err != nil {
+		return DesiredConfigHistoryList{}, fmt.Errorf("count desired config history: %w", err)
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+SELECT id, config_json, updated_at, actor
+FROM desired_config_history
+ORDER BY updated_at DESC, id DESC
+LIMIT ? OFFSET ?
+`, filter.Limit, filter.Offset)
+	if err != nil {
+		return DesiredConfigHistoryList{}, fmt.Errorf("query desired config history: %w", err)
+	}
+	defer rows.Close()
+
+	history := []protocol.DesiredConfigHistoryEntry{}
+	for rows.Next() {
+		entry, err := scanSQLiteDesiredConfigHistoryEntry(rows)
+		if err != nil {
+			return DesiredConfigHistoryList{}, err
+		}
+		history = append(history, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return DesiredConfigHistoryList{}, fmt.Errorf("iterate desired config history: %w", err)
+	}
+	return DesiredConfigHistoryList{
+		History: history,
+		Total:   total,
+		Limit:   filter.Limit,
+		Offset:  filter.Offset,
+	}, nil
+}
+
+// RevertDesiredConfig restores a past desired-config version and records a new history entry.
+func (s *SQLiteNodeStore) RevertDesiredConfig(ctx context.Context, historyID string) (protocol.DesiredConfigHistoryEntry, error) {
+	if s == nil || s.db == nil {
+		return protocol.DesiredConfigHistoryEntry{}, errors.New("sqlite node store is closed")
+	}
+	historyID = strings.TrimSpace(historyID)
+	if historyID == "" {
+		return protocol.DesiredConfigHistoryEntry{}, ErrDesiredConfigHistoryNotFound
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return protocol.DesiredConfigHistoryEntry{}, fmt.Errorf("begin desired config revert transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	var payload string
+	err = tx.QueryRowContext(ctx, `
+SELECT config_json
+FROM desired_config_history
+WHERE id = ?
+`, historyID).Scan(&payload)
+	if errors.Is(err, sql.ErrNoRows) {
+		return protocol.DesiredConfigHistoryEntry{}, ErrDesiredConfigHistoryNotFound
+	}
+	if err != nil {
+		return protocol.DesiredConfigHistoryEntry{}, fmt.Errorf("query desired config history entry: %w", err)
+	}
+	var desired protocol.DesiredConfig
+	if err := json.Unmarshal([]byte(payload), &desired); err != nil {
+		return protocol.DesiredConfigHistoryEntry{}, fmt.Errorf("parse desired config history entry: %w", err)
+	}
+	entry, err := newDesiredConfigHistoryEntry(desired, desiredConfigHistoryActorOperator, time.Now().UTC())
+	if err != nil {
+		return protocol.DesiredConfigHistoryEntry{}, err
+	}
+	if err := insertDesiredConfigTx(ctx, tx, entry); err != nil {
+		return protocol.DesiredConfigHistoryEntry{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return protocol.DesiredConfigHistoryEntry{}, fmt.Errorf("commit desired config revert transaction: %w", err)
+	}
+	return entry, nil
+}
+
+func insertDesiredConfigTx(ctx context.Context, tx *sql.Tx, entry protocol.DesiredConfigHistoryEntry) error {
+	payload, err := json.Marshal(entry.Config)
 	if err != nil {
 		return fmt.Errorf("marshal desired config: %w", err)
 	}
-	_, err = s.db.ExecContext(ctx, `
+	_, err = tx.ExecContext(ctx, `
 INSERT INTO desired_config (id, config_json, updated_at)
 VALUES (1, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
 	config_json = excluded.config_json,
 	updated_at = excluded.updated_at
-`, string(payload), formatDBTime(now.UTC()))
+`, string(payload), formatDBTime(entry.UpdatedAt))
 	if err != nil {
 		return fmt.Errorf("upsert desired config: %w", err)
+	}
+	_, err = tx.ExecContext(ctx, `
+INSERT INTO desired_config_history (
+	id,
+	config_json,
+	updated_at,
+	actor
+) VALUES (?, ?, ?, ?)
+`, entry.ID, string(payload), formatDBTime(entry.UpdatedAt), entry.Actor)
+	if err != nil {
+		return fmt.Errorf("insert desired config history: %w", err)
 	}
 	return nil
 }
@@ -1739,6 +1856,25 @@ func scanSQLiteOperatorToken(scanner sqliteScanner) (protocol.OperatorToken, err
 	token.LastUsedAt = lastUsedAt
 	token.RevokedAt = revokedAt
 	return token, nil
+}
+
+func scanSQLiteDesiredConfigHistoryEntry(scanner sqliteScanner) (protocol.DesiredConfigHistoryEntry, error) {
+	var entry protocol.DesiredConfigHistoryEntry
+	var payload string
+	var updatedAtText string
+	if err := scanner.Scan(&entry.ID, &payload, &updatedAtText, &entry.Actor); err != nil {
+		return protocol.DesiredConfigHistoryEntry{}, err
+	}
+	if err := json.Unmarshal([]byte(payload), &entry.Config); err != nil {
+		return protocol.DesiredConfigHistoryEntry{}, fmt.Errorf("parse desired config history: %w", err)
+	}
+	updatedAt, err := parseDBTime(updatedAtText)
+	if err != nil {
+		return protocol.DesiredConfigHistoryEntry{}, fmt.Errorf("parse desired config history updated_at: %w", err)
+	}
+	entry.UpdatedAt = updatedAt
+	entry.DesiredHash = hashDesiredConfig(entry.Config)
+	return entry, nil
 }
 
 func (s *SQLiteNodeStore) loadJob(ctx context.Context, jobID string) (protocol.Job, error) {

@@ -124,6 +124,8 @@ func NewHandlerWithConfig(cfg HandlerConfig) (http.Handler, error) {
 	mux.HandleFunc("/api/operator-tokens", handler.operatorTokens)
 	mux.HandleFunc("/api/operator-tokens/", handler.operatorTokenRouter)
 	mux.HandleFunc("/api/signing-key", handler.publicSigningKey)
+	mux.HandleFunc("/api/config/desired/history", handler.desiredConfigHistory)
+	mux.HandleFunc("/api/config/desired/revert", handler.revertDesiredConfig)
 	mux.HandleFunc("/api/config/desired", handler.desiredConfig)
 	mux.HandleFunc("/api/config/effective", handler.effectiveConfig)
 	mux.HandleFunc("/api/config/effective/preview", handler.previewEffectiveConfig)
@@ -801,6 +803,51 @@ func parseRolloutFilter(r *http.Request) (store.RolloutFilter, error) {
 		filter.Offset = offset
 	}
 	return filter, nil
+}
+
+func parseDesiredConfigHistoryFilter(r *http.Request) (store.DesiredConfigHistoryFilter, error) {
+	filter := store.DesiredConfigHistoryFilter{Limit: store.DefaultDesiredConfigHistoryListLimit}
+	query := r.URL.Query()
+	if limitValue := strings.TrimSpace(query.Get("limit")); limitValue != "" {
+		limit, err := strconv.Atoi(limitValue)
+		if err != nil || limit <= 0 {
+			return store.DesiredConfigHistoryFilter{}, fmt.Errorf("limit must be a positive integer")
+		}
+		if limit > store.MaxDesiredConfigHistoryListLimit {
+			limit = store.MaxDesiredConfigHistoryListLimit
+		}
+		filter.Limit = limit
+	}
+	if offsetValue := strings.TrimSpace(query.Get("offset")); offsetValue != "" {
+		offset, err := strconv.Atoi(offsetValue)
+		if err != nil || offset < 0 {
+			return store.DesiredConfigHistoryFilter{}, fmt.Errorf("offset must be a non-negative integer")
+		}
+		filter.Offset = offset
+	}
+	return filter, nil
+}
+
+func (h *handler) findDesiredConfigHistoryEntry(ctx context.Context, historyID string) (protocol.DesiredConfigHistoryEntry, bool, error) {
+	offset := 0
+	for {
+		page, err := h.store.ListDesiredConfigHistory(ctx, store.DesiredConfigHistoryFilter{
+			Limit:  store.MaxDesiredConfigHistoryListLimit,
+			Offset: offset,
+		})
+		if err != nil {
+			return protocol.DesiredConfigHistoryEntry{}, false, err
+		}
+		for _, entry := range page.History {
+			if entry.ID == historyID {
+				return entry, true, nil
+			}
+		}
+		offset += len(page.History)
+		if len(page.History) == 0 || offset >= page.Total {
+			return protocol.DesiredConfigHistoryEntry{}, false, nil
+		}
+	}
 }
 
 func pauseRolloutForOperator(rollout protocol.Rollout, now time.Time) protocol.Rollout {
@@ -1961,6 +2008,87 @@ func (h *handler) desiredConfig(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Allow", http.MethodGet+", "+http.MethodPut)
 		writeAPIError(w, http.StatusMethodNotAllowed, http.StatusText(http.StatusMethodNotAllowed))
 	}
+}
+
+func (h *handler) desiredConfigHistory(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		writeAPIError(w, http.StatusMethodNotAllowed, http.StatusText(http.StatusMethodNotAllowed))
+		return
+	}
+	if !h.authorizeOperator(w, r) {
+		return
+	}
+	filter, err := parseDesiredConfigHistoryFilter(r)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	history, err := h.store.ListDesiredConfigHistory(r.Context(), filter)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "list desired config history")
+		return
+	}
+	writeJSON(w, http.StatusOK, protocol.ListDesiredConfigHistoryResponse{
+		History: history.History,
+		Total:   history.Total,
+		Limit:   history.Limit,
+		Offset:  history.Offset,
+	})
+}
+
+func (h *handler) revertDesiredConfig(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		writeAPIError(w, http.StatusMethodNotAllowed, http.StatusText(http.StatusMethodNotAllowed))
+		return
+	}
+	if !h.authorizeOperator(w, r) {
+		return
+	}
+	var req protocol.RevertDesiredConfigRequest
+	if err := decodeJSONRequest(w, r, defaultJSONBodyLimit, &req); err != nil {
+		writeJSONDecodeError(w, err, "invalid desired config revert JSON")
+		return
+	}
+	historyID := strings.TrimSpace(req.HistoryID)
+	if historyID == "" {
+		writeAPIError(w, http.StatusBadRequest, "historyId is required")
+		return
+	}
+	candidate, found, err := h.findDesiredConfigHistoryEntry(r.Context(), historyID)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "get desired config history")
+		return
+	}
+	if !found {
+		writeAPIError(w, http.StatusNotFound, "desired config history not found")
+		return
+	}
+	if err := spconfig.ValidateDesiredConfigValues(candidate.Config); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "invalid desired config: "+err.Error())
+		return
+	}
+	entry, err := h.store.RevertDesiredConfig(r.Context(), historyID)
+	if errors.Is(err, store.ErrDesiredConfigHistoryNotFound) {
+		writeAPIError(w, http.StatusNotFound, "desired config history not found")
+		return
+	}
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "revert desired config")
+		return
+	}
+	now := time.Now().UTC()
+	h.audit(r.Context(), protocol.AuditEvent{
+		Actor:     audit.ActorOperator,
+		Action:    audit.ActionDesiredConfigRevert,
+		Detail:    fmt.Sprintf("historyId=%s desiredHash=%s", historyID, hashDesiredConfig(entry.Config)),
+		CreatedAt: now,
+	})
+	writeJSON(w, http.StatusOK, protocol.RevertDesiredConfigResponse{
+		Desired: entry.Config,
+		History: entry,
+	})
 }
 
 func (h *handler) effectiveConfig(w http.ResponseWriter, r *http.Request) {

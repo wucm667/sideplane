@@ -1,5 +1,7 @@
 package protocol
 
+import "time"
+
 // RuntimeConfigSnapshot is a read-only allowlisted view of a runtime config.
 type RuntimeConfigSnapshot struct {
 	RuntimeName string   `json:"runtimeName"`
@@ -25,6 +27,35 @@ type DesiredConfig struct {
 	NodeOverrides               map[string]ProviderModelConfig `json:"nodeOverrides,omitempty"`
 	RuntimeProfileOverrides     map[string]ProviderModelConfig `json:"runtimeProfileOverrides,omitempty"`
 	NodeRuntimeProfileOverrides map[string]ProviderModelConfig `json:"nodeRuntimeProfileOverrides,omitempty"`
+}
+
+// DesiredConfigHistoryEntry is an immutable desired-config version.
+type DesiredConfigHistoryEntry struct {
+	ID          string        `json:"id"`
+	Config      DesiredConfig `json:"config"`
+	DesiredHash string        `json:"desiredHash,omitempty"`
+	UpdatedAt   time.Time     `json:"updatedAt"`
+	Actor       string        `json:"actor"`
+}
+
+// ListDesiredConfigHistoryResponse is a paginated desired-config history page.
+type ListDesiredConfigHistoryResponse struct {
+	History []DesiredConfigHistoryEntry `json:"history"`
+	Total   int                         `json:"total"`
+	Limit   int                         `json:"limit"`
+	Offset  int                         `json:"offset"`
+}
+
+// RevertDesiredConfigRequest selects a desired-config history entry to restore.
+type RevertDesiredConfigRequest struct {
+	HistoryID string `json:"historyId"`
+}
+
+// RevertDesiredConfigResponse returns the new current desired config and
+// appended history entry created by the revert.
+type RevertDesiredConfigResponse struct {
+	Desired DesiredConfig             `json:"desired"`
+	History DesiredConfigHistoryEntry `json:"history"`
 }
 
 // EffectiveConfigResponse describes server-computed desired config and diff.
