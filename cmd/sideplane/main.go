@@ -52,7 +52,7 @@ var completionCommands = []completionCommand{
 	{Name: "backups", Description: "list rollback backups", Subcommands: []string{"list"}},
 	{Name: "rollout", Description: "manage staged fleet rollouts", Subcommands: []string{"create", "list", "status", "pause", "resume", "abort"}},
 	{Name: "jobs", Description: "list node jobs", Subcommands: []string{"list"}},
-	{Name: "audit", Description: "list audit events", Subcommands: []string{"list"}},
+	{Name: "audit", Description: "list audit events", Subcommands: []string{"list", "export"}},
 	{Name: "token", Description: "manage operator tokens", Subcommands: []string{"create", "list", "revoke"}},
 	{Name: "config", Description: "manage desired configuration", Subcommands: []string{"apply", "preview", "get", "set", "history", "revert"}},
 	{Name: "node", Description: "inspect and manage nodes", Subcommands: []string{"inspect", "label", "remove"}},
@@ -137,6 +137,9 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		if len(args) >= 2 && args[1] == "list" {
 			return runAuditList(args[2:], stdout, stderr)
 		}
+		if len(args) >= 2 && args[1] == "export" {
+			return runAuditExport(args[2:], stdout, stderr)
+		}
 	case "token":
 		if len(args) >= 2 {
 			switch args[1] {
@@ -217,6 +220,7 @@ Commands:
   rollout status <id> Show rollout batch and node progress
   jobs list <nodeId>  List node jobs
   audit list          List audit events
+  audit export        Export audit log (ndjson or csv)
   token create        Create a named operator token
   token list          List named operator token metadata
   token revoke <id>   Revoke a named operator token
@@ -982,6 +986,68 @@ func runAuditList(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 0
 	}
 	printAuditTable(stdout, resp.Events)
+	return 0
+}
+
+func runAuditExport(args []string, stdout io.Writer, stderr io.Writer) int {
+	flags := flag.NewFlagSet("sideplane audit export", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+
+	serverURL := flags.String("server", "", "Sideplane server URL; can also be set with SIDEPLANE_SERVER_URL")
+	operatorTokenFlag := flags.String("operator-token", "", "operator bearer token; can also be set with SIDEPLANE_OPERATOR_TOKEN")
+	nodeID := flags.String("node-id", "", "optional node ID filter")
+	action := flags.String("action", "", "optional audit action filter")
+	limit := flags.Int("limit", 0, "maximum audit events to export")
+	format := flags.String("format", "ndjson", "export format: ndjson or csv")
+	out := flags.String("out", "", "output file path; defaults to stdout")
+	usage := "sideplane audit export [--format ndjson|csv] [--out PATH] [--node-id NODE] [--action ACTION] [--limit N] [--server URL] [--operator-token TOKEN]"
+	if commandHelpRequested(args) {
+		printCommandHelp(stdout, usage, flags)
+		return 0
+	}
+	if err := parseCommandFlags(flags, args); err != nil {
+		return 2
+	}
+	if flags.NArg() != 0 {
+		fmt.Fprintln(stderr, "usage: "+usage)
+		return 1
+	}
+	exportFormat := strings.ToLower(strings.TrimSpace(*format))
+	if exportFormat != "ndjson" && exportFormat != "csv" {
+		fmt.Fprintln(stderr, "audit export: --format must be ndjson or csv")
+		return 1
+	}
+	if *limit < 0 {
+		fmt.Fprintln(stderr, "audit export: --limit must be positive")
+		return 1
+	}
+
+	params := url.Values{}
+	params.Set("format", exportFormat)
+	if trimmed := strings.TrimSpace(*nodeID); trimmed != "" {
+		params.Set("nodeId", trimmed)
+	}
+	if trimmed := strings.TrimSpace(*action); trimmed != "" {
+		params.Set("action", trimmed)
+	}
+	if *limit > 0 {
+		params.Set("limit", strconv.Itoa(*limit))
+	}
+
+	body, err := apiJSONRequest(context.Background(), http.MethodGet, serverURLValue(*serverURL), "/api/audit/export?"+params.Encode(), nil, operatorTokenValue(*operatorTokenFlag))
+	if err != nil {
+		fmt.Fprintf(stderr, "audit export: %v\n", err)
+		return 1
+	}
+	if path := strings.TrimSpace(*out); path != "" {
+		if err := os.WriteFile(path, body, 0o644); err != nil {
+			fmt.Fprintf(stderr, "audit export: write %s: %v\n", path, err)
+			return 1
+		}
+		fmt.Fprintf(stdout, "Exported audit log to %s\n", path)
+		return 0
+	}
+	_, _ = stdout.Write(body)
 	return 0
 }
 

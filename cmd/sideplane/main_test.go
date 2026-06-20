@@ -2427,3 +2427,47 @@ func rollbackPayload(t *testing.T, runtimeType string, profile string, backupRef
 	}
 	return string(payload)
 }
+
+func TestRunAuditExportWritesFileWithFilters(t *testing.T) {
+	var gotQuery string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/audit/export" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer dev-token" {
+			t.Fatalf("missing operator auth header")
+		}
+		gotQuery = r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		_, _ = w.Write([]byte("{\"id\":\"audit_1\",\"action\":\"job.create\"}\n"))
+	}))
+	defer server.Close()
+
+	outPath := filepath.Join(t.TempDir(), "audit.ndjson")
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"audit", "export", "--format", "ndjson", "--out", outPath, "--node-id", "node-a", "--action", "job.create", "--server", server.URL, "--operator-token", "dev-token"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("run returned %d, stderr=%q", code, stderr.String())
+	}
+	if !strings.Contains(gotQuery, "format=ndjson") || !strings.Contains(gotQuery, "nodeId=node-a") || !strings.Contains(gotQuery, "action=job.create") {
+		t.Fatalf("query = %q, want format/nodeId/action filters", gotQuery)
+	}
+	data, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("read export file: %v", err)
+	}
+	if !strings.Contains(string(data), "audit_1") {
+		t.Fatalf("export file = %q, want audit row", string(data))
+	}
+}
+
+func TestRunAuditExportRejectsInvalidFormat(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"audit", "export", "--format", "xml"}, &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("run returned %d, want 1", code)
+	}
+	if !strings.Contains(stderr.String(), "--format must be ndjson or csv") {
+		t.Fatalf("stderr = %q, want format error", stderr.String())
+	}
+}

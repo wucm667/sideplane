@@ -304,6 +304,7 @@ Generate shell completion with `sideplane completion bash` or
 | `sideplane probe <nodeId>` | Create a deep-probe job. | `--server`, `--operator-token`, `--wait`, `--json` |
 | `sideplane jobs list <nodeId>` | List node jobs with optional filters. | `--server`, `--operator-token`, `--limit`, `--status`, `--json` |
 | `sideplane audit list` | List audit events newest first. | `--server`, `--node-id`, `--action`, `--limit`, `--json` |
+| `sideplane audit export` | Export the audit log as ndjson or csv. | `--server`, `--operator-token`, `--format`, `--out`, `--node-id`, `--action`, `--limit` |
 | `sideplane token create` | Create a named operator token shown once. | `--server`, `--operator-token`, `--name`, `--json` |
 | `sideplane token list` | List named operator token metadata. | `--server`, `--operator-token`, `--json` |
 | `sideplane token revoke <id>` | Revoke a named operator token. | `--server`, `--operator-token`, `--json` |
