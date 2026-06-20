@@ -124,6 +124,7 @@ describe('badge class helpers', () => {
   })
 
   it('returns rollout-specific classes for active and terminal states', () => {
+    expect(rolloutBadgeClasses('scheduled')).toContain('violet')
     expect(rolloutBadgeClasses('running')).toContain('sky')
     expect(rolloutBadgeClasses('paused')).toContain('amber')
     expect(rolloutBadgeClasses('completed')).toContain('emerald')
@@ -178,6 +179,7 @@ describe('fleet helper summaries', () => {
       ],
       'node-b': [job({ id: 'job-claimed', status: 'claimed' })],
     }, [
+      rollout('scheduled'),
       rollout('running'),
       rollout('paused'),
       rollout('completed'),
@@ -191,7 +193,7 @@ describe('fleet helper summaries', () => {
       outdatedSidecars: 0,
       runtimeCount: 3,
       activeJobs: 2,
-      activeRollouts: 2,
+      activeRollouts: 3,
       runningRollouts: 1,
       pausedRollouts: 1,
     })

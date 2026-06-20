@@ -428,9 +428,10 @@ func runRolloutCreate(args []string, stdout io.Writer, stderr io.Writer) int {
 	yes := flags.Bool("yes", false, "confirm live rollout")
 	autoRollback := flags.Bool("auto-rollback", false, "on a live batch failure, roll back already-applied nodes before pausing")
 	healthTimeout := flags.Duration("health-timeout", 0, "batch health timeout; server default is used when omitted")
+	startAtFlag := flags.String("start-at", "", "optional RFC3339 rollout start time")
 	template := flags.String("template", "", "rollout template id to prefill the spec; other spec flags are ignored")
 	jsonOutput := flags.Bool("json", false, "print raw JSON response")
-	usage := "sideplane rollout create (--template ID | (--selector key=value[,key2=value2] | --node NODE [--node NODE...]) --provider PROVIDER --model MODEL) [--runtime-type TYPE] [--profile PROFILE] [--batch-size N] [--live --yes] [--auto-rollback] [--health-timeout DURATION] [--server URL] [--operator-token TOKEN] [--json]"
+	usage := "sideplane rollout create (--template ID | (--selector key=value[,key2=value2] | --node NODE [--node NODE...]) --provider PROVIDER --model MODEL) [--runtime-type TYPE] [--profile PROFILE] [--batch-size N] [--start-at RFC3339] [--live --yes] [--auto-rollback] [--health-timeout DURATION] [--server URL] [--operator-token TOKEN] [--json]"
 	if commandHelpRequested(args) {
 		printCommandHelp(stdout, usage, flags)
 		return 0
@@ -475,6 +476,11 @@ func runRolloutCreate(args []string, stdout io.Writer, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "rollout create: --health-timeout must be zero or positive")
 		return 1
 	}
+	startAt, err := parseCLIStartAt(*startAtFlag)
+	if err != nil {
+		fmt.Fprintf(stderr, "rollout create: %v\n", err)
+		return 1
+	}
 	selectorMap, err := parseCLISelector(*selector)
 	if err != nil {
 		fmt.Fprintf(stderr, "rollout create: %v\n", err)
@@ -500,6 +506,7 @@ func runRolloutCreate(args []string, stdout io.Writer, stderr io.Writer) int {
 		Live:                  *live,
 		AutoRollbackOnFailure: *autoRollback,
 		HealthTimeout:         *healthTimeout,
+		StartAt:               startAt,
 	}}
 	resp, body, err := postJSON[protocol.CreateRolloutResponse](context.Background(), serverURLValue(*serverURL), "/api/rollouts", req, operatorTokenValue(*operatorTokenFlag))
 	if err != nil {
@@ -2599,6 +2606,18 @@ func parseCLISelector(selector string) (map[string]string, error) {
 	return labels, nil
 }
 
+func parseCLIStartAt(value string) (time.Time, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}, nil
+	}
+	startAt, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("--start-at must be an RFC3339 timestamp")
+	}
+	return startAt.UTC(), nil
+}
+
 func uniqueTrimmedCLIStrings(values []string) []string {
 	seen := map[string]struct{}{}
 	result := []string{}
@@ -2930,6 +2949,9 @@ func printRolloutSummary(w io.Writer, rollout protocol.Rollout) {
 	fmt.Fprintf(w, "Runtime: %s\n", rolloutRuntimeLabel(rollout))
 	fmt.Fprintf(w, "Target: %s\n", providerModelLabel(rollout.Spec.Target))
 	fmt.Fprintf(w, "Batch size: %d\n", rollout.Spec.BatchSize)
+	if !rollout.Spec.StartAt.IsZero() {
+		fmt.Fprintf(w, "Start at: %s\n", timeLabel(rollout.Spec.StartAt))
+	}
 	if rollout.Spec.AutoRollbackOnFailure {
 		fmt.Fprintln(w, "Auto-rollback: on")
 	}
@@ -2941,17 +2963,18 @@ func printRolloutSummary(w io.Writer, rollout protocol.Rollout) {
 
 func printRolloutsTable(w io.Writer, rollouts []protocol.Rollout) {
 	table := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(table, "ROLLOUT\tSTATE\tMODE\tTARGET\tRUNTIME\tBATCHES\tUPDATED")
+	fmt.Fprintln(table, "ROLLOUT\tSTATE\tMODE\tTARGET\tRUNTIME\tBATCHES\tSTART\tUPDATED")
 	for _, rollout := range rollouts {
 		fmt.Fprintf(
 			table,
-			"%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			"%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			valueOrDash(rollout.ID),
 			valueOrDash(string(rollout.State)),
 			rolloutMode(rollout),
 			providerModelLabel(rollout.Spec.Target),
 			rolloutRuntimeLabel(rollout),
 			rolloutBatchProgressLabel(rollout),
+			timeLabel(rollout.Spec.StartAt),
 			timeLabel(rollout.UpdatedAt),
 		)
 	}

@@ -151,6 +151,7 @@ function RolloutCreateForm({
   const [runtimeType, setRuntimeType] = useState('hermes')
   const [profile, setProfile] = useState('default')
   const [batchSize, setBatchSize] = useState(1)
+  const [startAt, setStartAt] = useState('')
   const [live, setLive] = useState(false)
   const [confirmedLive, setConfirmedLive] = useState(false)
   const [autoRollback, setAutoRollback] = useState(false)
@@ -195,6 +196,8 @@ function RolloutCreateForm({
     if (Object.keys(parsedSelector).length > 0 && nodes.length > 0) return 'selector and nodes conflict'
     if (!provider.trim() || !model.trim()) return 'provider and model required'
     if (batchSize <= 0) return 'batch size must be positive'
+    const parsedStartAt = parseStartAtInput(startAt)
+    if (parsedStartAt.error) return parsedStartAt.error
     return {
       selector: Object.keys(parsedSelector).length > 0 ? parsedSelector : undefined,
       nodeIds: nodes.length > 0 ? nodes : undefined,
@@ -202,6 +205,7 @@ function RolloutCreateForm({
       profile: profile.trim(),
       target: { provider: provider.trim(), model: model.trim() },
       batchSize,
+      startAt: parsedStartAt.value,
       live,
       autoRollbackOnFailure: live ? autoRollback : undefined,
     }
@@ -270,6 +274,11 @@ function RolloutCreateForm({
       setFormError('batch size must be positive')
       return
     }
+    const parsedStartAt = parseStartAtInput(startAt)
+    if (parsedStartAt.error) {
+      setFormError(parsedStartAt.error)
+      return
+    }
     if (live && !confirmedLive) {
       setFormError('confirm live rollout')
       return
@@ -284,6 +293,7 @@ function RolloutCreateForm({
         profile: profile.trim(),
         target: { provider: provider.trim(), model: model.trim() },
         batchSize,
+        startAt: parsedStartAt.value,
         live,
         autoRollbackOnFailure: live ? autoRollback : undefined,
       },
@@ -331,6 +341,9 @@ function RolloutCreateForm({
         </Field>
         <Field label="Batch">
           <input className={inputClassName} type="number" min={1} value={batchSize} onChange={(event) => setBatchSize(Number(event.target.value))} />
+        </Field>
+        <Field label="Start">
+          <input className={inputClassName} type="datetime-local" value={startAt} onChange={(event) => setStartAt(event.target.value)} />
         </Field>
         <div className="grid gap-2">
           <label className="flex h-9 items-center gap-2 rounded-lg border border-[var(--sp-border)] bg-[var(--sp-surface-2)] px-3 text-xs text-[var(--sp-muted)]">
@@ -436,9 +449,9 @@ function RolloutDetail({
           </div>
           <div className="flex flex-wrap gap-2">
             <ActionButton
-              disabled={!tokenReady || actioning || terminal || rollout.state === 'paused'}
+              disabled={!tokenReady || actioning || terminal || rollout.state === 'paused' || rollout.state === 'scheduled'}
               label="Pause"
-              reason={!tokenReady ? 'operator token required' : terminal ? 'terminal rollout' : rollout.state === 'paused' ? 'already paused' : 'pause rollout'}
+              reason={!tokenReady ? 'operator token required' : terminal ? 'terminal rollout' : rollout.state === 'paused' ? 'already paused' : rollout.state === 'scheduled' ? 'abort scheduled rollouts before start' : 'pause rollout'}
               onClick={() => onAction('pause')}
             />
             <ActionButton
@@ -458,8 +471,9 @@ function RolloutDetail({
         </div>
       </div>
 
-      <div className="grid gap-px bg-[var(--sp-border)] sm:grid-cols-3">
+      <div className="grid gap-px bg-[var(--sp-border)] sm:grid-cols-4">
         <Metric label="Created" value={formatRelativeTime(rollout.createdAt)} title={formatDate(rollout.createdAt)} />
+        <Metric label="Start" value={rollout.spec.startAt ? formatDate(rollout.spec.startAt) : 'immediate'} />
         <Metric label="Updated" value={formatRelativeTime(rollout.updatedAt)} title={formatDate(rollout.updatedAt)} />
         <Metric label="Batches" value={batchProgress(rollout)} />
       </div>
@@ -603,6 +617,14 @@ function parseNodeIds(value: string): string[] {
     result.push(nodeId)
   }
   return result
+}
+
+function parseStartAtInput(value: string): { value?: string; error?: string } {
+  const trimmed = value.trim()
+  if (!trimmed) return {}
+  const date = new Date(trimmed)
+  if (Number.isNaN(date.getTime())) return { error: 'start time is invalid' }
+  return { value: date.toISOString() }
 }
 
 function rolloutTargetLabel(rollout: Rollout): string {

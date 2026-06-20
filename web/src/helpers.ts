@@ -144,6 +144,8 @@ export function rolloutBadgeClasses(state: RolloutState): string {
   switch (state) {
     case 'pending':
       return 'border-[var(--sp-border)] bg-[var(--sp-surface-2)] text-[var(--sp-muted)]'
+    case 'scheduled':
+      return 'border-violet-500/30 bg-violet-500/10 text-violet-600'
     case 'running':
       return 'border-sky-500/30 bg-sky-500/10 text-sky-600'
     case 'paused':
@@ -349,7 +351,7 @@ export function fleetOverviewMetrics(nodes: NodeStatus[], jobsByNode: Record<str
 }
 
 function isActiveRollout(rollout: Rollout): boolean {
-  return rollout.state === 'pending' || rollout.state === 'running' || rollout.state === 'paused'
+  return rollout.state === 'pending' || rollout.state === 'scheduled' || rollout.state === 'running' || rollout.state === 'paused'
 }
 
 export function snapshotForRuntime(runtime: RuntimeStatus, snapshots: RuntimeConfigSnapshot[]): RuntimeConfigSnapshot | undefined {

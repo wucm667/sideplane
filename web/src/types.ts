@@ -64,7 +64,7 @@ export interface ListRollbackBackupsResponse {
   limit: number
 }
 
-export type RolloutState = 'pending' | 'running' | 'paused' | 'completed' | 'aborted' | 'failed'
+export type RolloutState = 'pending' | 'scheduled' | 'running' | 'paused' | 'completed' | 'aborted' | 'failed'
 export type RolloutBatchState = 'pending' | 'running' | 'completed' | 'paused' | 'failed'
 export type RolloutNodeState = 'pending' | 'dispatched' | 'succeeded' | 'failed' | 'timed_out' | 'offline'
 export type RolloutAction = 'pause' | 'resume' | 'abort'
@@ -76,6 +76,7 @@ export interface RolloutSpec {
   profile?: string
   target: ProviderModelConfig
   batchSize?: number
+  startAt?: string
   live: boolean
   autoRollbackOnFailure?: boolean
   healthTimeout?: number

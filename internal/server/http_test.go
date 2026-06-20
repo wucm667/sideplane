@@ -3959,6 +3959,23 @@ func TestRolloutAPIValidationAndAuth(t *testing.T) {
 	handler.ServeHTTP(rec, req)
 	assertAPIError(t, rec, http.StatusUnauthorized, "unauthorized", http.StatusText(http.StatusUnauthorized))
 
+	startAt := time.Now().UTC().Add(time.Hour).Truncate(time.Second)
+	scheduled := valid
+	scheduled.Spec.StartAt = startAt
+	body, _ = json.Marshal(scheduled)
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/rollouts", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer dev-token")
+	handler.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusCreated)
+	var scheduledResp protocol.CreateRolloutResponse
+	if err := json.NewDecoder(rec.Body).Decode(&scheduledResp); err != nil {
+		t.Fatalf("decode scheduled rollout: %v", err)
+	}
+	if scheduledResp.Rollout.State != protocol.RolloutStateScheduled || !scheduledResp.Rollout.Spec.StartAt.Equal(startAt) {
+		t.Fatalf("scheduled rollout = %+v, want scheduled startAt %s", scheduledResp.Rollout, startAt)
+	}
+
 	tests := []struct {
 		name string
 		req  protocol.CreateRolloutRequest
@@ -3996,6 +4013,24 @@ func TestRolloutAPIValidationAndAuth(t *testing.T) {
 				Target:      protocol.ProviderModelConfig{Provider: "openai", Model: "gpt-5"},
 			}},
 		},
+		{
+			name: "startAt too far past",
+			req: protocol.CreateRolloutRequest{Spec: protocol.RolloutSpec{
+				NodeIDs:     []string{"node-a"},
+				RuntimeType: "hermes",
+				Target:      protocol.ProviderModelConfig{Provider: "openai", Model: "gpt-5"},
+				StartAt:     time.Now().UTC().Add(-48 * time.Hour),
+			}},
+		},
+		{
+			name: "startAt too far future",
+			req: protocol.CreateRolloutRequest{Spec: protocol.RolloutSpec{
+				NodeIDs:     []string{"node-a"},
+				RuntimeType: "hermes",
+				Target:      protocol.ProviderModelConfig{Provider: "openai", Model: "gpt-5"},
+				StartAt:     time.Now().UTC().Add(366 * 24 * time.Hour),
+			}},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -4009,6 +4044,12 @@ func TestRolloutAPIValidationAndAuth(t *testing.T) {
 			}
 		})
 	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/rollouts", strings.NewReader(`{"spec":{"nodeIds":["node-a"],"runtimeType":"hermes","target":{"provider":"openai","model":"gpt-5"},"startAt":"not-rfc3339"}}`))
+	req.Header.Set("Authorization", "Bearer dev-token")
+	handler.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusBadRequest)
 
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodGet, "/api/rollouts", nil)

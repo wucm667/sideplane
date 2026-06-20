@@ -33,6 +33,8 @@ const (
 	largeJSONBodyLimit        = int64(4 << 20)
 	defaultBackupListLimit    = 50
 	maxBackupListLimit        = 500
+	rolloutStartAtPastLimit   = 24 * time.Hour
+	rolloutStartAtFutureLimit = 365 * 24 * time.Hour
 	// maxAuditExportLimit matches the store's filtered audit listing cap.
 	maxAuditExportLimit = 500
 )
@@ -822,9 +824,13 @@ func (h *handler) createRollout(w http.ResponseWriter, r *http.Request) {
 	spec.NodeIDs = nodeIDs
 	spec.Selector = cloneStringMap(spec.Selector)
 	now := time.Now().UTC()
+	state := protocol.RolloutStatePending
+	if rolloutStartsInFuture(spec, now) {
+		state = protocol.RolloutStateScheduled
+	}
 	created, err := h.store.CreateRollout(r.Context(), protocol.Rollout{
 		Spec:      spec,
-		State:     protocol.RolloutStatePending,
+		State:     state,
 		Batches:   rolloutengine.PlanBatches(nodeIDs, spec.BatchSize),
 		CreatedAt: now,
 		UpdatedAt: now,
@@ -1045,6 +1051,9 @@ func normalizeRolloutSpec(spec protocol.RolloutSpec) (protocol.RolloutSpec, erro
 	spec.Selector = selector
 	spec.Target.Provider = strings.TrimSpace(spec.Target.Provider)
 	spec.Target.Model = strings.TrimSpace(spec.Target.Model)
+	if !spec.StartAt.IsZero() {
+		spec.StartAt = spec.StartAt.UTC()
+	}
 	return spec, nil
 }
 
@@ -1061,7 +1070,28 @@ func validateRolloutSpec(spec protocol.RolloutSpec) error {
 	if err := spconfig.ValidateProviderModelSelection(spec.Target); err != nil {
 		return fmt.Errorf("invalid target provider/model: %w", err)
 	}
+	if err := validateRolloutStartAt(spec.StartAt, time.Now().UTC()); err != nil {
+		return err
+	}
 	return nil
+}
+
+func validateRolloutStartAt(startAt time.Time, now time.Time) error {
+	if startAt.IsZero() {
+		return nil
+	}
+	startAt = startAt.UTC()
+	if startAt.Before(now.Add(-rolloutStartAtPastLimit)) {
+		return fmt.Errorf("startAt is too far in the past")
+	}
+	if startAt.After(now.Add(rolloutStartAtFutureLimit)) {
+		return fmt.Errorf("startAt is too far in the future")
+	}
+	return nil
+}
+
+func rolloutStartsInFuture(spec protocol.RolloutSpec, now time.Time) bool {
+	return !spec.StartAt.IsZero() && now.Before(spec.StartAt.UTC())
 }
 
 func (h *handler) resolveRolloutNodes(ctx context.Context, spec protocol.RolloutSpec) ([]string, error) {

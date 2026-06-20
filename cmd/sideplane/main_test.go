@@ -688,8 +688,27 @@ func TestRolloutCreateLiveRequiresYes(t *testing.T) {
 	}
 }
 
+func TestRolloutCreateRejectsInvalidStartAt(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{
+		"rollout", "create",
+		"--node", "node-a",
+		"--provider", "openai",
+		"--model", "gpt-4o",
+		"--start-at", "tomorrow",
+	}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("run returned 0, want failure")
+	}
+	if !strings.Contains(stderr.String(), "--start-at must be an RFC3339 timestamp") {
+		t.Fatalf("stderr = %q, want start-at validation error", stderr.String())
+	}
+}
+
 func TestRolloutCreateJSONUsesSelectorAndLiveOptions(t *testing.T) {
 	created := testRollout("rollout-json", protocol.RolloutStateRunning)
+	startAt := time.Date(2026, 6, 20, 14, 30, 0, 0, time.UTC)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/api/rollouts" {
 			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
@@ -709,6 +728,9 @@ func TestRolloutCreateJSONUsesSelectorAndLiveOptions(t *testing.T) {
 		}
 		if req.Spec.BatchSize != 2 || req.Spec.HealthTimeout != 30*time.Second {
 			t.Fatalf("batch/timeout = %d/%s, want 2/30s", req.Spec.BatchSize, req.Spec.HealthTimeout)
+		}
+		if !req.Spec.StartAt.Equal(startAt) {
+			t.Fatalf("startAt = %s, want %s", req.Spec.StartAt, startAt)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
@@ -730,6 +752,7 @@ func TestRolloutCreateJSONUsesSelectorAndLiveOptions(t *testing.T) {
 		"--profile", "worker",
 		"--batch-size", "2",
 		"--health-timeout", "30s",
+		"--start-at", startAt.Format(time.RFC3339),
 		"--live",
 		"--yes",
 		"--json",
@@ -747,10 +770,13 @@ func TestRolloutCreateJSONUsesSelectorAndLiveOptions(t *testing.T) {
 }
 
 func TestRolloutListTableAndJSON(t *testing.T) {
+	startAt := time.Date(2026, 6, 20, 14, 30, 0, 0, time.UTC)
+	scheduled := testRollout("rollout-b", protocol.RolloutStateScheduled)
+	scheduled.Spec.StartAt = startAt
 	resp := protocol.ListRolloutsResponse{
 		Rollouts: []protocol.Rollout{
 			testRollout("rollout-a", protocol.RolloutStateRunning),
-			testRollout("rollout-b", protocol.RolloutStatePaused),
+			scheduled,
 		},
 		Total: 2,
 		Limit: 50,
@@ -774,7 +800,7 @@ func TestRolloutListTableAndJSON(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("table run returned %d, stderr=%q", code, stderr.String())
 	}
-	for _, want := range []string{"ROLLOUT", "rollout-a", "running", "dry-run", "openai / gpt-4o"} {
+	for _, want := range []string{"ROLLOUT", "START", "rollout-a", "running", "rollout-b", "scheduled", startAt.Format(time.RFC3339), "dry-run", "openai / gpt-4o"} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("table output missing %q:\n%s", want, stdout.String())
 		}
@@ -797,6 +823,8 @@ func TestRolloutListTableAndJSON(t *testing.T) {
 
 func TestRolloutStatusTableJSONAndWatch(t *testing.T) {
 	running := testRollout("rollout-watch", protocol.RolloutStateRunning)
+	startAt := time.Date(2026, 6, 20, 14, 30, 0, 0, time.UTC)
+	running.Spec.StartAt = startAt
 	completed := testRollout("rollout-watch", protocol.RolloutStateCompleted)
 	completed.Batches[0].State = protocol.RolloutBatchStateCompleted
 	completed.Batches[0].Nodes["node-a"] = protocol.RolloutNodeProgress{NodeID: "node-a", JobID: "job-a", State: protocol.RolloutNodeStateSucceeded}
@@ -825,7 +853,7 @@ func TestRolloutStatusTableJSONAndWatch(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("status run returned %d, stderr=%q", code, stderr.String())
 	}
-	for _, want := range []string{"Rollout: rollout-watch", "Batches:", "Nodes:", "node-a", "job-a"} {
+	for _, want := range []string{"Rollout: rollout-watch", "Start at: " + startAt.Format(time.RFC3339), "Batches:", "Nodes:", "node-a", "job-a"} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("status output missing %q:\n%s", want, stdout.String())
 		}
