@@ -21,21 +21,24 @@ The current repository includes these foundations:
 - Operator-managed labels and selector filtering for fleet views and staged rollouts.
 - Backup inventory discovery from config-apply results with stable rollback references.
 - Staged provider/model fleet rollouts with sequential batches, dry-run default, live drift health gates, pause/resume/abort controls, opt-in auto-rollback of a failed live batch's already-applied nodes, and reusable rollout templates.
-- Production-ops surface: scoped operator tokens (admin/readonly), online SQLite backup with on-demand and scheduled retention, bulk deep probes and label assignment by selector, outbound alert webhooks with optional HMAC signing, audit-log export (ndjson/csv), and expected-sidecar-version drift flagging.
+- Rollout safety hardening: creation-time overlap guard for non-terminal rollout targets, `allowOverlap` override for intentional concurrency, scheduled rollout state in the API contract, and operator-visible conflict errors.
+- Sidecar delivery resilience: latest-wins heartbeat retry and a bounded in-memory job-result retry buffer that drops the oldest queued result on overflow.
+- Production-ops surface: scoped operator tokens (admin/readonly), online SQLite backup with on-demand and scheduled retention, server config-file loading with flag/env/file/default precedence, bulk deep probes and label assignment by selector, generic and Slack-compatible outbound alert webhooks, optional HMAC signing for generic webhooks, audit-log export (ndjson/csv), and expected-sidecar-version drift flagging.
 - Compact React/Vite Web UI for fleet overview metrics, node detail, labels, backup discovery, config diff/apply wizard, desired config history/revert, rollouts, audit history, enrollment, named tokens with scopes, alert webhooks, server settings, fleet multi-select bulk actions, a Cmd/Ctrl-K command palette, keyboard navigation, node removal, and job expansion.
-- CLI coverage for fleet status, labels, bulk probe/label, rollouts and rollout templates, backups, named tokens with scopes, audit list/export, alert webhooks, server settings, desired config history/revert, config files, and shell completion.
+- CLI coverage for fleet status, labels, bulk probe/label, rollouts and rollout templates, rollout overlap override, backups, named tokens with scopes, audit list/export, alert webhooks with channel kind selection, server settings, desired config history/revert, config files, JSON version output, and shell completion.
 - Edge-deployment surface: in-process TLS with an optional HTTP→HTTPS redirector, reverse-proxy/base-path serving, node maintenance mode (excluded from rollouts/bulk ops with suppressed alerts), scheduled rollouts via `startAt`, read-only runtime health checks (healthy/degraded/unknown), rollout and webhook Prometheus metrics, `whoami`/`status` endpoints, and acting-token-name attribution in audit and alerts.
-- Docker Compose deployment, optional Prometheus/Grafana observability assets, Linux systemd units, install script, and server-embedded Web assets.
+- Docker Compose deployment, optional Prometheus/Grafana observability assets with example alert rules, Linux systemd units, install script, release/recovery runbooks, and server-embedded Web assets.
+- Regression coverage around the operator lifecycle, token revocation and scopes, desired-config revert edges, Web SSE reconnect, and hardening UI surfaces.
 
 ## MVP Hardening Next
 
-Near-term work should make the existing operator path more complete and easier
-to verify:
+Near-term work should continue turning the implemented operator path into
+boring day-2 infrastructure:
 
-- Expand end-to-end API/CLI/Web regression coverage around rollout edge cases, token revocation, SSE reconnect, and desired-config revert.
-- Improve sidecar doctor/read-only smoke workflows, store migration visibility, SQLite reliability settings, and retention observability.
-- Continue hardening adapter validation, request-size limits, auth comparisons, path-safety tests, Docker/systemd packaging, release artifacts, and install checksum verification.
-- Add release-oriented docs for operating rollouts, recovering from paused batches, and upgrading server/sidecar binaries.
+- Improve store migration visibility, SQLite reliability settings, and retention observability.
+- Broaden adapter validation and path-safety tests as Hermes/OpenClaw configuration shapes stabilize.
+- Keep Docker/systemd packaging, release artifact generation, and install checksum verification exercised in CI before every tag.
+- Expand upgrade guidance after the first real pre-1.0 release candidate is cut and tested by operators.
 - Keep UI density and accessibility polished as more operator workflows move from CLI to Web.
 
 ## Later
@@ -59,3 +62,4 @@ to verify:
 - Kubernetes-first deployment or operator
 - Sidecar binary self-update (the server flags version drift; it never downloads or runs new binaries)
 - Built-in ACME/automatic certificate issuance (bring your own cert/key or terminate TLS at a reverse proxy)
+- SMTP/email alerting in the hardening wave (alert channels are generic JSON and Slack-compatible webhooks)

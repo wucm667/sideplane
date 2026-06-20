@@ -24,6 +24,9 @@ This project follows the spirit of Keep a Changelog and will use semantic versio
 - Added in-process TLS serving with cert/key validation and an optional HTTP→HTTPS redirector, plus reverse-proxy/base-path serving with probes kept at the root.
 - Added node maintenance mode (excluded from rollout/bulk targeting with suppressed offline/drift alerts) and scheduled rollouts via an optional `startAt` time.
 - Added read-only runtime health checks, rollout and webhook Prometheus metrics, `whoami`/`status` endpoints, and acting-token-name attribution in audit events and rollout alerts.
+- Added rollout overlap protection: new rollouts return `409` when resolved nodes are already in non-terminal rollouts unless `allowOverlap` is set.
+- Added server config-file loading with flag/env/file/default precedence and a `sideplane-server config-file path` helper.
+- Added Slack-compatible alert webhook channels while keeping HMAC signing scoped to generic JSON webhooks.
 
 ### Sidecar
 
@@ -32,6 +35,7 @@ This project follows the spirit of Keep a Changelog and will use semantic versio
 - Added allowlisted OpenClaw service restart controller parity with Hermes.
 - Added sidecar `doctor` diagnostics and read-only local smoke coverage.
 - Added read-only runtime health checks (healthy/degraded/unknown) reported in heartbeat snapshots without contacting external networks or restarting anything.
+- Added latest-wins heartbeat retry and a bounded in-memory job-result retry buffer with oldest-result drop-on-overflow behavior.
 
 ### CLI
 
@@ -40,6 +44,7 @@ This project follows the spirit of Keep a Changelog and will use semantic versio
 - Added table and JSON output paths, wait/poll flows for operator jobs, bounded list flags, and compatibility with legacy and paginated node-list responses.
 - Added bulk `probe --selector` and `node label --selector`, operator token `--scope`, rollout `--auto-rollback` and `--template`, `rollout template` create/list/delete, `audit export`, `webhook` create/list/delete, and `settings` get/set.
 - Added `node maintenance --on|--off`, rollout `--start-at`, `whoami`, `status`, runtime health in `node inspect`, and acting-token-name display in audit output.
+- Added rollout `--allow-overlap`, webhook `--kind generic|slack`, and JSON version output.
 
 ### Web UI
 
@@ -50,12 +55,14 @@ This project follows the spirit of Keep a Changelog and will use semantic versio
 - Added Playwright visual smoke coverage for Fleet, Node detail, Activity, Enrollment, Config wizard, and Rollouts at desktop and mobile widths.
 - Added operator token scope controls, alert webhook management, server settings, fleet multi-select bulk probe/label actions, sidecar-outdated badges, rollout template save/picker, and a Cmd/Ctrl-K command palette.
 - Added node maintenance toggles and badges, scheduled-rollout start time input, runtime health badges, acting-token-name in the audit view, and server base-path awareness for API/SSE/asset URLs.
+- Added rollout overlap controls and alert webhook kind selection, plus Playwright smoke coverage for SSE reconnect and hardening surfaces.
 
 ### Infrastructure
 
 - Added embedded web assets served by `sideplane-server`, Docker Compose deployment, hardened systemd units, verified release download support in `install.sh`, release artifact workflow, CI timeouts, race/smoke checks, OpenAPI contract checks, and community issue/PR templates.
 - Added optional Prometheus/Grafana compose assets and a pre-provisioned Sideplane dashboard.
 - Added README, security policy, roadmap, contributing guide, changelog, and operator docs for live-write preflight, read-only sidecar deployment, config apply, fleet rollouts, and smoke testing.
+- Added runtime-health Grafana panels, example Prometheus alert rules, OpenAPI refresh for hardening fields, release checklist/runbook docs, and operator recovery runbooks.
 
 ### Adapters
 
