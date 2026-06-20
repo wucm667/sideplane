@@ -35,6 +35,7 @@ type NodeStatus struct {
 	ConfigHash      string            `json:"configHash,omitempty"`
 	LastError       string            `json:"lastError,omitempty"`
 	Labels          map[string]string `json:"labels,omitempty"`
+	Maintenance     bool              `json:"maintenance,omitempty"`
 }
 
 // NodeStatusWithDrift is the operator-facing node status view.
@@ -75,6 +76,17 @@ type NodeLabelsRequest struct {
 type NodeLabelsResponse struct {
 	NodeID string            `json:"nodeId"`
 	Labels map[string]string `json:"labels"`
+}
+
+// NodeMaintenanceRequest updates operator-set node maintenance mode.
+type NodeMaintenanceRequest struct {
+	Maintenance bool `json:"maintenance"`
+}
+
+// NodeMaintenanceResponse returns operator-set node maintenance mode.
+type NodeMaintenanceResponse struct {
+	NodeID      string `json:"nodeId"`
+	Maintenance bool   `json:"maintenance"`
 }
 
 // BulkNodeLabelsRequest merges Labels onto every node matched by Selector or

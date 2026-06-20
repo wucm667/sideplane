@@ -216,6 +216,10 @@ INSERT INTO heartbeats (
 	if err != nil {
 		return protocol.NodeStatus{}, err
 	}
+	node.Maintenance, err = s.GetNodeMaintenance(ctx, node.NodeID)
+	if err != nil {
+		return protocol.NodeStatus{}, err
+	}
 
 	return node, nil
 }
@@ -227,7 +231,7 @@ func (s *SQLiteNodeStore) ListNodes(ctx context.Context) ([]protocol.NodeStatus,
 	}
 
 	rows, err := s.db.QueryContext(ctx, `
-SELECT node_id, hostname, state, sidecar_version, last_heartbeat_at, config_hash, last_error
+SELECT node_id, hostname, state, sidecar_version, last_heartbeat_at, config_hash, last_error, maintenance
 FROM nodes
 ORDER BY node_id
 `)
@@ -296,7 +300,7 @@ func (s *SQLiteNodeStore) ListNodesFiltered(ctx context.Context, filter NodeFilt
 	}
 
 	rows, err := s.db.QueryContext(ctx, `
-SELECT node_id, hostname, state, sidecar_version, last_heartbeat_at, config_hash, last_error
+SELECT node_id, hostname, state, sidecar_version, last_heartbeat_at, config_hash, last_error, maintenance
 FROM nodes
 ORDER BY node_id
 LIMIT ? OFFSET ?
@@ -350,6 +354,7 @@ func scanSQLiteNodes(rows *sql.Rows) ([]protocol.NodeStatus, map[string]int, err
 		var node protocol.NodeStatus
 		var state string
 		var lastHeartbeatAt string
+		var maintenance int
 		if err := rows.Scan(
 			&node.NodeID,
 			&node.Hostname,
@@ -358,6 +363,7 @@ func scanSQLiteNodes(rows *sql.Rows) ([]protocol.NodeStatus, map[string]int, err
 			&lastHeartbeatAt,
 			&node.ConfigHash,
 			&node.LastError,
+			&maintenance,
 		); err != nil {
 			return nil, nil, fmt.Errorf("scan node: %w", err)
 		}
@@ -368,6 +374,7 @@ func scanSQLiteNodes(rows *sql.Rows) ([]protocol.NodeStatus, map[string]int, err
 		}
 		node.State = protocol.NodeState(state)
 		node.LastHeartbeatAt = parsed
+		node.Maintenance = maintenance != 0
 
 		indexByNodeID[node.NodeID] = len(nodes)
 		nodes = append(nodes, node)
@@ -558,6 +565,53 @@ ORDER BY key
 		return nil, nil
 	}
 	return labels, nil
+}
+
+// SetNodeMaintenance updates operator-set maintenance mode for a node.
+func (s *SQLiteNodeStore) SetNodeMaintenance(ctx context.Context, nodeID string, maintenance bool) error {
+	if s == nil || s.db == nil {
+		return errors.New("sqlite node store is closed")
+	}
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" {
+		return errors.New("node ID is required")
+	}
+	value := 0
+	if maintenance {
+		value = 1
+	}
+	res, err := s.db.ExecContext(ctx, `UPDATE nodes SET maintenance = ?, updated_at = ? WHERE node_id = ?`, value, formatDBTime(time.Now().UTC()), nodeID)
+	if err != nil {
+		return fmt.Errorf("set node maintenance: %w", err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("count node maintenance update: %w", err)
+	}
+	if affected == 0 {
+		return ErrNodeNotFound
+	}
+	return nil
+}
+
+// GetNodeMaintenance returns operator-set maintenance mode for a node.
+func (s *SQLiteNodeStore) GetNodeMaintenance(ctx context.Context, nodeID string) (bool, error) {
+	if s == nil || s.db == nil {
+		return false, errors.New("sqlite node store is closed")
+	}
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" {
+		return false, errors.New("node ID is required")
+	}
+	var maintenance int
+	err := s.db.QueryRowContext(ctx, `SELECT maintenance FROM nodes WHERE node_id = ?`, nodeID).Scan(&maintenance)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, ErrNodeNotFound
+	}
+	if err != nil {
+		return false, fmt.Errorf("query node maintenance: %w", err)
+	}
+	return maintenance != 0, nil
 }
 
 // DeleteNode removes a node and all node-scoped associated data.

@@ -3625,6 +3625,80 @@ func TestNodeLabelsAPIRequiresAuthAndValidatesSelector(t *testing.T) {
 	assertAPIError(t, rec, http.StatusBadRequest, "bad_request", "selector entries must use key=value")
 }
 
+func TestNodeMaintenanceAPISetListsAndAudits(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	enrollTestNode(t, nodeStore, "node-maint")
+	handler, err := NewHandlerWithConfig(HandlerConfig{
+		Store:         nodeStore,
+		Freshness:     DefaultFreshnessPolicy(),
+		OperatorToken: "dev-token",
+	})
+	if err != nil {
+		t.Fatalf("build handler: %v", err)
+	}
+
+	body, _ := json.Marshal(protocol.NodeMaintenanceRequest{Maintenance: true})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/nodes/node-maint/maintenance", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer dev-token")
+	handler.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusOK)
+	var resp protocol.NodeMaintenanceResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode maintenance response: %v", err)
+	}
+	if resp.NodeID != "node-maint" || !resp.Maintenance {
+		t.Fatalf("maintenance response = %#v, want node-maint true", resp)
+	}
+
+	if _, err := nodeStore.RecordHeartbeat(context.Background(), protocol.HeartbeatRequest{NodeID: "node-maint"}, time.Now().UTC()); err != nil {
+		t.Fatalf("record heartbeat after maintenance: %v", err)
+	}
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/nodes", nil)
+	handler.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusOK)
+	nodesResp := decodeListNodesResponse(t, rec)
+	if nodesResp.Total != 1 || len(nodesResp.Nodes) != 1 || !nodesResp.Nodes[0].Maintenance {
+		t.Fatalf("nodes response = total:%d %#v, want maintenance node", nodesResp.Total, nodesResp.Nodes)
+	}
+
+	events, err := nodeStore.ListAuditEventsFiltered(context.Background(), store.AuditFilter{
+		Action: audit.ActionNodeMaintenanceUpdate,
+		Limit:  10,
+	})
+	if err != nil {
+		t.Fatalf("list audit events: %v", err)
+	}
+	if len(events) != 1 || events[0].TargetNode != "node-maint" || !strings.Contains(events[0].Detail, "maintenance=on") {
+		t.Fatalf("maintenance audit events = %#v, want node maintenance on event", events)
+	}
+}
+
+func TestNodeMaintenanceAPIRequiresAuthAndExistingNode(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	enrollTestNode(t, nodeStore, "node-maint")
+	handler, err := NewHandlerWithConfig(HandlerConfig{
+		Store:         nodeStore,
+		Freshness:     DefaultFreshnessPolicy(),
+		OperatorToken: "dev-token",
+	})
+	if err != nil {
+		t.Fatalf("build handler: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/nodes/node-maint/maintenance", strings.NewReader(`{"maintenance":true}`))
+	handler.ServeHTTP(rec, req)
+	assertAPIError(t, rec, http.StatusUnauthorized, "unauthorized", http.StatusText(http.StatusUnauthorized))
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPut, "/api/nodes/missing/maintenance", strings.NewReader(`{"maintenance":true}`))
+	req.Header.Set("Authorization", "Bearer dev-token")
+	handler.ServeHTTP(rec, req)
+	assertAPIError(t, rec, http.StatusNotFound, "not_found", "node not found")
+}
+
 func TestRolloutAPICreateListGetActionsAndAudit(t *testing.T) {
 	nodeStore := store.NewMemoryNodeStore()
 	for _, nodeID := range []string{"node-a", "node-b", "node-c"} {
@@ -4421,6 +4495,14 @@ func (s staticNodeStore) SetNodeLabels(context.Context, string, map[string]strin
 
 func (s staticNodeStore) GetNodeLabels(context.Context, string) (map[string]string, error) {
 	return nil, nil
+}
+
+func (s staticNodeStore) SetNodeMaintenance(context.Context, string, bool) error {
+	return nil
+}
+
+func (s staticNodeStore) GetNodeMaintenance(context.Context, string) (bool, error) {
+	return false, nil
 }
 
 func (s staticNodeStore) DeleteNode(context.Context, string) error {

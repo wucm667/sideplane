@@ -77,8 +77,9 @@ func TestRuntimeStatusJSONShape(t *testing.T) {
 
 func TestNodeStatusJSONIncludesOperatorLabels(t *testing.T) {
 	status := NodeStatus{
-		NodeID: "node-a",
-		State:  NodeStateFresh,
+		NodeID:      "node-a",
+		State:       NodeStateFresh,
+		Maintenance: true,
 		Labels: map[string]string{
 			"role":   "canary",
 			"region": "local",
@@ -96,6 +97,9 @@ func TestNodeStatusJSONIncludesOperatorLabels(t *testing.T) {
 	}
 	if _, ok := got["labels"]; !ok {
 		t.Fatalf("node status JSON omits labels: %s", payload)
+	}
+	if got["maintenance"] != true {
+		t.Fatalf("node status JSON maintenance = %#v, want true", got["maintenance"])
 	}
 }
 

@@ -4,8 +4,8 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	"encoding/hex"
 	"encoding/csv"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1306,7 +1306,7 @@ func hasKnownProviderModel(value protocol.ProviderModelConfig) bool {
 
 // nodeJobsRouter handles node-scoped API routes under /api/nodes/{nodeId}.
 func (h *handler) nodeJobsRouter(w http.ResponseWriter, r *http.Request) {
-	// Parse path: /api/nodes/{nodeId}/{labels|backups|jobs|config-apply|restart|rollback}
+	// Parse path: /api/nodes/{nodeId}/{labels|maintenance|backups|jobs|config-apply|restart|rollback}
 	path := strings.TrimPrefix(r.URL.Path, "/api/nodes/")
 	parts := strings.Split(path, "/")
 	nodeID := strings.TrimSpace(parts[0])
@@ -1340,6 +1340,13 @@ func (h *handler) nodeJobsRouter(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Allow", http.MethodGet+", "+http.MethodPut)
 			writeAPIError(w, http.StatusMethodNotAllowed, http.StatusText(http.StatusMethodNotAllowed))
 		}
+	case "maintenance":
+		if r.Method != http.MethodPut {
+			w.Header().Set("Allow", http.MethodPut)
+			writeAPIError(w, http.StatusMethodNotAllowed, http.StatusText(http.StatusMethodNotAllowed))
+			return
+		}
+		h.setNodeMaintenance(w, r, nodeID)
 	case "backups":
 		if r.Method != http.MethodGet {
 			w.Header().Set("Allow", http.MethodGet)
@@ -1516,6 +1523,41 @@ func nodeLabelsAuditDetail(labels map[string]string) string {
 	}
 	sort.Strings(keys)
 	return "labels=" + strings.Join(keys, ",")
+}
+
+func (h *handler) setNodeMaintenance(w http.ResponseWriter, r *http.Request, nodeID string) {
+	if !h.authorizeOperator(w, r) {
+		return
+	}
+	var req protocol.NodeMaintenanceRequest
+	if err := decodeJSONRequest(w, r, defaultJSONBodyLimit, &req); err != nil {
+		writeJSONDecodeError(w, err, "invalid node maintenance JSON")
+		return
+	}
+	if err := h.store.SetNodeMaintenance(r.Context(), nodeID, req.Maintenance); err != nil {
+		if errors.Is(err, store.ErrNodeNotFound) {
+			writeAPIError(w, http.StatusNotFound, "node not found")
+			return
+		}
+		writeAPIError(w, http.StatusInternalServerError, "set node maintenance")
+		return
+	}
+	state := "off"
+	if req.Maintenance {
+		state = "on"
+	}
+	now := time.Now().UTC()
+	h.audit(r.Context(), protocol.AuditEvent{
+		Actor:      audit.ActorOperator,
+		Action:     audit.ActionNodeMaintenanceUpdate,
+		TargetNode: nodeID,
+		Detail:     "maintenance=" + state,
+		CreatedAt:  now,
+	})
+	writeJSON(w, http.StatusOK, protocol.NodeMaintenanceResponse{
+		NodeID:      nodeID,
+		Maintenance: req.Maintenance,
+	})
 }
 
 func (h *handler) deleteNode(w http.ResponseWriter, r *http.Request, nodeID string) {

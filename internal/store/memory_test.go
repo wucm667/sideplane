@@ -188,6 +188,48 @@ func TestMemoryNodeStoreSetGetOverwriteAndDeleteLabels(t *testing.T) {
 	}
 }
 
+func TestMemoryNodeStoreSetGetMaintenance(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryNodeStore()
+	now := time.Date(2026, 6, 16, 1, 2, 3, 0, time.UTC)
+	if _, err := store.RecordHeartbeat(ctx, protocol.HeartbeatRequest{NodeID: "node-maint"}, now); err != nil {
+		t.Fatalf("record heartbeat: %v", err)
+	}
+	if err := store.SetNodeMaintenance(ctx, "node-maint", true); err != nil {
+		t.Fatalf("set maintenance: %v", err)
+	}
+	maintenance, err := store.GetNodeMaintenance(ctx, "node-maint")
+	if err != nil {
+		t.Fatalf("get maintenance: %v", err)
+	}
+	if !maintenance {
+		t.Fatalf("maintenance = false, want true")
+	}
+	if _, err := store.RecordHeartbeat(ctx, protocol.HeartbeatRequest{NodeID: "node-maint"}, now.Add(time.Second)); err != nil {
+		t.Fatalf("record second heartbeat: %v", err)
+	}
+	nodes, err := store.ListNodes(ctx)
+	if err != nil {
+		t.Fatalf("list nodes: %v", err)
+	}
+	if len(nodes) != 1 || !nodes[0].Maintenance {
+		t.Fatalf("listed maintenance = %#v, want true", nodes)
+	}
+	if err := store.SetNodeMaintenance(ctx, "node-maint", false); err != nil {
+		t.Fatalf("clear maintenance: %v", err)
+	}
+	maintenance, err = store.GetNodeMaintenance(ctx, "node-maint")
+	if err != nil {
+		t.Fatalf("get cleared maintenance: %v", err)
+	}
+	if maintenance {
+		t.Fatalf("cleared maintenance = true, want false")
+	}
+	if err := store.SetNodeMaintenance(ctx, "missing", true); !errors.Is(err, ErrNodeNotFound) {
+		t.Fatalf("missing node set maintenance error = %v, want ErrNodeNotFound", err)
+	}
+}
+
 func TestMemoryNodeStoreLabelValidationAndDeleteCascade(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemoryNodeStore()

@@ -89,6 +89,7 @@ func (s *MemoryNodeStore) RecordHeartbeat(_ context.Context, req protocol.Heartb
 	defer s.mu.Unlock()
 	if existing, ok := s.nodes[req.NodeID]; ok {
 		node.Labels = cloneLabels(existing.Labels)
+		node.Maintenance = existing.Maintenance
 	}
 	s.nodes[req.NodeID] = node
 	if s.heartbeats == nil {
@@ -190,6 +191,40 @@ func (s *MemoryNodeStore) GetNodeLabels(_ context.Context, nodeID string) (map[s
 		return nil, ErrNodeNotFound
 	}
 	return cloneLabels(node.Labels), nil
+}
+
+// SetNodeMaintenance updates operator-set maintenance mode for a node.
+func (s *MemoryNodeStore) SetNodeMaintenance(_ context.Context, nodeID string, maintenance bool) error {
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" {
+		return errors.New("node ID is required")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	node, ok := s.nodes[nodeID]
+	if !ok {
+		return ErrNodeNotFound
+	}
+	node.Maintenance = maintenance
+	s.nodes[nodeID] = node
+	return nil
+}
+
+// GetNodeMaintenance returns operator-set maintenance mode for a node.
+func (s *MemoryNodeStore) GetNodeMaintenance(_ context.Context, nodeID string) (bool, error) {
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" {
+		return false, errors.New("node ID is required")
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	node, ok := s.nodes[nodeID]
+	if !ok {
+		return false, ErrNodeNotFound
+	}
+	return node.Maintenance, nil
 }
 
 // DeleteNode removes a node and all node-scoped associated data.

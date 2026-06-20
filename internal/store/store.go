@@ -183,6 +183,8 @@ type NodeStore interface {
 	NodeExists(ctx context.Context, nodeID string) (bool, error)
 	SetNodeLabels(ctx context.Context, nodeID string, labels map[string]string) error
 	GetNodeLabels(ctx context.Context, nodeID string) (map[string]string, error)
+	SetNodeMaintenance(ctx context.Context, nodeID string, maintenance bool) error
+	GetNodeMaintenance(ctx context.Context, nodeID string) (bool, error)
 	DeleteNode(ctx context.Context, nodeID string) error
 	PruneHeartbeats(ctx context.Context, keep int) (int64, error)
 }

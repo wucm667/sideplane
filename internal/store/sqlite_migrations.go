@@ -278,6 +278,13 @@ ON heartbeats(node_id, observed_at DESC)`,
 	ON rollout_templates(created_at DESC, id DESC)`,
 		},
 	},
+	{
+		version: 16,
+		name:    "add node maintenance mode",
+		statements: []string{
+			`ALTER TABLE nodes ADD COLUMN maintenance INTEGER NOT NULL DEFAULT 0`,
+		},
+	},
 }
 
 // LatestSQLiteSchemaVersion returns the newest migration version compiled into
