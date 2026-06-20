@@ -72,6 +72,7 @@ type HandlerConfig struct {
 	SigningKeyPath                  string
 	SigningKeyPair                  spcrypto.KeyPair
 	DisableSigningKey               bool
+	RateLimits                      RateLimitConfig
 	Events                          *EventHub
 	Logger                          *slog.Logger
 }
@@ -97,17 +98,26 @@ func NewHandlerWithConfig(cfg HandlerConfig) (http.Handler, error) {
 		}
 		keyPair = loaded
 	}
+	rateLimits := normalizeRateLimitConfig(cfg.RateLimits)
 
 	handler := &handler{
-		store:        cfg.Store,
-		freshness:    freshness,
-		operatorAuth: auth.NewOperatorTokenWithVerifier(cfg.OperatorToken, cfg.AllowUnauthenticatedOperatorAPI, cfg.Store),
-		signingKey:   keyPair,
-		events:       cfg.Events,
-		eventTickets: newEventTicketStore(),
-		metrics:      NewMetrics(),
-		timedOutJobs: map[string]struct{}{},
-		logger:       cfg.Logger,
+		store:               cfg.Store,
+		freshness:           freshness,
+		operatorAuth:        auth.NewOperatorTokenWithVerifier(cfg.OperatorToken, cfg.AllowUnauthenticatedOperatorAPI, cfg.Store),
+		signingKey:          keyPair,
+		events:              cfg.Events,
+		eventTickets:        newEventTicketStore(),
+		enrollmentLimiter:   newFixedWindowRateLimiter(rateLimits.enrollmentLimit, rateLimits.window, rateLimits.now),
+		operatorAuthLimiter: newFixedWindowRateLimiter(rateLimits.operatorAuthLimit, rateLimits.window, rateLimits.now),
+		metrics:             NewMetrics(),
+		timedOutJobs:        map[string]struct{}{},
+		logger:              cfg.Logger,
+	}
+	if rateLimits.disableEnrollment {
+		handler.enrollmentLimiter = nil
+	}
+	if rateLimits.disableOperatorAuth {
+		handler.operatorAuthLimiter = nil
 	}
 	if handler.logger == nil {
 		handler.logger = discardLogger()
@@ -142,16 +152,18 @@ func NewHandlerWithConfig(cfg HandlerConfig) (http.Handler, error) {
 }
 
 type handler struct {
-	store        store.Store
-	freshness    FreshnessPolicy
-	operatorAuth auth.OperatorToken
-	signingKey   spcrypto.KeyPair
-	events       *EventHub
-	eventTickets *eventTicketStore
-	metrics      *Metrics
-	timedOutMu   sync.Mutex
-	timedOutJobs map[string]struct{}
-	logger       *slog.Logger
+	store               store.Store
+	freshness           FreshnessPolicy
+	operatorAuth        auth.OperatorToken
+	signingKey          spcrypto.KeyPair
+	events              *EventHub
+	eventTickets        *eventTicketStore
+	enrollmentLimiter   *fixedWindowRateLimiter
+	operatorAuthLimiter *fixedWindowRateLimiter
+	metrics             *Metrics
+	timedOutMu          sync.Mutex
+	timedOutJobs        map[string]struct{}
+	logger              *slog.Logger
 }
 
 func jsonStatusHandler(status string) http.HandlerFunc {
@@ -387,6 +399,10 @@ func (h *handler) enrollNode(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
 		writeAPIError(w, http.StatusMethodNotAllowed, http.StatusText(http.StatusMethodNotAllowed))
+		return
+	}
+	if ok, retryAfter := h.enrollmentLimiter.allow(remoteRateLimitKey(r)); !ok {
+		writeRateLimited(w, retryAfter)
 		return
 	}
 
@@ -2261,6 +2277,10 @@ func writeJSONDecodeError(w http.ResponseWriter, err error, message string) {
 func (h *handler) authorizeOperator(w http.ResponseWriter, r *http.Request) bool {
 	if h.operatorAuth.AuthorizeHeaderContext(r.Context(), r.Header.Get("Authorization")) {
 		return true
+	}
+	if ok, retryAfter := h.operatorAuthLimiter.allow(remoteRateLimitKey(r)); !ok {
+		writeRateLimited(w, retryAfter)
+		return false
 	}
 	writeAPIError(w, http.StatusUnauthorized, http.StatusText(http.StatusUnauthorized))
 	return false

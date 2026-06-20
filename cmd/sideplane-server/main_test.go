@@ -61,6 +61,9 @@ func TestServerEnvFallbacksApplyWhenFlagsUnset(t *testing.T) {
 	t.Setenv("SIDEPLANE_JOB_RETENTION", "720h")
 	t.Setenv("SIDEPLANE_AUDIT_RETENTION", "4320h")
 	t.Setenv("SIDEPLANE_ROLLOUT_INTERVAL", "15s")
+	t.Setenv("SIDEPLANE_ENROLLMENT_RATE_LIMIT", "7")
+	t.Setenv("SIDEPLANE_OPERATOR_AUTH_RATE_LIMIT", "11")
+	t.Setenv("SIDEPLANE_RATE_LIMIT_WINDOW", "45s")
 
 	addr := ":8080"
 	dbPath := "sideplane.db"
@@ -71,17 +74,23 @@ func TestServerEnvFallbacksApplyWhenFlagsUnset(t *testing.T) {
 	jobRetention := 30 * 24 * time.Hour
 	auditRetention := 180 * 24 * time.Hour
 	rolloutInterval := defaultRolloutInterval
+	enrollmentRateLimit := 20
+	operatorAuthRateLimit := 60
+	rateLimitWindow := time.Minute
 
 	if err := applyServerEnvFallbacks(map[string]bool{}, serverFlagValues{
-		addr:               &addr,
-		dbPath:             &dbPath,
-		webDir:             &webDir,
-		staleAfter:         &staleAfter,
-		offlineAfter:       &offlineAfter,
-		heartbeatRetention: &heartbeatRetention,
-		jobRetention:       &jobRetention,
-		auditRetention:     &auditRetention,
-		rolloutInterval:    &rolloutInterval,
+		addr:                  &addr,
+		dbPath:                &dbPath,
+		webDir:                &webDir,
+		staleAfter:            &staleAfter,
+		offlineAfter:          &offlineAfter,
+		heartbeatRetention:    &heartbeatRetention,
+		jobRetention:          &jobRetention,
+		auditRetention:        &auditRetention,
+		rolloutInterval:       &rolloutInterval,
+		enrollmentRateLimit:   &enrollmentRateLimit,
+		operatorAuthRateLimit: &operatorAuthRateLimit,
+		rateLimitWindow:       &rateLimitWindow,
 	}); err != nil {
 		t.Fatalf("apply env fallbacks: %v", err)
 	}
@@ -112,6 +121,15 @@ func TestServerEnvFallbacksApplyWhenFlagsUnset(t *testing.T) {
 	}
 	if rolloutInterval != 15*time.Second {
 		t.Fatalf("rollout interval = %s, want 15s", rolloutInterval)
+	}
+	if enrollmentRateLimit != 7 {
+		t.Fatalf("enrollment rate limit = %d, want 7", enrollmentRateLimit)
+	}
+	if operatorAuthRateLimit != 11 {
+		t.Fatalf("operator auth rate limit = %d, want 11", operatorAuthRateLimit)
+	}
+	if rateLimitWindow != 45*time.Second {
+		t.Fatalf("rate limit window = %s, want 45s", rateLimitWindow)
 	}
 }
 
@@ -184,6 +202,49 @@ func TestRunRejectsNegativeRolloutInterval(t *testing.T) {
 	}
 	if stdout.Len() != 0 {
 		t.Fatalf("stdout = %q, want empty", stdout.String())
+	}
+}
+
+func TestRunRejectsInvalidRateLimits(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{
+			name: "enrollment",
+			args: []string{"--enrollment-rate-limit=-1"},
+			want: "enrollment-rate-limit must be zero or positive",
+		},
+		{
+			name: "operator auth",
+			args: []string{"--operator-auth-rate-limit=-1"},
+			want: "operator-auth-rate-limit must be zero or positive",
+		},
+		{
+			name: "window",
+			args: []string{"--rate-limit-window=0s"},
+			want: "rate-limit-window must be positive",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+
+			code := run(tt.args, &stdout, &stderr)
+
+			if code == 0 {
+				t.Fatalf("exit code = 0, want non-zero")
+			}
+			if !strings.Contains(stderr.String(), tt.want) {
+				t.Fatalf("stderr = %q, want %q", stderr.String(), tt.want)
+			}
+			if stdout.Len() != 0 {
+				t.Fatalf("stdout = %q, want empty", stdout.String())
+			}
+		})
 	}
 }
 

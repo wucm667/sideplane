@@ -46,6 +46,9 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	jobRetention := flags.Duration("job-retention", store.DefaultJobRetention, "age to retain completed and failed jobs; set 0 to disable pruning")
 	auditRetention := flags.Duration("audit-retention", store.DefaultAuditRetention, "age to retain audit events; set 0 to disable pruning")
 	rolloutInterval := flags.Duration("rollout-interval", defaultRolloutInterval, "interval between rollout reconciliation ticks; set 0 to disable")
+	enrollmentRateLimit := flags.Int("enrollment-rate-limit", server.DefaultEnrollmentRateLimit, "max enrollment attempts per remote address per rate-limit-window; set 0 to disable")
+	operatorAuthRateLimit := flags.Int("operator-auth-rate-limit", server.DefaultOperatorAuthRateLimit, "max failed operator auth attempts per remote address per rate-limit-window; set 0 to disable")
+	rateLimitWindow := flags.Duration("rate-limit-window", server.DefaultRateLimitWindow, "fixed window for enrollment and operator auth rate limits")
 	operatorTokenFlag := flags.String("operator-token", "", "bearer token required for mutating operator API requests; can also be set with SIDEPLANE_OPERATOR_TOKEN")
 	allowUnauthenticatedOperatorAPIFlag := flags.Bool("allow-unauthenticated-operator-api", false, "DEVELOPMENT ONLY: allow mutating operator API requests without an operator token; can also be set with SIDEPLANE_ALLOW_UNAUTHENTICATED_OPERATOR_API=true")
 	signingKeyPath := flags.String("signing-key", "", "path to server config-plan signing key; can also be set with SIDEPLANE_SIGNING_KEY")
@@ -61,15 +64,18 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 
 	setFlags := visitedFlags(flags)
 	if err := applyServerEnvFallbacks(setFlags, serverFlagValues{
-		addr:               addr,
-		dbPath:             dbPath,
-		webDir:             webDir,
-		staleAfter:         staleAfter,
-		offlineAfter:       offlineAfter,
-		heartbeatRetention: heartbeatRetention,
-		jobRetention:       jobRetention,
-		auditRetention:     auditRetention,
-		rolloutInterval:    rolloutInterval,
+		addr:                  addr,
+		dbPath:                dbPath,
+		webDir:                webDir,
+		staleAfter:            staleAfter,
+		offlineAfter:          offlineAfter,
+		heartbeatRetention:    heartbeatRetention,
+		jobRetention:          jobRetention,
+		auditRetention:        auditRetention,
+		rolloutInterval:       rolloutInterval,
+		enrollmentRateLimit:   enrollmentRateLimit,
+		operatorAuthRateLimit: operatorAuthRateLimit,
+		rateLimitWindow:       rateLimitWindow,
 	}); err != nil {
 		fmt.Fprintf(stderr, "invalid environment configuration: %v\n", err)
 		return 1
@@ -97,6 +103,18 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 	if *rolloutInterval < 0 {
 		fmt.Fprintln(stderr, "invalid rollout interval: rollout-interval must be zero or positive")
+		return 1
+	}
+	if *enrollmentRateLimit < 0 {
+		fmt.Fprintln(stderr, "invalid enrollment rate limit: enrollment-rate-limit must be zero or positive")
+		return 1
+	}
+	if *operatorAuthRateLimit < 0 {
+		fmt.Fprintln(stderr, "invalid operator auth rate limit: operator-auth-rate-limit must be zero or positive")
+		return 1
+	}
+	if *rateLimitWindow <= 0 {
+		fmt.Fprintln(stderr, "invalid rate limit window: rate-limit-window must be positive")
 		return 1
 	}
 
@@ -150,7 +168,14 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		OperatorToken:                   operatorToken,
 		AllowUnauthenticatedOperatorAPI: allowUnauthenticatedOperatorAPI,
 		SigningKeyPair:                  signingKey,
-		Logger:                          logger,
+		RateLimits: server.RateLimitConfig{
+			EnrollmentLimit:     *enrollmentRateLimit,
+			OperatorAuthLimit:   *operatorAuthRateLimit,
+			Window:              *rateLimitWindow,
+			DisableEnrollment:   *enrollmentRateLimit == 0,
+			DisableOperatorAuth: *operatorAuthRateLimit == 0,
+		},
+		Logger: logger,
 	})
 	if err != nil {
 		logger.Error("configure freshness policy", "error", err)
@@ -201,6 +226,9 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		"job_retention", jobRetention.String(),
 		"audit_retention", auditRetention.String(),
 		"rollout_interval", rolloutInterval.String(),
+		"enrollment_rate_limit", *enrollmentRateLimit,
+		"operator_auth_rate_limit", *operatorAuthRateLimit,
+		"rate_limit_window", rateLimitWindow.String(),
 		"schema_version", schemaVersion,
 	)
 
@@ -233,15 +261,18 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 }
 
 type serverFlagValues struct {
-	addr               *string
-	dbPath             *string
-	webDir             *string
-	staleAfter         *time.Duration
-	offlineAfter       *time.Duration
-	heartbeatRetention *int
-	jobRetention       *time.Duration
-	auditRetention     *time.Duration
-	rolloutInterval    *time.Duration
+	addr                  *string
+	dbPath                *string
+	webDir                *string
+	staleAfter            *time.Duration
+	offlineAfter          *time.Duration
+	heartbeatRetention    *int
+	jobRetention          *time.Duration
+	auditRetention        *time.Duration
+	rolloutInterval       *time.Duration
+	enrollmentRateLimit   *int
+	operatorAuthRateLimit *int
+	rateLimitWindow       *time.Duration
 }
 
 func startHeartbeatPruner(ctx context.Context, nodeStore store.NodeStore, keep int, interval time.Duration, logger *slog.Logger) {
@@ -334,6 +365,15 @@ func applyServerEnvFallbacks(setFlags map[string]bool, values serverFlagValues) 
 		return err
 	}
 	if err := applyDurationEnvFallback(setFlags, "rollout-interval", "SIDEPLANE_ROLLOUT_INTERVAL", values.rolloutInterval); err != nil {
+		return err
+	}
+	if err := applyIntEnvFallback(setFlags, "enrollment-rate-limit", "SIDEPLANE_ENROLLMENT_RATE_LIMIT", values.enrollmentRateLimit); err != nil {
+		return err
+	}
+	if err := applyIntEnvFallback(setFlags, "operator-auth-rate-limit", "SIDEPLANE_OPERATOR_AUTH_RATE_LIMIT", values.operatorAuthRateLimit); err != nil {
+		return err
+	}
+	if err := applyDurationEnvFallback(setFlags, "rate-limit-window", "SIDEPLANE_RATE_LIMIT_WINDOW", values.rateLimitWindow); err != nil {
 		return err
 	}
 	return nil
