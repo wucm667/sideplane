@@ -176,6 +176,16 @@ func ValidateOperatorTokenName(name string) (string, error) {
 	return name, nil
 }
 
+// ValidateOperatorTokenScope defaults an empty scope to admin and rejects
+// unknown scopes.
+func ValidateOperatorTokenScope(scope protocol.OperatorTokenScope) (protocol.OperatorTokenScope, error) {
+	normalized, ok := protocol.NormalizeOperatorTokenScope(scope)
+	if !ok {
+		return "", errors.New("operator token scope must be admin or readonly")
+	}
+	return normalized, nil
+}
+
 func NormalizeNodeFilter(filter NodeFilter) NodeFilter {
 	if filter.Limit <= 0 {
 		filter.Limit = DefaultNodeListLimit
@@ -224,10 +234,10 @@ type EnrollmentStore interface {
 
 // OperatorTokenStore persists named, revocable operator API tokens.
 type OperatorTokenStore interface {
-	CreateOperatorToken(ctx context.Context, name string, now time.Time) (protocol.CreateOperatorTokenResponse, error)
+	CreateOperatorToken(ctx context.Context, name string, scope protocol.OperatorTokenScope, now time.Time) (protocol.CreateOperatorTokenResponse, error)
 	ListOperatorTokens(ctx context.Context) ([]protocol.OperatorToken, error)
 	RevokeOperatorToken(ctx context.Context, tokenID string, now time.Time) (protocol.OperatorToken, error)
-	VerifyOperatorToken(ctx context.Context, token string) (string, bool, error)
+	VerifyOperatorToken(ctx context.Context, token string) (string, protocol.OperatorTokenScope, bool, error)
 	UpdateOperatorTokenLastUsed(ctx context.Context, tokenID string, usedAt time.Time) error
 }
 

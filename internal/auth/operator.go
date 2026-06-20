@@ -5,6 +5,8 @@ import (
 	"crypto/subtle"
 	"strings"
 	"time"
+
+	"github.com/wucm667/sideplane/pkg/protocol"
 )
 
 // OperatorTokenEnv is the environment variable used to configure operator auth.
@@ -24,8 +26,16 @@ type OperatorToken struct {
 
 // OperatorTokenVerifier verifies named operator tokens stored outside auth.
 type OperatorTokenVerifier interface {
-	VerifyOperatorToken(ctx context.Context, token string) (string, bool, error)
+	VerifyOperatorToken(ctx context.Context, token string) (string, protocol.OperatorTokenScope, bool, error)
 	UpdateOperatorTokenLastUsed(ctx context.Context, tokenID string, usedAt time.Time) error
+}
+
+// OperatorIdentity is the authorized identity resolved from an Authorization
+// header: the token's scope, and its ID when it is a named token (empty for the
+// bootstrap token or unauthenticated dev mode).
+type OperatorIdentity struct {
+	Scope   protocol.OperatorTokenScope
+	TokenID string
 }
 
 // NewOperatorToken returns an operator token authorizer.
@@ -57,32 +67,41 @@ func (t OperatorToken) AuthorizeHeader(authorization string) bool {
 // AuthorizeHeaderContext reports whether an Authorization header matches the
 // bootstrap token or an active named token.
 func (t OperatorToken) AuthorizeHeaderContext(ctx context.Context, authorization string) bool {
+	_, ok := t.AuthorizeIdentity(ctx, authorization)
+	return ok
+}
+
+// AuthorizeIdentity resolves the authorized operator identity (scope + token
+// id) from an Authorization header. The bootstrap token and unauthenticated dev
+// mode are always admin scope with an empty token id.
+func (t OperatorToken) AuthorizeIdentity(ctx context.Context, authorization string) (OperatorIdentity, bool) {
 	if t.token == "" && t.allowUnauthenticated {
-		return true
+		return OperatorIdentity{Scope: protocol.OperatorTokenScopeAdmin}, true
 	}
 	if !t.Configured() {
-		return false
+		return OperatorIdentity{}, false
 	}
 	credential, ok := BearerToken(authorization)
 	if !ok {
-		return false
+		return OperatorIdentity{}, false
 	}
 	if t.token != "" && subtle.ConstantTimeCompare([]byte(credential), []byte(t.token)) == 1 {
-		return true
+		return OperatorIdentity{Scope: protocol.OperatorTokenScopeAdmin}, true
 	}
 	if t.verifier == nil {
-		return false
+		return OperatorIdentity{}, false
 	}
-	tokenID, ok, err := t.verifier.VerifyOperatorToken(ctx, credential)
+	tokenID, scope, ok, err := t.verifier.VerifyOperatorToken(ctx, credential)
 	if err != nil || !ok {
-		return false
+		return OperatorIdentity{}, false
 	}
 	now := time.Now
 	if t.now != nil {
 		now = t.now
 	}
 	_ = t.verifier.UpdateOperatorTokenLastUsed(ctx, tokenID, now().UTC())
-	return true
+	normalized, _ := protocol.NormalizeOperatorTokenScope(scope)
+	return OperatorIdentity{Scope: normalized, TokenID: tokenID}, true
 }
 
 // BearerToken extracts a bearer token from an Authorization header.

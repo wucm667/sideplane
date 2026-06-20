@@ -327,9 +327,14 @@ func (h *handler) createOperatorToken(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	scope, err := store.ValidateOperatorTokenScope(req.Scope)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	now := time.Now().UTC()
-	resp, err := h.store.CreateOperatorToken(r.Context(), name, now)
+	resp, err := h.store.CreateOperatorToken(r.Context(), name, scope, now)
 	if err != nil {
 		writeAPIError(w, http.StatusInternalServerError, "create operator token")
 		return
@@ -337,7 +342,7 @@ func (h *handler) createOperatorToken(w http.ResponseWriter, r *http.Request) {
 	h.audit(r.Context(), protocol.AuditEvent{
 		Actor:     audit.ActorOperator,
 		Action:    audit.ActionOperatorTokenCreate,
-		Detail:    fmt.Sprintf("operator token created id=%s name=%q", resp.OperatorToken.ID, resp.OperatorToken.Name),
+		Detail:    fmt.Sprintf("operator token created id=%s name=%q scope=%s", resp.OperatorToken.ID, resp.OperatorToken.Name, resp.OperatorToken.Scope),
 		CreatedAt: now,
 	})
 	writeJSON(w, http.StatusCreated, resp)

@@ -348,8 +348,12 @@ func (s *MemoryNodeStore) VerifyNodeCredential(_ context.Context, nodeID string,
 }
 
 // CreateOperatorToken creates a named operator token and stores only its hash.
-func (s *MemoryNodeStore) CreateOperatorToken(_ context.Context, name string, now time.Time) (protocol.CreateOperatorTokenResponse, error) {
+func (s *MemoryNodeStore) CreateOperatorToken(_ context.Context, name string, scope protocol.OperatorTokenScope, now time.Time) (protocol.CreateOperatorTokenResponse, error) {
 	name, err := ValidateOperatorTokenName(name)
+	if err != nil {
+		return protocol.CreateOperatorTokenResponse{}, err
+	}
+	scope, err = ValidateOperatorTokenScope(scope)
 	if err != nil {
 		return protocol.CreateOperatorTokenResponse{}, err
 	}
@@ -369,6 +373,7 @@ func (s *MemoryNodeStore) CreateOperatorToken(_ context.Context, name string, no
 	metadata := protocol.OperatorToken{
 		ID:        tokenID,
 		Name:      name,
+		Scope:     scope,
 		CreatedAt: now.UTC(),
 	}
 
@@ -434,24 +439,26 @@ func (s *MemoryNodeStore) RevokeOperatorToken(_ context.Context, tokenID string,
 	return cloneOperatorToken(token.Metadata), nil
 }
 
-// VerifyOperatorToken verifies an active named operator token and returns its ID.
-func (s *MemoryNodeStore) VerifyOperatorToken(_ context.Context, token string) (string, bool, error) {
+// VerifyOperatorToken verifies an active named operator token and returns its
+// ID and scope.
+func (s *MemoryNodeStore) VerifyOperatorToken(_ context.Context, token string) (string, protocol.OperatorTokenScope, bool, error) {
 	tokenHash, err := hashSecret(token)
 	if err != nil {
-		return "", false, nil
+		return "", "", false, nil
 	}
 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	tokenID, ok := s.operatorHashes[tokenHash]
 	if !ok {
-		return "", false, nil
+		return "", "", false, nil
 	}
 	metadata, ok := s.operatorTokens[tokenID]
 	if !ok || metadata.Metadata.RevokedAt != nil {
-		return "", false, nil
+		return "", "", false, nil
 	}
-	return tokenID, true, nil
+	scope, _ := protocol.NormalizeOperatorTokenScope(metadata.Metadata.Scope)
+	return tokenID, scope, true, nil
 }
 
 // UpdateOperatorTokenLastUsed records a best-effort named token use timestamp.

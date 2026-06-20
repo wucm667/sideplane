@@ -806,7 +806,7 @@ func TestCreateEnrollmentTokenRequiresConfiguredOperatorToken(t *testing.T) {
 func TestCreateEnrollmentTokenAcceptsNamedOperatorToken(t *testing.T) {
 	nodeStore := store.NewMemoryNodeStore()
 	now := time.Date(2026, 6, 18, 12, 0, 0, 0, time.UTC)
-	operatorToken, err := nodeStore.CreateOperatorToken(context.Background(), "ops laptop", now)
+	operatorToken, err := nodeStore.CreateOperatorToken(context.Background(), "ops laptop", protocol.OperatorTokenScopeAdmin, now)
 	if err != nil {
 		t.Fatalf("create operator token: %v", err)
 	}
@@ -3804,7 +3804,7 @@ func (s staticNodeStore) VerifyNodeCredential(context.Context, string, string) (
 	return false, nil
 }
 
-func (s staticNodeStore) CreateOperatorToken(context.Context, string, time.Time) (protocol.CreateOperatorTokenResponse, error) {
+func (s staticNodeStore) CreateOperatorToken(context.Context, string, protocol.OperatorTokenScope, time.Time) (protocol.CreateOperatorTokenResponse, error) {
 	return protocol.CreateOperatorTokenResponse{}, nil
 }
 
@@ -3816,8 +3816,8 @@ func (s staticNodeStore) RevokeOperatorToken(context.Context, string, time.Time)
 	return protocol.OperatorToken{}, nil
 }
 
-func (s staticNodeStore) VerifyOperatorToken(context.Context, string) (string, bool, error) {
-	return "", false, nil
+func (s staticNodeStore) VerifyOperatorToken(context.Context, string) (string, protocol.OperatorTokenScope, bool, error) {
+	return "", "", false, nil
 }
 
 func (s staticNodeStore) UpdateOperatorTokenLastUsed(context.Context, string, time.Time) error {

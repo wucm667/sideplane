@@ -226,6 +226,13 @@ ON heartbeats(node_id, observed_at DESC)`,
 	ON desired_config_history(updated_at DESC, id DESC)`,
 		},
 	},
+	{
+		version: 12,
+		name:    "add operator token scope",
+		statements: []string{
+			`ALTER TABLE operator_tokens ADD COLUMN scope TEXT NOT NULL DEFAULT 'admin'`,
+		},
+	},
 }
 
 // LatestSQLiteSchemaVersion returns the newest migration version compiled into

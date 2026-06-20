@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/wucm667/sideplane/pkg/protocol"
 )
 
 func TestOperatorTokenRejectsRequestsWhenNotConfigured(t *testing.T) {
@@ -76,21 +78,37 @@ func TestOperatorTokenIgnoresNamedTokenLastUsedFailure(t *testing.T) {
 	}
 }
 
+func TestOperatorTokenResolvesScopeIdentity(t *testing.T) {
+	verifier := &fakeOperatorTokenVerifier{acceptToken: "named-token", tokenID: "optok_named", scope: protocol.OperatorTokenScopeReadonly}
+	token := NewOperatorTokenWithVerifier("dev-token", false, verifier)
+
+	bootstrap, ok := token.AuthorizeIdentity(context.Background(), "Bearer dev-token")
+	if !ok || bootstrap.Scope != protocol.OperatorTokenScopeAdmin || bootstrap.TokenID != "" {
+		t.Fatalf("bootstrap identity = %+v ok:%t, want admin scope with empty id", bootstrap, ok)
+	}
+
+	named, ok := token.AuthorizeIdentity(context.Background(), "Bearer named-token")
+	if !ok || named.Scope != protocol.OperatorTokenScopeReadonly || named.TokenID != "optok_named" {
+		t.Fatalf("named identity = %+v ok:%t, want readonly scope optok_named", named, ok)
+	}
+}
+
 type fakeOperatorTokenVerifier struct {
 	acceptToken string
 	tokenID     string
+	scope       protocol.OperatorTokenScope
 	updateErr   error
 	verifyCalls int
 	updatedID   string
 	updatedAt   time.Time
 }
 
-func (v *fakeOperatorTokenVerifier) VerifyOperatorToken(_ context.Context, token string) (string, bool, error) {
+func (v *fakeOperatorTokenVerifier) VerifyOperatorToken(_ context.Context, token string) (string, protocol.OperatorTokenScope, bool, error) {
 	v.verifyCalls++
 	if token != v.acceptToken {
-		return "", false, nil
+		return "", "", false, nil
 	}
-	return v.tokenID, true, nil
+	return v.tokenID, v.scope, true, nil
 }
 
 func (v *fakeOperatorTokenVerifier) UpdateOperatorTokenLastUsed(_ context.Context, tokenID string, usedAt time.Time) error {

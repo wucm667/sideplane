@@ -811,11 +811,15 @@ WHERE node_id = ?
 }
 
 // CreateOperatorToken creates a named operator token and stores only its hash.
-func (s *SQLiteNodeStore) CreateOperatorToken(ctx context.Context, name string, now time.Time) (protocol.CreateOperatorTokenResponse, error) {
+func (s *SQLiteNodeStore) CreateOperatorToken(ctx context.Context, name string, scope protocol.OperatorTokenScope, now time.Time) (protocol.CreateOperatorTokenResponse, error) {
 	if s == nil || s.db == nil {
 		return protocol.CreateOperatorTokenResponse{}, errors.New("sqlite node store is closed")
 	}
 	name, err := ValidateOperatorTokenName(name)
+	if err != nil {
+		return protocol.CreateOperatorTokenResponse{}, err
+	}
+	scope, err = ValidateOperatorTokenScope(scope)
 	if err != nil {
 		return protocol.CreateOperatorTokenResponse{}, err
 	}
@@ -837,10 +841,11 @@ func (s *SQLiteNodeStore) CreateOperatorToken(ctx context.Context, name string, 
 INSERT INTO operator_tokens (
 	id,
 	name,
+	scope,
 	token_hash,
 	created_at
-) VALUES (?, ?, ?, ?)
-`, tokenID, name, tokenHash, formatDBTime(createdAt))
+) VALUES (?, ?, ?, ?, ?)
+`, tokenID, name, string(scope), tokenHash, formatDBTime(createdAt))
 	if err != nil {
 		return protocol.CreateOperatorTokenResponse{}, fmt.Errorf("insert operator token: %w", err)
 	}
@@ -849,6 +854,7 @@ INSERT INTO operator_tokens (
 		OperatorToken: protocol.OperatorToken{
 			ID:        tokenID,
 			Name:      name,
+			Scope:     scope,
 			CreatedAt: createdAt,
 		},
 		Token: token,
@@ -861,7 +867,7 @@ func (s *SQLiteNodeStore) ListOperatorTokens(ctx context.Context) ([]protocol.Op
 		return nil, errors.New("sqlite node store is closed")
 	}
 	rows, err := s.db.QueryContext(ctx, `
-SELECT id, name, created_at, last_used_at, revoked_at
+SELECT id, name, scope, created_at, last_used_at, revoked_at
 FROM operator_tokens
 ORDER BY created_at DESC, id DESC
 `)
@@ -918,29 +924,31 @@ WHERE id = ?
 	return token, nil
 }
 
-// VerifyOperatorToken verifies an active named operator token and returns its ID.
-func (s *SQLiteNodeStore) VerifyOperatorToken(ctx context.Context, token string) (string, bool, error) {
+// VerifyOperatorToken verifies an active named operator token and returns its
+// ID and scope.
+func (s *SQLiteNodeStore) VerifyOperatorToken(ctx context.Context, token string) (string, protocol.OperatorTokenScope, bool, error) {
 	if s == nil || s.db == nil {
-		return "", false, errors.New("sqlite node store is closed")
+		return "", "", false, errors.New("sqlite node store is closed")
 	}
 	tokenHash, err := hashSecret(token)
 	if err != nil {
-		return "", false, nil
+		return "", "", false, nil
 	}
 
-	var tokenID string
+	var tokenID, scopeText string
 	err = s.db.QueryRowContext(ctx, `
-SELECT id
+SELECT id, scope
 FROM operator_tokens
 WHERE token_hash = ? AND (revoked_at IS NULL OR revoked_at = '')
-`, tokenHash).Scan(&tokenID)
+`, tokenHash).Scan(&tokenID, &scopeText)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", false, nil
+		return "", "", false, nil
 	}
 	if err != nil {
-		return "", false, fmt.Errorf("query operator token: %w", err)
+		return "", "", false, fmt.Errorf("query operator token: %w", err)
 	}
-	return tokenID, true, nil
+	scope, _ := protocol.NormalizeOperatorTokenScope(protocol.OperatorTokenScope(scopeText))
+	return tokenID, scope, true, nil
 }
 
 // UpdateOperatorTokenLastUsed records a best-effort named token use timestamp.
@@ -1827,7 +1835,7 @@ type sqliteScanner interface {
 
 func (s *SQLiteNodeStore) loadOperatorToken(ctx context.Context, tokenID string) (protocol.OperatorToken, error) {
 	return scanSQLiteOperatorToken(s.db.QueryRowContext(ctx, `
-SELECT id, name, created_at, last_used_at, revoked_at
+SELECT id, name, scope, created_at, last_used_at, revoked_at
 FROM operator_tokens
 WHERE id = ?
 `, tokenID))
@@ -1835,11 +1843,12 @@ WHERE id = ?
 
 func scanSQLiteOperatorToken(scanner sqliteScanner) (protocol.OperatorToken, error) {
 	var token protocol.OperatorToken
-	var createdAtText string
+	var scopeText, createdAtText string
 	var lastUsedAtText, revokedAtText sql.NullString
-	if err := scanner.Scan(&token.ID, &token.Name, &createdAtText, &lastUsedAtText, &revokedAtText); err != nil {
+	if err := scanner.Scan(&token.ID, &token.Name, &scopeText, &createdAtText, &lastUsedAtText, &revokedAtText); err != nil {
 		return protocol.OperatorToken{}, err
 	}
+	token.Scope, _ = protocol.NormalizeOperatorTokenScope(protocol.OperatorTokenScope(scopeText))
 	createdAt, err := parseDBTime(createdAtText)
 	if err != nil {
 		return protocol.OperatorToken{}, fmt.Errorf("parse operator token created_at: %w", err)

@@ -572,7 +572,7 @@ func TestSQLiteOperatorTokenFlow(t *testing.T) {
 	defer store.Close()
 
 	now := time.Date(2026, 6, 18, 12, 0, 0, 0, time.UTC)
-	created, err := store.CreateOperatorToken(ctx, "ops laptop", now)
+	created, err := store.CreateOperatorToken(ctx, "ops laptop", "", now)
 	if err != nil {
 		t.Fatalf("create operator token: %v", err)
 	}
@@ -581,6 +581,9 @@ func TestSQLiteOperatorTokenFlow(t *testing.T) {
 	}
 	if created.OperatorToken.ID == "" || created.OperatorToken.Name != "ops laptop" {
 		t.Fatalf("operator token metadata = %+v, want id/name", created.OperatorToken)
+	}
+	if created.OperatorToken.Scope != protocol.OperatorTokenScopeAdmin {
+		t.Fatalf("operator token scope = %q, want admin default", created.OperatorToken.Scope)
 	}
 	assertSQLiteDoesNotContainPlaintext(t, ctx, store.db, "operator_tokens", created.Token)
 
@@ -591,15 +594,18 @@ func TestSQLiteOperatorTokenFlow(t *testing.T) {
 	if len(tokens) != 1 || tokens[0].ID != created.OperatorToken.ID || tokens[0].Name != "ops laptop" {
 		t.Fatalf("operator token list = %+v, want created metadata", tokens)
 	}
+	if tokens[0].Scope != protocol.OperatorTokenScopeAdmin {
+		t.Fatalf("listed operator token scope = %q, want admin", tokens[0].Scope)
+	}
 
-	tokenID, ok, err := store.VerifyOperatorToken(ctx, created.Token)
+	tokenID, scope, ok, err := store.VerifyOperatorToken(ctx, created.Token)
 	if err != nil {
 		t.Fatalf("verify operator token: %v", err)
 	}
-	if !ok || tokenID != created.OperatorToken.ID {
-		t.Fatalf("verify operator token = id:%q ok:%t, want created token", tokenID, ok)
+	if !ok || tokenID != created.OperatorToken.ID || scope != protocol.OperatorTokenScopeAdmin {
+		t.Fatalf("verify operator token = id:%q scope:%q ok:%t, want created admin token", tokenID, scope, ok)
 	}
-	_, ok, err = store.VerifyOperatorToken(ctx, "wrong token")
+	_, _, ok, err = store.VerifyOperatorToken(ctx, "wrong token")
 	if err != nil {
 		t.Fatalf("verify wrong operator token: %v", err)
 	}
@@ -626,7 +632,7 @@ func TestSQLiteOperatorTokenFlow(t *testing.T) {
 	if revoked.RevokedAt == nil {
 		t.Fatalf("revokedAt is nil")
 	}
-	_, ok, err = store.VerifyOperatorToken(ctx, created.Token)
+	_, _, ok, err = store.VerifyOperatorToken(ctx, created.Token)
 	if err != nil {
 		t.Fatalf("verify revoked operator token: %v", err)
 	}
