@@ -75,9 +75,10 @@ type ListAlertWebhooksResponse struct {
 // AlertWebhookPayload is the small JSON body delivered to alert webhooks. It
 // never contains secrets.
 type AlertWebhookPayload struct {
-	Event     AlertEventType `json:"event"`
-	NodeID    string         `json:"nodeId,omitempty"`
-	RolloutID string         `json:"rolloutId,omitempty"`
-	Detail    string         `json:"detail,omitempty"`
-	OccurredAt time.Time     `json:"occurredAt"`
+	Event      AlertEventType `json:"event"`
+	NodeID     string         `json:"nodeId,omitempty"`
+	RolloutID  string         `json:"rolloutId,omitempty"`
+	Actor      string         `json:"actor,omitempty"`
+	Detail     string         `json:"detail,omitempty"`
+	OccurredAt time.Time      `json:"occurredAt"`
 }

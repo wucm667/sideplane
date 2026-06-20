@@ -285,6 +285,13 @@ ON heartbeats(node_id, observed_at DESC)`,
 			`ALTER TABLE nodes ADD COLUMN maintenance INTEGER NOT NULL DEFAULT 0`,
 		},
 	},
+	{
+		version: 17,
+		name:    "add audit actor name",
+		statements: []string{
+			`ALTER TABLE audit_events ADD COLUMN actor_name TEXT NOT NULL DEFAULT ''`,
+		},
+	},
 }
 
 // LatestSQLiteSchemaVersion returns the newest migration version compiled into

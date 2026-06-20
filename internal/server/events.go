@@ -238,8 +238,16 @@ func publishJobEvent(hub *EventHub, job protocol.Job) {
 }
 
 func publishRolloutEvent(hub *EventHub, rollout protocol.Rollout) {
-	hub.publish("rollout", map[string]string{
+	publishRolloutEventWithActor(hub, rollout, "")
+}
+
+func publishRolloutEventWithActor(hub *EventHub, rollout protocol.Rollout, actor string) {
+	payload := map[string]string{
 		"rolloutId": rollout.ID,
 		"state":     string(rollout.State),
-	})
+	}
+	if actor = strings.TrimSpace(actor); actor != "" {
+		payload["actor"] = actor
+	}
+	hub.publish("rollout", payload)
 }

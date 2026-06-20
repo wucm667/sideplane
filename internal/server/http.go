@@ -1064,7 +1064,7 @@ func (h *handler) createRollout(w http.ResponseWriter, r *http.Request) {
 		Detail:    fmt.Sprintf("rollout=%s nodes=%d runtime=%s live=%t autoRollback=%t", created.ID, len(nodeIDs), spec.RuntimeType, spec.Live, spec.AutoRollbackOnFailure),
 		CreatedAt: now,
 	})
-	publishRolloutEvent(h.events, created)
+	publishRolloutEventWithActor(h.events, created, h.operatorActorName(r.Context()))
 	writeJSON(w, http.StatusCreated, protocol.CreateRolloutResponse{Rollout: created})
 }
 
@@ -1253,7 +1253,7 @@ func (h *handler) rolloutAction(w http.ResponseWriter, r *http.Request, rolloutI
 		Detail:    "rollout=" + rollout.ID,
 		CreatedAt: now,
 	})
-	publishRolloutEvent(h.events, *rollout)
+	publishRolloutEventWithActor(h.events, *rollout, h.operatorActorName(r.Context()))
 	writeJSON(w, http.StatusOK, protocol.RolloutActionResponse{Rollout: *rollout})
 }
 
@@ -3095,19 +3095,24 @@ func hashDesiredConfig(desired protocol.DesiredConfig) string {
 
 func (h *handler) audit(ctx context.Context, event protocol.AuditEvent) {
 	if event.Actor == audit.ActorOperator {
-		// Attribute the acting named token by its non-secret id. The key
-		// avoids the secret-redaction keywords (token/secret/etc.) so the
-		// attribution survives RedactString below.
-		if tokenID := operatorTokenIDFromContext(ctx); tokenID != "" {
-			if strings.TrimSpace(event.Detail) == "" {
-				event.Detail = "actor_id=" + tokenID
-			} else {
-				event.Detail = event.Detail + " actor_id=" + tokenID
-			}
+		if strings.TrimSpace(event.ActorName) == "" {
+			event.ActorName = h.operatorActorName(ctx)
 		}
 	}
 	event.Detail = spconfig.RedactString(event.Detail)
 	_, _ = h.store.AppendAuditEvent(ctx, event)
+}
+
+func (h *handler) operatorActorName(ctx context.Context) string {
+	tokenID := operatorTokenIDFromContext(ctx)
+	if tokenID == "" {
+		return "bootstrap"
+	}
+	name, err := h.operatorTokenName(ctx, tokenID)
+	if err != nil || strings.TrimSpace(name) == "" {
+		return "unknown"
+	}
+	return name
 }
 
 func redactAuditEvents(events []protocol.AuditEvent) []protocol.AuditEvent {

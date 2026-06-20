@@ -1622,6 +1622,7 @@ func TestSQLiteAuditEventsInsertAndListNewestFirst(t *testing.T) {
 	}
 	newer, err := store.AppendAuditEvent(ctx, protocol.AuditEvent{
 		Actor:      "sidecar",
+		ActorName:  "sidecar-agent",
 		Action:     "job.complete",
 		TargetNode: "node-a",
 		Detail:     "deep_probe",
@@ -1640,6 +1641,9 @@ func TestSQLiteAuditEventsInsertAndListNewestFirst(t *testing.T) {
 	}
 	if events[0].ID != newer.ID || events[0].ID == older.ID {
 		t.Fatalf("events order/limit = %#v, want newest only", events)
+	}
+	if events[0].ActorName != "sidecar-agent" {
+		t.Fatalf("actor name = %q, want sidecar-agent", events[0].ActorName)
 	}
 	assertSQLiteDoesNotContainPlaintext(t, ctx, store.db, "audit_events", "secret-token-value")
 }

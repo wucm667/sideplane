@@ -1894,6 +1894,7 @@ func (s *SQLiteNodeStore) AppendAuditEvent(ctx context.Context, event protocol.A
 		return protocol.AuditEvent{}, errors.New("sqlite node store is closed")
 	}
 	event.Actor = strings.TrimSpace(event.Actor)
+	event.ActorName = strings.TrimSpace(event.ActorName)
 	event.Action = strings.TrimSpace(event.Action)
 	event.TargetNode = strings.TrimSpace(event.TargetNode)
 	event.Detail = strings.TrimSpace(event.Detail)
@@ -1920,12 +1921,13 @@ func (s *SQLiteNodeStore) AppendAuditEvent(ctx context.Context, event protocol.A
 INSERT INTO audit_events (
 	id,
 	actor,
+	actor_name,
 	action,
 	target_node,
 	detail,
 	created_at
-) VALUES (?, ?, ?, ?, ?, ?)
-`, event.ID, event.Actor, event.Action, event.TargetNode, event.Detail, formatDBTime(event.CreatedAt))
+) VALUES (?, ?, ?, ?, ?, ?, ?)
+`, event.ID, event.Actor, event.ActorName, event.Action, event.TargetNode, event.Detail, formatDBTime(event.CreatedAt))
 	if err != nil {
 		return protocol.AuditEvent{}, fmt.Errorf("insert audit event: %w", err)
 	}
@@ -1980,7 +1982,7 @@ func (s *SQLiteNodeStore) listAuditEvents(ctx context.Context, filter AuditFilte
 	nodeID := strings.TrimSpace(filter.NodeID)
 	action := strings.TrimSpace(filter.Action)
 	rows, err := s.db.QueryContext(ctx, `
-SELECT id, actor, action, target_node, detail, created_at
+SELECT id, actor, actor_name, action, target_node, detail, created_at
 FROM audit_events
 WHERE (? = '' OR target_node = ?)
 AND (? = '' OR action = ?)
@@ -1996,7 +1998,7 @@ LIMIT ?
 	for rows.Next() {
 		var event protocol.AuditEvent
 		var createdAt string
-		if err := rows.Scan(&event.ID, &event.Actor, &event.Action, &event.TargetNode, &event.Detail, &createdAt); err != nil {
+		if err := rows.Scan(&event.ID, &event.Actor, &event.ActorName, &event.Action, &event.TargetNode, &event.Detail, &createdAt); err != nil {
 			return nil, fmt.Errorf("scan audit event: %w", err)
 		}
 		parsed, err := parseDBTime(createdAt)

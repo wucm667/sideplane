@@ -1056,6 +1056,7 @@ func (s *MemoryNodeStore) PruneTerminalRollouts(_ context.Context, before time.T
 // AppendAuditEvent stores an audit event and assigns an ID when needed.
 func (s *MemoryNodeStore) AppendAuditEvent(_ context.Context, event protocol.AuditEvent) (protocol.AuditEvent, error) {
 	event.Actor = strings.TrimSpace(event.Actor)
+	event.ActorName = strings.TrimSpace(event.ActorName)
 	event.Action = strings.TrimSpace(event.Action)
 	event.TargetNode = strings.TrimSpace(event.TargetNode)
 	event.Detail = strings.TrimSpace(event.Detail)

@@ -290,15 +290,16 @@ func mapAlertEvent(name string, data []byte, now time.Time) (protocol.AlertEvent
 		var ev struct {
 			RolloutID string `json:"rolloutId"`
 			State     string `json:"state"`
+			Actor     string `json:"actor"`
 		}
 		if err := json.Unmarshal(data, &ev); err != nil {
 			return "", protocol.AlertWebhookPayload{}, false
 		}
 		switch ev.State {
 		case string(protocol.RolloutStatePaused):
-			return protocol.AlertEventRolloutPaused, protocol.AlertWebhookPayload{Event: protocol.AlertEventRolloutPaused, RolloutID: ev.RolloutID, Detail: "rollout paused", OccurredAt: now}, true
+			return protocol.AlertEventRolloutPaused, protocol.AlertWebhookPayload{Event: protocol.AlertEventRolloutPaused, RolloutID: ev.RolloutID, Actor: ev.Actor, Detail: "rollout paused", OccurredAt: now}, true
 		case string(protocol.RolloutStateFailed):
-			return protocol.AlertEventRolloutFailed, protocol.AlertWebhookPayload{Event: protocol.AlertEventRolloutFailed, RolloutID: ev.RolloutID, Detail: "rollout failed", OccurredAt: now}, true
+			return protocol.AlertEventRolloutFailed, protocol.AlertWebhookPayload{Event: protocol.AlertEventRolloutFailed, RolloutID: ev.RolloutID, Actor: ev.Actor, Detail: "rollout failed", OccurredAt: now}, true
 		}
 	}
 	return "", protocol.AlertWebhookPayload{}, false

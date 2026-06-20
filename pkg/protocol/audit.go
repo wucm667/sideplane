@@ -6,6 +6,7 @@ import "time"
 type AuditEvent struct {
 	ID         string    `json:"id"`
 	Actor      string    `json:"actor"`
+	ActorName  string    `json:"actorName,omitempty"`
 	Action     string    `json:"action"`
 	TargetNode string    `json:"targetNode,omitempty"`
 	Detail     string    `json:"detail,omitempty"`

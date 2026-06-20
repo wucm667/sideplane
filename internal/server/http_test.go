@@ -1023,19 +1023,19 @@ func TestOperatorTokenScopeEnforcement(t *testing.T) {
 		t.Fatalf("admin POST enrollment-tokens status = %d, want 201", code)
 	}
 
-	// admin mutations record the acting token id in the audit detail.
+	// admin mutations record the acting token name in the audit actor name.
 	events, err := nodeStore.ListAuditEventsFiltered(context.Background(), store.AuditFilter{Limit: 50})
 	if err != nil {
 		t.Fatalf("list audit events: %v", err)
 	}
 	sawTokenAttribution := false
 	for _, event := range events {
-		if event.Action == audit.ActionEnrollmentTokenCreate && strings.Contains(event.Detail, "actor_id="+admin.OperatorToken.ID) {
+		if event.Action == audit.ActionEnrollmentTokenCreate && event.ActorName == admin.OperatorToken.Name {
 			sawTokenAttribution = true
 		}
 	}
 	if !sawTokenAttribution {
-		t.Fatalf("audit events missing acting token attribution for %s; events=%#v", admin.OperatorToken.ID, events)
+		t.Fatalf("audit events missing acting token attribution (actorName=%q) for enrollment.token.create; events=%#v", admin.OperatorToken.Name, events)
 	}
 }
 
