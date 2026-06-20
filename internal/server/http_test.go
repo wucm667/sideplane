@@ -3097,6 +3097,103 @@ func TestReadyzReportsStoreFailure(t *testing.T) {
 	assertAPIError(t, rec, http.StatusServiceUnavailable, "service_unavailable", "store is not ready")
 }
 
+func TestWhoamiReturnsBootstrapAndNamedOperatorToken(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 6, 20, 10, 0, 0, 0, time.UTC)
+	nodeStore := store.NewMemoryNodeStore()
+	named, err := nodeStore.CreateOperatorToken(ctx, "ops laptop", protocol.OperatorTokenScopeReadonly, now)
+	if err != nil {
+		t.Fatalf("create operator token: %v", err)
+	}
+	handler, err := NewHandlerWithConfig(HandlerConfig{
+		Store:         nodeStore,
+		Freshness:     DefaultFreshnessPolicy(),
+		OperatorToken: "bootstrap-token",
+	})
+	if err != nil {
+		t.Fatalf("build handler: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/whoami", nil)
+	handler.ServeHTTP(rec, req)
+	assertAPIError(t, rec, http.StatusUnauthorized, "unauthorized", http.StatusText(http.StatusUnauthorized))
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/whoami", nil)
+	req.Header.Set("Authorization", "Bearer bootstrap-token")
+	handler.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusOK)
+	var bootstrap protocol.WhoamiResponse
+	if err := json.NewDecoder(rec.Body).Decode(&bootstrap); err != nil {
+		t.Fatalf("decode bootstrap whoami: %v", err)
+	}
+	if bootstrap.Scope != protocol.OperatorTokenScopeAdmin || bootstrap.TokenName != "bootstrap" {
+		t.Fatalf("bootstrap whoami = %+v, want admin bootstrap", bootstrap)
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/whoami", nil)
+	req.Header.Set("Authorization", "Bearer "+named.Token)
+	handler.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusOK)
+	body := rec.Body.String()
+	if strings.Contains(body, named.Token) {
+		t.Fatalf("whoami leaked plaintext token in %s", body)
+	}
+	var got protocol.WhoamiResponse
+	if err := json.Unmarshal([]byte(body), &got); err != nil {
+		t.Fatalf("decode named whoami: %v", err)
+	}
+	if got.Scope != protocol.OperatorTokenScopeReadonly || got.TokenName != "ops laptop" {
+		t.Fatalf("named whoami = %+v, want readonly ops laptop", got)
+	}
+}
+
+func TestServerStatusReturnsCheapSummary(t *testing.T) {
+	ctx := context.Background()
+	startedAt := time.Date(2026, 6, 20, 10, 0, 0, 0, time.UTC)
+	now := startedAt.Add(2 * time.Minute)
+	nodeStore := store.NewMemoryNodeStore()
+	for _, nodeID := range []string{"node-a", "node-b"} {
+		enrollTestNode(t, nodeStore, nodeID)
+	}
+	for _, state := range []protocol.RolloutState{protocol.RolloutStatePending, protocol.RolloutStateCompleted} {
+		if _, err := nodeStore.CreateRollout(ctx, protocol.Rollout{
+			ID:        "rollout-" + string(state),
+			State:     state,
+			CreatedAt: startedAt,
+			UpdatedAt: startedAt,
+		}); err != nil {
+			t.Fatalf("create %s rollout: %v", state, err)
+		}
+	}
+	handler, err := NewHandlerWithConfig(HandlerConfig{
+		Store:         nodeStore,
+		Freshness:     DefaultFreshnessPolicy(),
+		OperatorToken: "bootstrap-token",
+		SchemaVersion: 42,
+		StartedAt:     startedAt,
+		Now:           func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatalf("build handler: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/status", nil)
+	req.Header.Set("Authorization", "Bearer bootstrap-token")
+	handler.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusOK)
+	var status protocol.ServerStatusResponse
+	if err := json.NewDecoder(rec.Body).Decode(&status); err != nil {
+		t.Fatalf("decode status: %v", err)
+	}
+	if status.Version == "" || status.UptimeSeconds != 120 || status.SchemaVersion != 42 || status.NodeCount != 2 || status.RolloutCount != 2 {
+		t.Fatalf("status = %+v, want version uptime=120 schema=42 nodes=2 rollouts=2", status)
+	}
+}
+
 func TestMetricsExposesCounters(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)

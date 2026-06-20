@@ -20,6 +20,7 @@ import (
 
 	"github.com/wucm667/sideplane/internal/audit"
 	"github.com/wucm667/sideplane/internal/auth"
+	"github.com/wucm667/sideplane/internal/buildinfo"
 	rolloutengine "github.com/wucm667/sideplane/internal/rollout"
 	"github.com/wucm667/sideplane/internal/store"
 	spconfig "github.com/wucm667/sideplane/pkg/config"
@@ -80,6 +81,9 @@ type HandlerConfig struct {
 	RateLimits                      RateLimitConfig
 	Events                          *EventHub
 	Metrics                         *Metrics
+	SchemaVersion                   int
+	StartedAt                       time.Time
+	Now                             func() time.Time
 	Logger                          *slog.Logger
 }
 
@@ -109,6 +113,16 @@ func NewHandlerWithConfig(cfg HandlerConfig) (http.Handler, error) {
 	if metrics == nil {
 		metrics = NewMetrics()
 	}
+	now := cfg.Now
+	if now == nil {
+		now = time.Now
+	}
+	startedAt := cfg.StartedAt
+	if startedAt.IsZero() {
+		startedAt = now().UTC()
+	} else {
+		startedAt = startedAt.UTC()
+	}
 
 	handler := &handler{
 		store:               cfg.Store,
@@ -120,6 +134,9 @@ func NewHandlerWithConfig(cfg HandlerConfig) (http.Handler, error) {
 		enrollmentLimiter:   newFixedWindowRateLimiter(rateLimits.enrollmentLimit, rateLimits.window, rateLimits.now),
 		operatorAuthLimiter: newFixedWindowRateLimiter(rateLimits.operatorAuthLimit, rateLimits.window, rateLimits.now),
 		metrics:             metrics,
+		schemaVersion:       cfg.SchemaVersion,
+		startedAt:           startedAt,
+		now:                 now,
 		timedOutJobs:        map[string]struct{}{},
 		logger:              cfg.Logger,
 	}
@@ -140,6 +157,8 @@ func NewHandlerWithConfig(cfg HandlerConfig) (http.Handler, error) {
 	mux.HandleFunc("/metrics", handler.metricsEndpoint)
 	mux.HandleFunc("/api/events", handler.eventsStream)
 	mux.HandleFunc("/api/events/tickets", handler.createEventTicket)
+	mux.HandleFunc("/api/whoami", handler.whoami)
+	mux.HandleFunc("/api/status", handler.serverStatus)
 	mux.HandleFunc("/api/audit", handler.auditEvents)
 	mux.HandleFunc("/api/audit/export", handler.exportAuditEvents)
 	mux.HandleFunc("/api/operator-tokens", handler.operatorTokens)
@@ -179,6 +198,9 @@ type handler struct {
 	enrollmentLimiter   *fixedWindowRateLimiter
 	operatorAuthLimiter *fixedWindowRateLimiter
 	metrics             *Metrics
+	schemaVersion       int
+	startedAt           time.Time
+	now                 func() time.Time
 	timedOutMu          sync.Mutex
 	timedOutJobs        map[string]struct{}
 	logger              *slog.Logger
@@ -210,6 +232,79 @@ func (h *handler) readyz(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
+}
+
+func (h *handler) whoami(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		writeAPIError(w, http.StatusMethodNotAllowed, http.StatusText(http.StatusMethodNotAllowed))
+		return
+	}
+	identity, ok := h.authorizeOperatorIdentity(w, r)
+	if !ok {
+		return
+	}
+	tokenName := "bootstrap"
+	if identity.TokenID != "" {
+		name, err := h.operatorTokenName(r.Context(), identity.TokenID)
+		if err != nil {
+			writeAPIError(w, http.StatusInternalServerError, "resolve operator token")
+			return
+		}
+		tokenName = name
+	}
+	writeJSON(w, http.StatusOK, protocol.WhoamiResponse{
+		Scope:     identity.Scope,
+		TokenName: tokenName,
+	})
+}
+
+func (h *handler) serverStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		writeAPIError(w, http.StatusMethodNotAllowed, http.StatusText(http.StatusMethodNotAllowed))
+		return
+	}
+	if _, ok := h.authorizeOperatorIdentity(w, r); !ok {
+		return
+	}
+	nodes, err := h.store.ListNodes(r.Context())
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "list nodes")
+		return
+	}
+	rollouts, err := h.store.ListRollouts(r.Context(), store.RolloutFilter{Limit: 1})
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "list rollouts")
+		return
+	}
+	version, commit, buildDate := buildinfo.Labels()
+	uptime := int64(h.now().UTC().Sub(h.startedAt).Seconds())
+	if uptime < 0 {
+		uptime = 0
+	}
+	writeJSON(w, http.StatusOK, protocol.ServerStatusResponse{
+		Version:       version,
+		Commit:        commit,
+		BuildDate:     buildDate,
+		UptimeSeconds: uptime,
+		SchemaVersion: h.schemaVersion,
+		NodeCount:     len(nodes),
+		RolloutCount:  rollouts.Total,
+	})
+}
+
+func (h *handler) operatorTokenName(ctx context.Context, tokenID string) (string, error) {
+	tokens, err := h.store.ListOperatorTokens(ctx)
+	if err != nil {
+		return "", err
+	}
+	for _, token := range tokens {
+		if token.ID == tokenID {
+			return token.Name, nil
+		}
+	}
+	return "unknown", nil
 }
 
 func (h *handler) metricsEndpoint(w http.ResponseWriter, r *http.Request) {
@@ -3069,18 +3164,26 @@ func isReadOnlyHTTPMethod(method string) bool {
 	return method == http.MethodGet || method == http.MethodHead
 }
 
-func (h *handler) authorizeOperator(w http.ResponseWriter, r *http.Request) bool {
+func (h *handler) authorizeOperatorIdentity(w http.ResponseWriter, r *http.Request) (auth.OperatorIdentity, bool) {
 	identity, ok := h.operatorAuth.AuthorizeIdentity(r.Context(), r.Header.Get("Authorization"))
 	if !ok {
 		if limited, retryAfter := h.operatorAuthLimiter.allow(remoteRateLimitKey(r)); !limited {
 			writeRateLimited(w, retryAfter)
-			return false
+			return auth.OperatorIdentity{}, false
 		}
 		writeAPIError(w, http.StatusUnauthorized, http.StatusText(http.StatusUnauthorized))
-		return false
+		return auth.OperatorIdentity{}, false
 	}
 	if identity.TokenID != "" {
 		*r = *r.WithContext(withOperatorTokenID(r.Context(), identity.TokenID))
+	}
+	return identity, true
+}
+
+func (h *handler) authorizeOperator(w http.ResponseWriter, r *http.Request) bool {
+	identity, ok := h.authorizeOperatorIdentity(w, r)
+	if !ok {
+		return false
 	}
 	if identity.Scope == protocol.OperatorTokenScopeReadonly && !isReadOnlyHTTPMethod(r.Method) {
 		writeAPIError(w, http.StatusForbidden, "operator token is read-only")

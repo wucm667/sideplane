@@ -225,8 +225,9 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 			DisableEnrollment:   *enrollmentRateLimit == 0,
 			DisableOperatorAuth: *operatorAuthRateLimit == 0,
 		},
-		Metrics: metrics,
-		Logger:  logger,
+		Metrics:       metrics,
+		SchemaVersion: schemaVersion,
+		Logger:        logger,
 	})
 	if err != nil {
 		logger.Error("configure freshness policy", "error", err)
