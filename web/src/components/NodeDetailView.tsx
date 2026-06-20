@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import ConfigWizard from '../ConfigWizard.tsx'
 import { apiErrorMessage, apiURL, compactHash, formatDate, formatRelativeTime, hasActiveConfigApply, hasActiveDeepProbe, hasActiveRestart, hasActiveRollback, jobBadgeClasses, latestConfigSnapshots, runtimeKey, snapshotForRuntime, stateBadgeClasses } from '../helpers.ts'
-import type { ConfigApplyResult, ConfigDiffEntry, DeepProbeResult, EffectiveConfigResponse, Job, JobStatus, NodeLabels, NodeStatus, RestartJobResult, RestartRequest, RollbackBackupInventoryItem, RollbackJobResult, RollbackRequest, RuntimeConfigSnapshot, RuntimeStatus } from '../types.ts'
+import type { ConfigApplyResult, ConfigDiffEntry, DeepProbeResult, EffectiveConfigResponse, Job, JobStatus, NodeLabels, NodeStatus, RestartJobResult, RestartRequest, RollbackBackupInventoryItem, RollbackJobResult, RollbackRequest, RuntimeConfigSnapshot, RuntimeHealth, RuntimeStatus } from '../types.ts'
 
 export function NodeDetailView({
   creating,
@@ -736,6 +736,7 @@ function MetricCard({ label, value, title, monospace = false, muted = false, ton
 function RuntimeCard({ runtime, snapshot }: { runtime: RuntimeStatus; snapshot?: RuntimeConfigSnapshot }) {
   const warnings = [...(runtime.warnings ?? []), ...(snapshot?.warnings ?? [])]
   if (runtime.lastError) warnings.unshift(runtime.lastError)
+  const health = snapshot?.health ?? runtime.health
 
   return (
     <div className="overflow-hidden rounded-xl border border-[var(--sp-border)] bg-[var(--sp-surface)]">
@@ -744,6 +745,7 @@ function RuntimeCard({ runtime, snapshot }: { runtime: RuntimeStatus; snapshot?:
           <span className="font-mono text-sm font-semibold">{runtime.name || runtime.type || 'runtime'}</span>
           {runtime.type && <span className="text-xs text-[var(--sp-faint)]">{runtime.type}</span>}
           {runtime.state && <span className={`inline-flex rounded border px-2 py-0.5 text-[11px] font-semibold ${runtime.state === 'error' ? 'border-rose-500/30 bg-rose-500/10 text-rose-600' : 'border-[var(--sp-border)] bg-[var(--sp-surface-2)] text-[var(--sp-muted)]'}`}>{runtime.state}</span>}
+          <RuntimeHealthBadge health={health} />
         </div>
         <span className="font-mono text-xs text-[var(--sp-faint)]">{runtime.version || '-'}</span>
       </div>
@@ -766,6 +768,20 @@ function RuntimeCard({ runtime, snapshot }: { runtime: RuntimeStatus; snapshot?:
         </div>
       )}
     </div>
+  )
+}
+
+function RuntimeHealthBadge({ health }: { health?: RuntimeHealth }) {
+  if (!health?.state) return null
+  const classes = health.state === 'healthy'
+    ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-600'
+    : health.state === 'degraded'
+      ? 'border-rose-500/30 bg-rose-500/10 text-rose-600'
+      : 'border-[var(--sp-border)] bg-[var(--sp-surface-2)] text-[var(--sp-muted)]'
+  return (
+    <span className={`inline-flex rounded border px-2 py-0.5 text-[11px] font-semibold ${classes}`} title={health.reason || health.state}>
+      {health.state}
+    </span>
   )
 }
 

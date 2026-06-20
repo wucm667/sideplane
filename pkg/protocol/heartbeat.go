@@ -13,15 +13,16 @@ const (
 
 // RuntimeStatus is the lightweight status summary for a managed runtime.
 type RuntimeStatus struct {
-	Name       string   `json:"name"`
-	Type       string   `json:"type,omitempty"`
-	Version    string   `json:"version,omitempty"`
-	State      string   `json:"state,omitempty"`
-	Provider   string   `json:"provider,omitempty"`
-	Model      string   `json:"model,omitempty"`
-	ConfigHash string   `json:"configHash,omitempty"`
-	LastError  string   `json:"lastError,omitempty"`
-	Warnings   []string `json:"warnings,omitempty"`
+	Name       string        `json:"name"`
+	Type       string        `json:"type,omitempty"`
+	Version    string        `json:"version,omitempty"`
+	State      string        `json:"state,omitempty"`
+	Provider   string        `json:"provider,omitempty"`
+	Model      string        `json:"model,omitempty"`
+	ConfigHash string        `json:"configHash,omitempty"`
+	Health     RuntimeHealth `json:"health,omitzero"`
+	LastError  string        `json:"lastError,omitempty"`
+	Warnings   []string      `json:"warnings,omitempty"`
 }
 
 // NodeStatus is the heartbeat-derived status the server exposes for a node.

@@ -124,8 +124,37 @@ func TestRegistrySurfacesAdapterErrorWithoutFailing(t *testing.T) {
 	if statuses[0].LastError != "status probe failed" {
 		t.Fatalf("statuses[0].LastError = %q, want 'status probe failed'", statuses[0].LastError)
 	}
+	if statuses[0].Health.State != protocol.RuntimeHealthDegraded {
+		t.Fatalf("statuses[0].Health = %#v, want degraded", statuses[0].Health)
+	}
 	if statuses[1].State != "present" {
 		t.Fatalf("statuses[1].State = %q, want present", statuses[1].State)
+	}
+}
+
+func TestRegistryAttachesRuntimeHealthToStatuses(t *testing.T) {
+	reg := New(
+		&fakeHealthAdapter{
+			fakeAdapter: fakeAdapter{
+				name:     "hermes",
+				typ:      "hermes",
+				detected: true,
+				status:   protocol.RuntimeStatus{Name: "hermes", Type: "hermes", State: "present"},
+			},
+			health: protocol.RuntimeHealth{State: protocol.RuntimeHealthHealthy, Reason: "service active"},
+		},
+		&fakeAdapter{name: "openclaw", typ: "openclaw", detected: true, status: protocol.RuntimeStatus{Name: "openclaw", Type: "openclaw", State: "present"}},
+	)
+
+	statuses := reg.CollectStatuses(context.Background())
+	if len(statuses) != 2 {
+		t.Fatalf("len(statuses) = %d, want 2", len(statuses))
+	}
+	if statuses[0].Health.State != protocol.RuntimeHealthHealthy || statuses[0].Health.Reason != "service active" {
+		t.Fatalf("hermes health = %#v, want healthy service active", statuses[0].Health)
+	}
+	if statuses[1].Health.State != protocol.RuntimeHealthUnknown {
+		t.Fatalf("openclaw health = %#v, want unknown without health checker", statuses[1].Health)
 	}
 }
 

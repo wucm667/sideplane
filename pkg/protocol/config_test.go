@@ -62,6 +62,7 @@ func TestRuntimeStatusJSONShape(t *testing.T) {
 		Provider:   "openai",
 		Model:      "gpt-5",
 		ConfigHash: "sha256:abc",
+		Health:     RuntimeHealth{State: RuntimeHealthDegraded, Reason: "service inactive"},
 		Warnings:   []string{"config path unreadable"},
 	}
 
@@ -74,10 +75,14 @@ func TestRuntimeStatusJSONShape(t *testing.T) {
 	if err := json.Unmarshal(payload, &got); err != nil {
 		t.Fatalf("unmarshal runtime status: %v", err)
 	}
-	for _, key := range []string{"name", "type", "state", "provider", "model", "configHash", "warnings"} {
+	for _, key := range []string{"name", "type", "state", "provider", "model", "configHash", "health", "warnings"} {
 		if _, ok := got[key]; !ok {
 			t.Fatalf("runtime status JSON omits %q: %s", key, payload)
 		}
+	}
+	health, ok := got["health"].(map[string]any)
+	if !ok || health["state"] != string(RuntimeHealthDegraded) || health["reason"] != "service inactive" {
+		t.Fatalf("runtime status health JSON = %#v, want degraded service inactive", got["health"])
 	}
 }
 

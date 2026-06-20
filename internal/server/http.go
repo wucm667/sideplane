@@ -226,9 +226,10 @@ func (h *handler) metricsEndpoint(w http.ResponseWriter, r *http.Request) {
 }
 
 type fleetMetricsSnapshot struct {
-	nodesByState     map[protocol.NodeState]int
-	driftedNodes     int
-	outdatedSidecars int
+	nodesByState         map[protocol.NodeState]int
+	runtimeHealthByState map[labelPair]int
+	driftedNodes         int
+	outdatedSidecars     int
 }
 
 func (h *handler) collectFleetMetrics(ctx context.Context) (fleetMetricsSnapshot, error) {
@@ -253,9 +254,18 @@ func (h *handler) collectFleetMetrics(ctx context.Context) (fleetMetricsSnapshot
 			protocol.NodeStateStale:   0,
 			protocol.NodeStateOffline: 0,
 		},
+		runtimeHealthByState: map[labelPair]int{},
 	}
 	for _, node := range nodes {
 		snapshot.nodesByState[node.State]++
+		for _, runtime := range node.Runtimes {
+			runtimeType := strings.TrimSpace(runtime.Type)
+			if runtimeType == "" {
+				runtimeType = "unknown"
+			}
+			state := runtimeHealthStateLabel(runtime.Health.State)
+			snapshot.runtimeHealthByState[labelPair{left: runtimeType, right: state}]++
+		}
 		drift, err := h.nodeHasConfigDrift(ctx, node.NodeID, desired)
 		if err != nil {
 			return fleetMetricsSnapshot{}, err
@@ -293,6 +303,34 @@ func writeFleetMetrics(w http.ResponseWriter, snapshot fleetMetricsSnapshot) {
 	fmt.Fprintln(w, "# HELP sideplane_fleet_sidecar_outdated Nodes running a sidecar version other than the expected version.")
 	fmt.Fprintln(w, "# TYPE sideplane_fleet_sidecar_outdated gauge")
 	fmt.Fprintf(w, "sideplane_fleet_sidecar_outdated %d\n", snapshot.outdatedSidecars)
+	fmt.Fprintln(w, "# HELP sideplane_runtime_health Runtime health states by runtime type.")
+	fmt.Fprintln(w, "# TYPE sideplane_runtime_health gauge")
+	if len(snapshot.runtimeHealthByState) == 0 {
+		fmt.Fprintln(w, `sideplane_runtime_health{runtime_type="none",state="none"} 0`)
+		return
+	}
+	samples := make([]pairCounterSample, 0, len(snapshot.runtimeHealthByState))
+	for labels, value := range snapshot.runtimeHealthByState {
+		samples = append(samples, pairCounterSample{left: labels.left, right: labels.right, value: int64(value)})
+	}
+	sort.Slice(samples, func(i, j int) bool {
+		if samples[i].left == samples[j].left {
+			return samples[i].right < samples[j].right
+		}
+		return samples[i].left < samples[j].left
+	})
+	for _, sample := range samples {
+		fmt.Fprintf(w, "sideplane_runtime_health{runtime_type=%q,state=%q} %d\n", sample.left, sample.right, sample.value)
+	}
+}
+
+func runtimeHealthStateLabel(state protocol.RuntimeHealthState) string {
+	switch state {
+	case protocol.RuntimeHealthHealthy, protocol.RuntimeHealthDegraded, protocol.RuntimeHealthUnknown:
+		return string(state)
+	default:
+		return string(protocol.RuntimeHealthUnknown)
+	}
 }
 
 func (h *handler) createEnrollmentToken(w http.ResponseWriter, r *http.Request) {

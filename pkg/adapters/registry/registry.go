@@ -62,6 +62,9 @@ func (r *Registry) CollectStatuses(ctx context.Context) []protocol.RuntimeStatus
 			continue
 		}
 		if status.Name != "" || status.Type != "" {
+			if status.Health.State == "" {
+				status.Health = r.runtimeHealth(ctx, a)
+			}
 			status.Warnings = appendRuntimeWarnings(status.Warnings, r.configSnapshotWarnings(ctx, a, status)...)
 			out = append(out, status)
 		}

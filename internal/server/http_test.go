@@ -3117,6 +3117,7 @@ func TestMetricsExposesCounters(t *testing.T) {
 		"sideplane_jobs_failed_total",
 		"sideplane_job_late_results_total",
 		"sideplane_config_apply_rolled_back_total",
+		"sideplane_runtime_health",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("metrics body missing %q\n%s", want, body)
@@ -3217,9 +3218,17 @@ func TestMetricsExposeFleetGauges(t *testing.T) {
 	}
 	for nodeID, observedAt := range heartbeats {
 		enrollTestNode(t, nodeStore, nodeID)
+		runtimes := []protocol.RuntimeStatus{}
+		if nodeID == "node-fresh-drift" {
+			runtimes = []protocol.RuntimeStatus{
+				{Name: "hermes", Type: "hermes", Health: protocol.RuntimeHealth{State: protocol.RuntimeHealthDegraded, Reason: "service inactive"}},
+				{Name: "openclaw", Type: "openclaw", Health: protocol.RuntimeHealth{State: protocol.RuntimeHealthUnknown, Reason: "no target"}},
+			}
+		}
 		if _, err := nodeStore.RecordHeartbeat(context.Background(), protocol.HeartbeatRequest{
 			NodeID:   nodeID,
 			Hostname: nodeID,
+			Runtimes: runtimes,
 		}, observedAt); err != nil {
 			t.Fatalf("record heartbeat for %s: %v", nodeID, err)
 		}
@@ -3253,6 +3262,8 @@ func TestMetricsExposeFleetGauges(t *testing.T) {
 		`sideplane_fleet_nodes{state="stale"} 1`,
 		`sideplane_fleet_nodes{state="offline"} 1`,
 		`sideplane_fleet_nodes_drifted 1`,
+		`sideplane_runtime_health{runtime_type="hermes",state="degraded"} 1`,
+		`sideplane_runtime_health{runtime_type="openclaw",state="unknown"} 1`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("metrics body missing %q\n%s", want, body)

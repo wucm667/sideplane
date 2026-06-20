@@ -3132,14 +3132,15 @@ func printNodeInspect(w io.Writer, node cliNodeStatus) {
 		return
 	}
 	table := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(table, "  NAME\tTYPE\tSTATE\tVERSION\tPROVIDER\tMODEL\tCONFIG HASH\tWARNINGS\tLAST ERROR")
+	fmt.Fprintln(table, "  NAME\tTYPE\tSTATE\tHEALTH\tVERSION\tPROVIDER\tMODEL\tCONFIG HASH\tWARNINGS\tLAST ERROR")
 	for _, runtime := range node.Runtimes {
 		fmt.Fprintf(
 			table,
-			"  %s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			"  %s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			valueOrDash(runtime.Name),
 			valueOrDash(runtime.Type),
 			valueOrDash(runtime.State),
+			runtimeHealthLabel(runtime.Health),
 			valueOrDash(runtime.Version),
 			valueOrDash(runtime.Provider),
 			valueOrDash(runtime.Model),
@@ -3204,6 +3205,16 @@ func warningsLabel(warnings []string) string {
 		return "-"
 	}
 	return strings.Join(warnings, "; ")
+}
+
+func runtimeHealthLabel(health protocol.RuntimeHealth) string {
+	if health.State == "" {
+		return "-"
+	}
+	if strings.TrimSpace(health.Reason) == "" {
+		return string(health.State)
+	}
+	return string(health.State) + ": " + strings.TrimSpace(health.Reason)
 }
 
 func printJobsTable(w io.Writer, jobs []protocol.Job) {

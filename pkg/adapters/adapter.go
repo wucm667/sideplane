@@ -66,6 +66,7 @@ func StatusFromError(name, typ string, err error) protocol.RuntimeStatus {
 		Name:      name,
 		Type:      typ,
 		State:     "error",
+		Health:    RuntimeHealthDegraded(msg),
 		LastError: msg,
 	}
 }

@@ -1,4 +1,4 @@
-import type { DesiredConfig, NodeStatusWithDrift, ProviderModelConfig } from './generated/api.ts'
+import type { DesiredConfig, NodeStatusWithDrift, ProviderModelConfig, RuntimeConfigSnapshot as GeneratedRuntimeConfigSnapshot, RuntimeStatus as GeneratedRuntimeStatus } from './generated/api.ts'
 
 export type {
   APIError,
@@ -24,11 +24,16 @@ export type {
   RollbackRequest,
   RestartJobResult,
   RestartRequest,
-  RuntimeConfigSnapshot,
-  RuntimeStatus,
 } from './generated/api.ts'
 
 export type NodeLabels = Record<string, string>
+export type RuntimeHealthState = 'healthy' | 'degraded' | 'unknown'
+export interface RuntimeHealth {
+  state: RuntimeHealthState
+  reason?: string
+}
+export type RuntimeStatus = GeneratedRuntimeStatus & { health?: RuntimeHealth }
+export type RuntimeConfigSnapshot = GeneratedRuntimeConfigSnapshot & { health?: RuntimeHealth }
 export type NodeStatus = NodeStatusWithDrift & { labels?: NodeLabels; maintenance?: boolean; sidecarOutdated?: boolean }
 
 export interface ServerSettings {
