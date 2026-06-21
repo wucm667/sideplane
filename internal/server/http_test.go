@@ -1202,7 +1202,7 @@ func TestSidecarOutdatedFlagAndMetric(t *testing.T) {
 	defer server.Close()
 
 	// No expected version configured: not outdated.
-	nodes := doJSONRequest[protocol.ListNodesResponse](t, server.Client(), http.MethodGet, server.URL+"/api/nodes", "", nil)
+	nodes := doJSONRequest[protocol.ListNodesResponse](t, server.Client(), http.MethodGet, server.URL+"/api/nodes", "dev-token", nil)
 	if len(nodes.Nodes) != 1 || nodes.Nodes[0].SidecarOutdated {
 		t.Fatalf("nodes = %+v, want node not flagged when no expected version", nodes.Nodes)
 	}
@@ -1212,7 +1212,7 @@ func TestSidecarOutdatedFlagAndMetric(t *testing.T) {
 	if updated.ExpectedSidecarVersion != "v1.1.0" {
 		t.Fatalf("update settings = %+v, want v1.1.0", updated)
 	}
-	nodes = doJSONRequest[protocol.ListNodesResponse](t, server.Client(), http.MethodGet, server.URL+"/api/nodes", "", nil)
+	nodes = doJSONRequest[protocol.ListNodesResponse](t, server.Client(), http.MethodGet, server.URL+"/api/nodes", "dev-token", nil)
 	if len(nodes.Nodes) != 1 || !nodes.Nodes[0].SidecarOutdated {
 		t.Fatalf("nodes = %+v, want node flagged outdated", nodes.Nodes)
 	}
@@ -1230,7 +1230,7 @@ func TestSidecarOutdatedFlagAndMetric(t *testing.T) {
 
 	// Matching version clears the flag.
 	doJSONRequest[protocol.ServerSettings](t, server.Client(), http.MethodPut, server.URL+"/api/settings", "dev-token", protocol.UpdateServerSettingsRequest{ExpectedSidecarVersion: "v1.0.0"})
-	nodes = doJSONRequest[protocol.ListNodesResponse](t, server.Client(), http.MethodGet, server.URL+"/api/nodes", "", nil)
+	nodes = doJSONRequest[protocol.ListNodesResponse](t, server.Client(), http.MethodGet, server.URL+"/api/nodes", "dev-token", nil)
 	if nodes.Nodes[0].SidecarOutdated {
 		t.Fatalf("node still flagged outdated after matching version")
 	}
@@ -1729,6 +1729,7 @@ func TestDesiredConfigPutWritesAuditEvent(t *testing.T) {
 
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodGet, "/api/audit", nil)
+	req.Header.Set("Authorization", "Bearer dev-token")
 	handler.ServeHTTP(rec, req)
 	assertStatus(t, rec, http.StatusOK)
 
@@ -1877,7 +1878,9 @@ func TestDesiredConfigHistoryListAndRevert(t *testing.T) {
 	assertAPIError(t, rec, http.StatusNotFound, "not_found", "desired config history not found")
 
 	rec = httptest.NewRecorder()
-	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/config/desired", nil))
+	req = httptest.NewRequest(http.MethodGet, "/api/config/desired", nil)
+	req.Header.Set("Authorization", "Bearer dev-token")
+	handler.ServeHTTP(rec, req)
 	assertStatus(t, rec, http.StatusOK)
 	var desired protocol.DesiredConfig
 	if err := json.NewDecoder(rec.Body).Decode(&desired); err != nil {
@@ -1999,6 +2002,7 @@ func TestDeleteNodeAPIRequiresOperatorAndRemovesNode(t *testing.T) {
 
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodGet, "/api/nodes", nil)
+	req.Header.Set("Authorization", "Bearer dev-token")
 	handler.ServeHTTP(rec, req)
 	assertStatus(t, rec, http.StatusOK)
 	nodesResp := decodeListNodesResponse(t, rec)
@@ -2008,6 +2012,7 @@ func TestDeleteNodeAPIRequiresOperatorAndRemovesNode(t *testing.T) {
 
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodGet, "/api/audit", nil)
+	req.Header.Set("Authorization", "Bearer dev-token")
 	handler.ServeHTTP(rec, req)
 	assertStatus(t, rec, http.StatusOK)
 	var auditResp protocol.ListAuditEventsResponse
@@ -2328,7 +2333,7 @@ func TestListNodeJobsAPI(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/nodes/node-jobs/jobs", nil)
 
-	NewHandlerWithStore(nodeStore).ServeHTTP(rec, req)
+	newDevHandlerWithStore(t, nodeStore).ServeHTTP(rec, req)
 
 	assertStatus(t, rec, http.StatusOK)
 
@@ -2376,7 +2381,7 @@ func TestListNodeJobsAPIWithLimitAndStatusFilter(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/nodes/node-jobs/jobs?limit=1&status=completed", nil)
 
-	NewHandlerWithStore(nodeStore).ServeHTTP(rec, req)
+	newDevHandlerWithStore(t, nodeStore).ServeHTTP(rec, req)
 
 	assertStatus(t, rec, http.StatusOK)
 
@@ -2390,7 +2395,7 @@ func TestListNodeJobsAPIWithLimitAndStatusFilter(t *testing.T) {
 
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodGet, "/api/nodes/node-jobs/jobs?status=unknown", nil)
-	NewHandlerWithStore(nodeStore).ServeHTTP(rec, req)
+	newDevHandlerWithStore(t, nodeStore).ServeHTTP(rec, req)
 	assertStatus(t, rec, http.StatusBadRequest)
 }
 
@@ -2405,7 +2410,7 @@ func TestListNodeJobsAPIOmitsUnsetTimestamps(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/nodes/node-jobs/jobs", nil)
 
-	NewHandlerWithStore(nodeStore).ServeHTTP(rec, req)
+	newDevHandlerWithStore(t, nodeStore).ServeHTTP(rec, req)
 
 	assertStatus(t, rec, http.StatusOK)
 
@@ -2452,7 +2457,7 @@ func TestListNodeJobsAPIIncludesFinishedTimestamps(t *testing.T) {
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodGet, "/api/nodes/node-jobs/jobs", nil)
 
-	NewHandlerWithStore(nodeStore).ServeHTTP(rec, req)
+	newDevHandlerWithStore(t, nodeStore).ServeHTTP(rec, req)
 
 	assertStatus(t, rec, http.StatusOK)
 
@@ -2617,7 +2622,7 @@ func TestOperatorWorkflowEndToEnd(t *testing.T) {
 		t.Fatalf("heartbeat accepted = false")
 	}
 
-	nodesResp := doJSONRequest[protocol.ListNodesResponse](t, client, http.MethodGet, server.URL+"/api/nodes", "", nil)
+	nodesResp := doJSONRequest[protocol.ListNodesResponse](t, client, http.MethodGet, server.URL+"/api/nodes", "operator-token", nil)
 	if len(nodesResp.Nodes) != 1 || nodesResp.Nodes[0].NodeID != "node-e2e" || nodesResp.Nodes[0].State != protocol.NodeStateFresh {
 		t.Fatalf("nodes = %#v, want fresh node-e2e", nodesResp.Nodes)
 	}
@@ -2628,7 +2633,7 @@ func TestOperatorWorkflowEndToEnd(t *testing.T) {
 	if labelsResp.Labels["role"] != "canary" {
 		t.Fatalf("labels = %#v, want role=canary", labelsResp.Labels)
 	}
-	nodesResp = doJSONRequest[protocol.ListNodesResponse](t, client, http.MethodGet, server.URL+"/api/nodes?selector=role=canary", "", nil)
+	nodesResp = doJSONRequest[protocol.ListNodesResponse](t, client, http.MethodGet, server.URL+"/api/nodes?selector=role=canary", "operator-token", nil)
 	if len(nodesResp.Nodes) != 1 || nodesResp.Nodes[0].Labels["role"] != "canary" {
 		t.Fatalf("selector nodes = %#v, want labeled node-e2e", nodesResp.Nodes)
 	}
@@ -2766,7 +2771,7 @@ func TestOperatorWorkflowEndToEnd(t *testing.T) {
 		t.Fatalf("completed rollout = %#v, want completed with succeeded node", completed)
 	}
 
-	auditResp := doJSONRequest[protocol.ListAuditEventsResponse](t, client, http.MethodGet, server.URL+"/api/audit", "", nil)
+	auditResp := doJSONRequest[protocol.ListAuditEventsResponse](t, client, http.MethodGet, server.URL+"/api/audit", "operator-token", nil)
 	wantActions := map[string]bool{
 		audit.ActionEnrollmentTokenCreate: false,
 		audit.ActionNodeEnroll:            false,
@@ -2892,7 +2897,7 @@ func TestListNodeJobsAPISurfacesTimedOutJob(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/nodes/node-timeout/jobs", nil)
 
-	NewHandlerWithStore(nodeStore).ServeHTTP(rec, req)
+	newDevHandlerWithStore(t, nodeStore).ServeHTTP(rec, req)
 
 	assertStatus(t, rec, http.StatusOK)
 
@@ -3154,7 +3159,7 @@ func TestHealthz(t *testing.T) {
 }
 
 func TestSecurityHeaders(t *testing.T) {
-	handler := NewHandler()
+	handler := newDevHandler(t)
 	for _, path := range []string{"/healthz", "/api/nodes"} {
 		t.Run(path, func(t *testing.T) {
 			rec := httptest.NewRecorder()
@@ -3832,7 +3837,7 @@ func TestHeartbeatRecordsNode(t *testing.T) {
 		t.Fatalf("encode heartbeat: %v", err)
 	}
 
-	handler := NewHandlerWithStore(nodeStore)
+	handler := newDevHandlerWithStore(t, nodeStore)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/heartbeat", &buf)
 	req.Header.Set("Authorization", "Bearer "+credential)
@@ -3969,6 +3974,7 @@ func TestNodeLabelsAPISetGetSelectorAndAudit(t *testing.T) {
 
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodGet, "/api/nodes?selector=role=canary,zone=lab", nil)
+	req.Header.Set("Authorization", "Bearer dev-token")
 	handler.ServeHTTP(rec, req)
 	assertStatus(t, rec, http.StatusOK)
 	nodesResp := decodeListNodesResponse(t, rec)
@@ -3981,6 +3987,7 @@ func TestNodeLabelsAPISetGetSelectorAndAudit(t *testing.T) {
 
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodGet, "/api/nodes?selector=role=missing", nil)
+	req.Header.Set("Authorization", "Bearer dev-token")
 	handler.ServeHTTP(rec, req)
 	assertStatus(t, rec, http.StatusOK)
 	nodesResp = decodeListNodesResponse(t, rec)
@@ -4025,6 +4032,7 @@ func TestNodeLabelsAPIRequiresAuthAndValidatesSelector(t *testing.T) {
 
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodGet, "/api/nodes?selector=role", nil)
+	req.Header.Set("Authorization", "Bearer dev-token")
 	handler.ServeHTTP(rec, req)
 	assertAPIError(t, rec, http.StatusBadRequest, "bad_request", "selector entries must use key=value")
 }
@@ -4060,6 +4068,7 @@ func TestNodeMaintenanceAPISetListsAndAudits(t *testing.T) {
 	}
 	rec = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodGet, "/api/nodes", nil)
+	req.Header.Set("Authorization", "Bearer dev-token")
 	handler.ServeHTTP(rec, req)
 	assertStatus(t, rec, http.StatusOK)
 	nodesResp := decodeListNodesResponse(t, rec)
@@ -4581,12 +4590,16 @@ func TestNodesApplyFreshnessPolicy(t *testing.T) {
 		}
 	}
 
-	handler, err := NewHandlerWithStoreAndFreshnessPolicy(nodeStore, FreshnessPolicy{
-		StaleAfter:   2 * time.Minute,
-		OfflineAfter: 10 * time.Minute,
-		Now: func() time.Time {
-			return now
+	handler, err := NewHandlerWithConfig(HandlerConfig{
+		Store: nodeStore,
+		Freshness: FreshnessPolicy{
+			StaleAfter:   2 * time.Minute,
+			OfflineAfter: 10 * time.Minute,
+			Now: func() time.Time {
+				return now
+			},
 		},
+		AllowUnauthenticatedOperatorAPI: true,
 	})
 	if err != nil {
 		t.Fatalf("build handler: %v", err)
@@ -4657,20 +4670,24 @@ func TestNodesReportConfigDrift(t *testing.T) {
 }
 
 func TestNodesTreatZeroHeartbeatAsOffline(t *testing.T) {
-	handler, err := NewHandlerWithStoreAndFreshnessPolicy(staticNodeStore{
-		nodes: []protocol.NodeStatus{
-			{
-				NodeID:          "node-zero",
-				State:           protocol.NodeStateFresh,
-				LastHeartbeatAt: time.Time{},
+	handler, err := NewHandlerWithConfig(HandlerConfig{
+		Store: staticNodeStore{
+			nodes: []protocol.NodeStatus{
+				{
+					NodeID:          "node-zero",
+					State:           protocol.NodeStateFresh,
+					LastHeartbeatAt: time.Time{},
+				},
 			},
 		},
-	}, FreshnessPolicy{
-		StaleAfter:   2 * time.Minute,
-		OfflineAfter: 10 * time.Minute,
-		Now: func() time.Time {
-			return time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)
+		Freshness: FreshnessPolicy{
+			StaleAfter:   2 * time.Minute,
+			OfflineAfter: 10 * time.Minute,
+			Now: func() time.Time {
+				return time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)
+			},
 		},
+		AllowUnauthenticatedOperatorAPI: true,
 	})
 	if err != nil {
 		t.Fatalf("build handler: %v", err)

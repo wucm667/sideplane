@@ -48,7 +48,7 @@ func newEmbeddedWebFixtureHandler(t *testing.T) http.Handler {
 	return NewEmbeddedWebHandler(fstest.MapFS{
 		"index.html":    {Data: []byte("<!doctype html><html><body>Embedded SPA root</body></html>")},
 		"assets/app.js": {Data: []byte("// embedded app js")},
-	}, NewHandler())
+	}, newDevHandler(t))
 }
 
 func newWebFixtureHandlerWithBase(t *testing.T, basePath string) http.Handler {
