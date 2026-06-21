@@ -6,6 +6,11 @@ This project follows the spirit of Keep a Changelog and will use semantic versio
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-06-21
+
+First tagged release. The sections below capture the capabilities shipped in the
+0.1.0 baseline.
+
 ### Server
 
 - Added structured JSON API errors, security response headers, and structured request logging.

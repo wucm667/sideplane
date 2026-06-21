@@ -113,6 +113,14 @@ Avoid turning Sideplane into:
 
 Also do not commit `.sideplane/`, `.claude/`, `bin/`, `web/dist/`, `web/node_modules/`, `web/prototype/`, `web/tsconfig.tsbuildinfo`, or local prompt/input scratch files.
 
+## Releasing
+
+Releases are operator-controlled and tag-driven; normal merges never publish.
+Before any `v*` tag, work through the [pre-release checklist](RELEASE.md) and the
+[release runbook](docs/releasing.md). Build and verify local artifacts with
+`make release-dist` and `sh scripts/verify-release.sh`; the tag push itself is the
+only publish step and requires explicit operator approval.
+
 ## Security Reports
 
 Do not report vulnerabilities in public issues or PR comments. Follow [SECURITY.md](SECURITY.md) for private reporting guidance.

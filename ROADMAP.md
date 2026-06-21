@@ -1,7 +1,9 @@
 # Roadmap
 
-Sideplane is pre-1.0 infrastructure. This roadmap describes the implemented
-MVP baseline and near-term hardening direction; it is not a release commitment.
+Sideplane is pre-1.0 infrastructure. The implemented MVP baseline described below
+is the `v0.1.0` release baseline, cut once the pre-release checklist passes. This
+roadmap describes that baseline and the near-term hardening direction; it is not a
+forward release commitment.
 
 ## Guiding Goal
 
