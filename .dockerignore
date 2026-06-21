@@ -1,0 +1,96 @@
+# Keep the Docker build context minimal and free of local/private state.
+# The Dockerfiles use explicit COPY of source dirs and regenerate web assets
+# (npm ci + vite build) and Go binaries inside the build, so build outputs,
+# dependencies, local runtime state, and AI/editor files are all excluded here.
+
+### Version control and CI metadata
+.git
+.gitignore
+.github
+
+### Local AI agent guidance and session state
+AGENTS.md
+CLAUDE.md
+todo.md
+codex-input.md
+.claude
+.sideplane
+
+### OS / editor files
+.DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db
+Desktop.ini
+.vscode
+.idea
+*.iml
+
+### Environment and local secrets
+.env
+.env.*
+*.local
+*.secret
+*.secrets
+
+### Certificates and keys
+*.pem
+*.key
+*.crt
+*.csr
+*.p12
+*.pfx
+
+### Go build output and tool state
+bin/
+dist/
+build/
+coverage.out
+*.test
+*.prof
+*.pprof
+go.work
+go.work.sum
+
+### Node / frontend dependencies and build output
+node_modules
+web/node_modules
+.npm
+.pnpm-store
+.yarn
+web/dist
+web/build
+web/.vite
+web/coverage
+web/prototype
+*.tsbuildinfo
+
+### Frontend test artifacts
+web/playwright-report
+web/test-results
+web/tests
+
+### SQLite and local runtime data
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite3-*
+data/
+tmp/
+var/
+sideplane-data/
+
+### Docker / compose local overrides
+docker-compose.override.yml
+compose.override.yml
+
+### Archives
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+
+### Logs
+*.log
+logs/
