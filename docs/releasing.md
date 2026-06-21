@@ -41,6 +41,35 @@ make release-local VERSION=v0.1.0
 `make release-local` writes local binaries to `dist/` using the same ldflags
 path as release CI. It does not upload artifacts.
 
+To reproduce the full release matrix locally, use `make release-dist`. It mirrors
+the `release.yml` build (Linux `amd64`/`arm64` for `sideplane-server`,
+`sideplane-sidecar`, and `sideplane`), rebuilds the Web UI for embedding,
+cross-compiles with `-trimpath` and the buildinfo ldflags, and writes a
+`SHA256SUMS` file into `dist/`:
+
+```bash
+make release-dist VERSION=v0.1.0
+```
+
+`dist/` is gitignored. `release-dist` never pushes or publishes anything; the tag
+and GitHub release remain a manual maintainer step.
+
+## Verify Release Artifacts
+
+After `make release-dist`, run the verification smoke to confirm the artifacts
+are intact and the server boots:
+
+```bash
+sh scripts/verify-release.sh
+```
+
+The script verifies every binary against `dist/SHA256SUMS`, prints each binary's
+`--version`, then starts the server on a temporary port, confirms `/healthz`,
+and shuts it down. It cleans up its temp state and mutates no real machine. The
+release matrix is cross-compiled for Linux; when no dist binary can run on the
+current host (for example on macOS), the script builds host-native equivalents
+from source for the functional checks while still verifying the dist checksums.
+
 ## Release Workflow
 
 The GitHub release workflow is tag-driven. When an operator intentionally pushes
