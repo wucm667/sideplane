@@ -423,6 +423,15 @@ export interface ListAlertWebhooksResponse {
   webhooks: AlertWebhook[];
 }
 
+export interface AlertWebhookPayload {
+  event: AlertEventType;
+  nodeId?: string;
+  rolloutId?: string;
+  actor?: string;
+  detail?: string;
+  occurredAt: string;
+}
+
 export interface ServerSettings {
   expectedSidecarVersion: string;
 }

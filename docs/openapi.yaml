@@ -2119,6 +2119,27 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/AlertWebhook"
+    AlertWebhookPayload:
+      type: object
+      description: >-
+        Outbound JSON body delivered to a registered alert webhook. Sideplane
+        POSTs this to the configured URL when a subscribed event fires; it never
+        contains secrets. Documented for receiver implementations.
+      required: [event, occurredAt]
+      properties:
+        event:
+          $ref: "#/components/schemas/AlertEventType"
+        nodeId:
+          type: string
+        rolloutId:
+          type: string
+        actor:
+          type: string
+        detail:
+          type: string
+        occurredAt:
+          type: string
+          format: date-time
     ServerSettings:
       type: object
       required: [expectedSidecarVersion]
