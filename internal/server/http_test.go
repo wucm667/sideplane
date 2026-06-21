@@ -2095,18 +2095,22 @@ func TestListNodeJobsProtectsResultJSONWithConfiguredOperatorToken(t *testing.T)
 	tests := []struct {
 		name          string
 		authorization string
+		wantStatus    int
 		wantResult    bool
 	}{
 		{
-			name: "missing token gets summary only",
+			name:       "missing token is unauthorized",
+			wantStatus: http.StatusUnauthorized,
 		},
 		{
-			name:          "wrong token gets summary only",
+			name:          "wrong token is unauthorized",
 			authorization: "Bearer wrong-token",
+			wantStatus:    http.StatusUnauthorized,
 		},
 		{
 			name:          "correct token gets result details",
 			authorization: "Bearer dev-token",
+			wantStatus:    http.StatusOK,
 			wantResult:    true,
 		},
 	}
@@ -2141,8 +2145,16 @@ func TestListNodeJobsProtectsResultJSONWithConfiguredOperatorToken(t *testing.T)
 
 			handler.ServeHTTP(rec, req)
 
-			assertStatus(t, rec, http.StatusOK)
+			assertStatus(t, rec, tt.wantStatus)
 			body := rec.Body.String()
+			if tt.wantStatus != http.StatusOK {
+				for _, forbidden := range []string{"sk-test-secret", "apiKey"} {
+					if strings.Contains(body, forbidden) {
+						t.Fatalf("unauthorized jobs response leaked %q: %s", forbidden, body)
+					}
+				}
+				return
+			}
 			var jobs []protocol.Job
 			if err := json.Unmarshal([]byte(body), &jobs); err != nil {
 				t.Fatalf("decode jobs: %v", err)
@@ -2162,10 +2174,60 @@ func TestListNodeJobsProtectsResultJSONWithConfiguredOperatorToken(t *testing.T)
 			if jobs[0].ResultJSON != "" {
 				t.Fatalf("resultJson = %q, want empty summary", jobs[0].ResultJSON)
 			}
-			for _, forbidden := range []string{"sk-test-secret", "apiKey"} {
-				if strings.Contains(body, forbidden) {
-					t.Fatalf("unauthenticated jobs response leaked %q: %s", forbidden, body)
-				}
+		})
+	}
+}
+
+func TestGatedReadEndpointsRequireOperatorToken(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	enrollTestNode(t, nodeStore, "node-read")
+	handler, err := NewHandlerWithConfig(HandlerConfig{
+		Store:         nodeStore,
+		Freshness:     DefaultFreshnessPolicy(),
+		OperatorToken: "bootstrap-token",
+	})
+	if err != nil {
+		t.Fatalf("build handler: %v", err)
+	}
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	client := server.Client()
+
+	readonly := doJSONRequest[protocol.CreateOperatorTokenResponse](t, client, http.MethodPost, server.URL+"/api/operator-tokens", "bootstrap-token", protocol.CreateOperatorTokenRequest{Name: "viewer", Scope: protocol.OperatorTokenScopeReadonly})
+
+	status := func(path, token string) int {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodGet, server.URL+path, nil)
+		if err != nil {
+			t.Fatalf("build request: %v", err)
+		}
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		res, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		defer res.Body.Close()
+		return res.StatusCode
+	}
+
+	for _, path := range []string{
+		"/api/nodes",
+		"/api/audit",
+		"/api/config/effective?nodeId=node-read",
+		"/api/config/desired",
+		"/api/nodes/node-read/jobs",
+	} {
+		t.Run(path, func(t *testing.T) {
+			if code := status(path, ""); code != http.StatusUnauthorized {
+				t.Fatalf("no-token GET %s status = %d, want 401", path, code)
+			}
+			if code := status(path, "bootstrap-token"); code != http.StatusOK {
+				t.Fatalf("admin GET %s status = %d, want 200", path, code)
+			}
+			if code := status(path, readonly.Token); code != http.StatusOK {
+				t.Fatalf("readonly GET %s status = %d, want 200", path, code)
 			}
 		})
 	}
