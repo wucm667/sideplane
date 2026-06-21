@@ -302,6 +302,8 @@ paths:
       tags: [Operator]
       summary: List freshness-adjusted fleet nodes.
       operationId: listNodes
+      security:
+        - operatorBearer: []
       parameters:
         - name: limit
           in: query
@@ -334,6 +336,8 @@ paths:
               schema:
                 $ref: "#/components/schemas/ListNodesResponse"
         "400":
+          $ref: "#/components/responses/APIError"
+        "401":
           $ref: "#/components/responses/APIError"
   /api/nodes/{nodeId}:
     delete:
@@ -605,6 +609,8 @@ paths:
       tags: [Operator]
       summary: List jobs for a node.
       operationId: listNodeJobs
+      security:
+        - operatorBearer: []
       parameters:
         - $ref: "#/components/parameters/NodeId"
         - name: limit
@@ -630,6 +636,8 @@ paths:
                 items:
                   $ref: "#/components/schemas/Job"
         "400":
+          $ref: "#/components/responses/APIError"
+        "401":
           $ref: "#/components/responses/APIError"
     post:
       tags: [Operator]
@@ -902,6 +910,8 @@ paths:
       tags: [Operator]
       summary: Get desired layered provider/model configuration.
       operationId: getDesiredConfig
+      security:
+        - operatorBearer: []
       responses:
         "200":
           description: Desired config.
@@ -909,6 +919,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/DesiredConfig"
+        "401":
+          $ref: "#/components/responses/APIError"
     put:
       tags: [Operator]
       summary: Replace desired layered provider/model configuration.
@@ -939,6 +951,8 @@ paths:
       tags: [Operator]
       summary: Preview effective config for the persisted desired state.
       operationId: getEffectiveConfig
+      security:
+        - operatorBearer: []
       parameters:
         - name: nodeId
           in: query
@@ -963,6 +977,8 @@ paths:
               schema:
                 $ref: "#/components/schemas/EffectiveConfigResponse"
         "400":
+          $ref: "#/components/responses/APIError"
+        "401":
           $ref: "#/components/responses/APIError"
   /api/config/effective/preview:
     post:
@@ -995,6 +1011,8 @@ paths:
       tags: [Operator]
       summary: List audit events.
       operationId: listAuditEvents
+      security:
+        - operatorBearer: []
       parameters:
         - name: nodeId
           in: query
@@ -1020,6 +1038,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ListAuditEventsResponse"
+        "401":
+          $ref: "#/components/responses/APIError"
   /api/audit/export:
     get:
       tags: [Operator]

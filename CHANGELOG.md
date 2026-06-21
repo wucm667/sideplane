@@ -6,6 +6,10 @@ This project follows the spirit of Keep a Changelog and will use semantic versio
 
 ## [Unreleased]
 
+### Server
+
+- Require operator authentication for fleet, audit, and configuration read endpoints (previously readable without a token).
+
 ## [0.1.0] - 2026-06-21
 
 First tagged release. The sections below capture the capabilities shipped in the

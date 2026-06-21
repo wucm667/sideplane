@@ -284,13 +284,17 @@ The full machine-readable API contract, including request and response schemas,
 is published in [docs/openapi.yaml](docs/openapi.yaml) and drives the generated
 TypeScript client in `web/src/generated/api.ts`.
 
-Mutating operator endpoints require an operator bearer token unless the server
-is explicitly started with the development-only unauthenticated operator API
-flag. Operator tokens carry a scope: `admin` (full access) or `readonly`
+All operator API endpoints — both reads (fleet, audit, and configuration) and
+mutations — require an operator bearer token unless the server is explicitly
+started with the development-only unauthenticated operator API flag
+(`--allow-unauthenticated-operator-api`). A `readonly` token is sufficient for
+reads. Operator tokens carry a scope: `admin` (full access) or `readonly`
 (GET/list endpoints only; mutating endpoints return `403`). The env/flag
-bootstrap token is always `admin`. Enrollment and failed operator-auth attempts
-are rate limited by remote address and return `429` with `Retry-After` when the
-fixed window is exhausted.
+bootstrap token is always `admin`. The probe endpoints (`/healthz`, `/readyz`,
+`/metrics`) and the public signing verification key (`/api/signing-key`) remain
+reachable without a token. Enrollment and failed operator-auth attempts are rate
+limited by remote address and return `429` with `Retry-After` when the fixed
+window is exhausted.
 
 ### TLS Deployment
 
