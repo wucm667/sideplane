@@ -280,6 +280,10 @@ Core endpoints:
 - `POST /api/events/tickets` creates a short-lived browser SSE ticket; `GET /api/events` streams `node`, `job`, and `rollout` events as `text/event-stream`.
 - `GET /api/sidecar/jobs/next?nodeId=...` and `POST /api/sidecar/jobs/{jobId}/result` power sidecar polling.
 
+The full machine-readable API contract, including request and response schemas,
+is published in [docs/openapi.yaml](docs/openapi.yaml) and drives the generated
+TypeScript client in `web/src/generated/api.ts`.
+
 Mutating operator endpoints require an operator bearer token unless the server
 is explicitly started with the development-only unauthenticated operator API
 flag. Operator tokens carry a scope: `admin` (full access) or `readonly`
@@ -407,6 +411,8 @@ Generate shell completion with `sideplane completion bash` or
 | `sideplane whoami` | Show authenticated operator scope and token name. | `--server`, `--operator-token`, `--json` |
 | `sideplane status` | Show server version, uptime, schema, and fleet counts. | `--server`, `--operator-token`, `--json` |
 | `sideplane probe <nodeId>` | Create a deep-probe job, or a bulk probe with `--selector`. | `--server`, `--operator-token`, `--selector`, `--wait`, `--json` |
+| `sideplane restart <nodeId>` | Create a dry-run or live restart job. | `--server`, `--operator-token`, `--runtime-type`, `--profile`, `--live`, `--yes`, `--wait`, `--json` |
+| `sideplane rollback <nodeId>` | Create a dry-run or live rollback job from a backup ref. | `--server`, `--operator-token`, `--backup-ref`, `--runtime-type`, `--profile`, `--live`, `--yes`, `--wait`, `--json` |
 | `sideplane jobs list <nodeId>` | List node jobs with optional filters. | `--server`, `--operator-token`, `--limit`, `--status`, `--json` |
 | `sideplane audit list` | List audit events newest first. | `--server`, `--node-id`, `--action`, `--limit`, `--json` |
 | `sideplane audit export` | Export the audit log as ndjson or csv. | `--server`, `--operator-token`, `--format`, `--out`, `--node-id`, `--action`, `--limit` |
@@ -428,6 +434,7 @@ Generate shell completion with `sideplane completion bash` or
 | `sideplane completion bash/zsh` | Print a shell completion script. | none |
 | `sideplane node inspect <nodeId>` | Show detailed node state and runtime status. | `--server`, `--json` |
 | `sideplane node label <nodeId>` | Set or remove labels, or apply in bulk with `--selector`. | `--server`, `--operator-token`, `--selector`, `--remove`, `--json` |
+| `sideplane node maintenance <nodeId>` | Enter or exit node maintenance mode. | `--server`, `--operator-token`, `--on`, `--off`, `--json` |
 | `sideplane node remove <nodeId>` | Remove a decommissioned node record. | `--server`, `--operator-token`, `--yes` |
 | `sideplane backups list <nodeId>` | List rollback backups for a node. | `--server`, `--operator-token`, `--limit`, `--json` |
 | `sideplane enrollment create` | Create a one-time sidecar enrollment token. | `--server`, `--operator-token`, `--expires-in` |
