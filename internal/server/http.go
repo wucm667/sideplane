@@ -906,6 +906,9 @@ func (h *handler) nodes(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusMethodNotAllowed, http.StatusText(http.StatusMethodNotAllowed))
 		return
 	}
+	if !h.authorizeOperatorRead(w, r) {
+		return
+	}
 
 	filter, err := parseNodeFilter(r)
 	if err != nil {
@@ -1874,6 +1877,9 @@ func (h *handler) deleteNode(w http.ResponseWriter, r *http.Request, nodeID stri
 }
 
 func (h *handler) listNodeJobs(w http.ResponseWriter, r *http.Request, nodeID string) {
+	if !h.authorizeOperatorRead(w, r) {
+		return
+	}
 	filter, err := parseJobFilter(r)
 	if err != nil {
 		writeAPIError(w, http.StatusBadRequest, err.Error())
@@ -2750,6 +2756,9 @@ func (h *handler) auditEvents(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusMethodNotAllowed, http.StatusText(http.StatusMethodNotAllowed))
 		return
 	}
+	if !h.authorizeOperatorRead(w, r) {
+		return
+	}
 
 	limit := 100
 	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
@@ -2874,6 +2883,9 @@ func (h *handler) publicSigningKey(w http.ResponseWriter, r *http.Request) {
 func (h *handler) desiredConfig(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
+		if !h.authorizeOperatorRead(w, r) {
+			return
+		}
 		desired, err := h.store.GetDesiredConfig(r.Context())
 		if err != nil {
 			writeAPIError(w, http.StatusInternalServerError, "get desired config")
@@ -2996,6 +3008,9 @@ func (h *handler) effectiveConfig(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", http.MethodGet)
 		writeAPIError(w, http.StatusMethodNotAllowed, http.StatusText(http.StatusMethodNotAllowed))
+		return
+	}
+	if !h.authorizeOperatorRead(w, r) {
 		return
 	}
 	nodeID := strings.TrimSpace(r.URL.Query().Get("nodeId"))
@@ -3218,6 +3233,14 @@ func (h *handler) authorizeOperator(w http.ResponseWriter, r *http.Request) bool
 		return false
 	}
 	return true
+}
+
+// authorizeOperatorRead gates read-only operator endpoints. Reads require a
+// valid operator identity (a read-only token suffices); an explicitly
+// unauthenticated deployment (--allow-unauthenticated-operator-api) is still
+// permitted via authorizeOperator.
+func (h *handler) authorizeOperatorRead(w http.ResponseWriter, r *http.Request) bool {
+	return h.authorizeOperator(w, r)
 }
 
 func decodeOptionalJSON(body io.Reader, dst any) error {
