@@ -561,7 +561,7 @@ func runRolloutCreate(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 2
 	}
 	if flags.NArg() != 0 {
-		fmt.Fprintln(stderr, "sideplane rollout create: unexpected positional arguments")
+		fmt.Fprintln(stderr, "usage: "+usage)
 		return 1
 	}
 	if templateID := strings.TrimSpace(*template); templateID != "" {
@@ -827,7 +827,7 @@ func runRolloutList(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 2
 	}
 	if flags.NArg() != 0 {
-		fmt.Fprintln(stderr, "sideplane rollout list: unexpected positional arguments")
+		fmt.Fprintln(stderr, "usage: "+usage)
 		return 1
 	}
 
@@ -2088,7 +2088,7 @@ func runConfigGet(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 2
 	}
 	if flags.NArg() != 0 {
-		fmt.Fprintln(stderr, "sideplane config get: unexpected positional arguments")
+		fmt.Fprintln(stderr, "usage: "+usage)
 		return 1
 	}
 
@@ -2122,7 +2122,7 @@ func runConfigSet(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 2
 	}
 	if flags.NArg() != 0 {
-		fmt.Fprintln(stderr, "sideplane config set: unexpected positional arguments")
+		fmt.Fprintln(stderr, "usage: "+usage)
 		return 1
 	}
 	if strings.TrimSpace(*provider) == "" || strings.TrimSpace(*model) == "" {
@@ -2347,7 +2347,7 @@ func runFleetStatus(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 2
 	}
 	if flags.NArg() != 0 {
-		fmt.Fprintln(stderr, "sideplane fleet status: unexpected positional arguments")
+		fmt.Fprintln(stderr, "usage: "+usage)
 		return 1
 	}
 
