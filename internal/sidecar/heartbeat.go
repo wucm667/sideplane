@@ -168,16 +168,11 @@ func RunHeartbeatLoop(ctx context.Context, client *HeartbeatClient, interval tim
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
-	var pending *protocol.HeartbeatRequest
 	for {
-		// Latest-wins: failed heartbeats are retained only until the next
-		// cycle, when a fresh sample replaces any older unsent payload.
+		// Latest-wins: each cycle builds and sends a fresh sample, so a failed
+		// heartbeat is simply superseded by the next one rather than queued.
 		heartbeat := client.BuildHeartbeat(ctx)
-		pending = &heartbeat
-		resp, err := client.sendHeartbeatRequest(ctx, *pending)
-		if err == nil {
-			pending = nil
-		}
+		resp, err := client.sendHeartbeatRequest(ctx, heartbeat)
 		if report != nil {
 			report(resp, err)
 		}
