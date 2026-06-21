@@ -179,13 +179,13 @@ export function FleetOverview({
       <FleetMetricsPanel metrics={metrics} />
 
       {bannerText && (
-        <div className="mb-5 rounded-xl border border-amber-500/35 bg-amber-500/10 px-4 py-3 text-sm font-medium text-[var(--sp-text)]">
+        <div role="status" className="mb-5 rounded-xl border border-amber-500/35 bg-amber-500/10 px-4 py-3 text-sm font-medium text-[var(--sp-text)]">
           {bannerText}
         </div>
       )}
 
       {error && (
-        <div className="mb-5 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-600">
+        <div role="alert" className="mb-5 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-600">
           Failed to load nodes: {error}
         </div>
       )}
@@ -194,12 +194,14 @@ export function FleetOverview({
         <input
           className="h-9 w-full rounded-lg border border-[var(--sp-border)] bg-[var(--sp-surface)] px-3 font-mono text-xs text-[var(--sp-text)] outline-none focus:border-[var(--sp-accent)] sm:max-w-sm"
           value={searchQuery}
+          aria-label="Filter nodes"
           placeholder="Filter nodes..."
           onChange={(event) => setSearchQuery(event.target.value)}
         />
         <input
           className="h-9 w-full rounded-lg border border-[var(--sp-border)] bg-[var(--sp-surface)] px-3 font-mono text-xs text-[var(--sp-text)] outline-none focus:border-[var(--sp-accent)] sm:max-w-sm"
           value={selector}
+          aria-label="Node selector"
           placeholder="Selector role=canary,zone=lab"
           onChange={(event) => onSelectorChange(event.target.value)}
         />
@@ -219,6 +221,7 @@ export function FleetOverview({
           <input
             className="h-9 min-w-0 flex-1 rounded-lg border border-[var(--sp-border)] bg-[var(--sp-surface)] px-3 font-mono text-xs text-[var(--sp-text)] outline-none focus:border-[var(--sp-accent)] sm:max-w-xs"
             value={labelInput}
+            aria-label="Labels to apply to selected nodes"
             placeholder="role=canary,zone=lab"
             onChange={(event) => setLabelInput(event.target.value)}
           />
@@ -239,10 +242,10 @@ export function FleetOverview({
           </button>
         </div>
       )}
-      {bulkMessage && <div className="mb-3 rounded-lg border border-emerald-500/25 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-600">{bulkMessage}</div>}
-      {bulkError && <div className="mb-3 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-600">{bulkError}</div>}
+      {bulkMessage && <div role="status" className="mb-3 rounded-lg border border-emerald-500/25 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-600">{bulkMessage}</div>}
+      {bulkError && <div role="alert" className="mb-3 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-600">{bulkError}</div>}
 
-      <div className="overflow-hidden rounded-xl border border-[var(--sp-border)] bg-[var(--sp-surface)] shadow-sm">
+      <div role="region" aria-label="Fleet nodes" className="overflow-hidden rounded-xl border border-[var(--sp-border)] bg-[var(--sp-surface)] shadow-sm">
         <div className="hidden border-b border-[var(--sp-border)] px-5 py-3 lg:flex lg:items-center lg:gap-4">
           <label className="flex w-6 items-center justify-center">
             <input type="checkbox" aria-label="select all nodes" checked={allVisibleSelected} onChange={toggleSelectAllVisible} />

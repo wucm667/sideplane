@@ -239,6 +239,7 @@ export function NodeDetailView({
               <select
                 className="h-9 max-w-80 rounded-lg border border-[var(--sp-border)] bg-[var(--sp-surface)] px-2 font-mono text-xs outline-none disabled:cursor-not-allowed disabled:opacity-60"
                 value={rollbackBackup?.ref ?? ''}
+                aria-label="Backup to roll back to"
                 disabled={!tokenReady || rollingBack || activeRollback || backupsLoading}
                 onChange={(event) => setSelectedBackupRef(event.target.value)}
               >
@@ -290,19 +291,19 @@ export function NodeDetailView({
       </div>
 
       {removeError && (
-        <div className="mb-5 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-600">
+        <div role="alert" className="mb-5 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-600">
           Failed to remove node: {removeError}
         </div>
       )}
 
       {maintenanceError && (
-        <div className="mb-5 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-600">
+        <div role="alert" className="mb-5 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-600">
           Failed to update maintenance: {maintenanceError}
         </div>
       )}
 
       {backupsError && (
-        <div className="mb-5 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-600">
+        <div role="alert" className="mb-5 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-600">
           Failed to load backups: {backupsError}
         </div>
       )}
@@ -340,6 +341,7 @@ export function NodeDetailView({
             <select
               className="h-8 rounded-lg border border-[var(--sp-border)] bg-[var(--sp-surface-2)] px-2 text-xs outline-none"
               value={jobStatusFilter}
+              aria-label="Filter jobs by status"
               onChange={(event) => onJobStatusFilterChange(event.target.value as JobStatus | '')}
             >
               <option value="">All statuses</option>
@@ -360,7 +362,7 @@ export function NodeDetailView({
             {jobsLoading && <div className="text-xs text-[var(--sp-muted)]">Loading jobs...</div>}
           </div>
         </div>
-        {jobsError && <div className="mt-4 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-600">Failed to load jobs: {jobsError}</div>}
+        {jobsError && <div role="alert" className="mt-4 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-600">Failed to load jobs: {jobsError}</div>}
         <div className="divide-y divide-[var(--sp-border)]">
           {!jobsLoading && jobs.length === 0 && <div className="px-4 py-4 text-xs text-[var(--sp-muted)]">No jobs yet.</div>}
           {jobs.map((job) => (

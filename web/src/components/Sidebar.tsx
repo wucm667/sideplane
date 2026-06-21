@@ -34,7 +34,7 @@ export function Sidebar({
         </div>
       </div>
 
-      <nav className="grid grid-cols-4 gap-1 px-3 py-3 md:flex md:flex-col">
+      <nav aria-label="Primary" className="grid grid-cols-4 gap-1 px-3 py-3 md:flex md:flex-col">
         <NavButton active={currentView === 'fleet'} label="Fleet" onClick={() => onViewChange('fleet')} />
         <NavButton active={currentView === 'rollouts'} label="Rollouts" onClick={() => onViewChange('rollouts')} />
         <NavButton active={currentView === 'activity'} label="Activity" onClick={() => onViewChange('activity')} />
@@ -107,6 +107,7 @@ function NavButton({ active, label, onClick }: { active: boolean; label: string;
   return (
     <button
       type="button"
+      aria-current={active ? 'page' : undefined}
       className={`rounded-lg px-3 py-2 text-left text-xs font-semibold transition md:text-[13px] ${active ? 'bg-[var(--sp-surface-2)] text-[var(--sp-text)]' : 'text-[var(--sp-muted)] hover:bg-[var(--sp-surface-2)] hover:text-[var(--sp-text)]'}`}
       onClick={onClick}
     >

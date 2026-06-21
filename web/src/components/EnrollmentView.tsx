@@ -181,14 +181,14 @@ export function EnrollmentView({ operatorToken }: { operatorToken: string }) {
       )}
 
       {error && (
-        <div className="mb-5 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-600">
+        <div role="alert" className="mb-5 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-600">
           {error}
         </div>
       )}
 
-      <section className="overflow-hidden rounded-xl border border-[var(--sp-border)] bg-[var(--sp-surface)] shadow-sm">
+      <section aria-labelledby="enrollment-token-heading" className="overflow-hidden rounded-xl border border-[var(--sp-border)] bg-[var(--sp-surface)] shadow-sm">
         <div className="border-b border-[var(--sp-border)] px-4 py-3">
-          <div className="text-sm font-semibold">Enrollment token</div>
+          <div id="enrollment-token-heading" className="text-sm font-semibold">Enrollment token</div>
           <div className="mt-1 text-xs text-[var(--sp-muted)]">Tokens are one-time values and are shown only once.</div>
         </div>
 
@@ -202,6 +202,7 @@ export function EnrollmentView({ operatorToken }: { operatorToken: string }) {
             <div className="flex flex-col gap-2 sm:flex-row">
               <input
                 readOnly
+                aria-label="Enrollment token"
                 className="h-10 min-w-0 flex-1 rounded-lg border border-[var(--sp-border)] bg-[var(--sp-surface-2)] px-3 font-mono text-xs text-[var(--sp-text)] outline-none"
                 value={created?.token ?? ''}
                 placeholder="Create a token to reveal it once"
@@ -227,6 +228,7 @@ export function EnrollmentView({ operatorToken }: { operatorToken: string }) {
             <div className="flex flex-col gap-2 sm:flex-row">
               <input
                 readOnly
+                aria-label="Sidecar enroll command"
                 className="h-10 min-w-0 flex-1 rounded-lg border border-[var(--sp-border)] bg-[var(--sp-surface-2)] px-3 font-mono text-xs text-[var(--sp-text)] outline-none"
                 value={enrollCommand}
               />
@@ -261,11 +263,12 @@ export function EnrollmentView({ operatorToken }: { operatorToken: string }) {
 
         <div className="grid gap-4 px-4 py-4">
           {createdOperatorToken && (
-            <div className="grid gap-3 rounded-lg border border-emerald-500/25 bg-emerald-500/10 px-3 py-3">
+            <div role="status" className="grid gap-3 rounded-lg border border-emerald-500/25 bg-emerald-500/10 px-3 py-3">
               <div className="text-xs font-semibold text-emerald-700">Copy this operator token now. It will not be shown again.</div>
               <div className="flex flex-col gap-2 sm:flex-row">
                 <input
                   readOnly
+                  aria-label="New operator token"
                   className="h-10 min-w-0 flex-1 rounded-lg border border-emerald-500/25 bg-[var(--sp-surface)] px-3 font-mono text-xs text-[var(--sp-text)] outline-none"
                   value={createdOperatorToken.token}
                 />
@@ -281,7 +284,7 @@ export function EnrollmentView({ operatorToken }: { operatorToken: string }) {
           )}
 
           {operatorTokensError && (
-            <div className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-600">
+            <div role="alert" className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-600">
               {operatorTokensError}
             </div>
           )}
@@ -290,6 +293,7 @@ export function EnrollmentView({ operatorToken }: { operatorToken: string }) {
             <input
               className="h-10 rounded-lg border border-[var(--sp-border)] bg-[var(--sp-surface-2)] px-3 text-sm text-[var(--sp-text)] outline-none focus:border-[var(--sp-accent)]"
               value={operatorTokenName}
+              aria-label="Operator token name"
               placeholder="token name"
               onChange={(event) => setOperatorTokenName(event.target.value)}
             />
@@ -435,12 +439,13 @@ function ServerSettingsSection({ operatorToken }: { operatorToken: string }) {
       <h2 className="text-sm font-semibold">Server settings</h2>
       <p className="mt-1 text-xs text-[var(--sp-muted)]">Set the expected sidecar version to flag nodes running a different version. Leave empty to disable the check.</p>
       {!tokenReady && <div className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-700">Operator token required to change settings.</div>}
-      {error && <div className="mt-3 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-600">{error}</div>}
-      {message && <div className="mt-3 rounded-lg border border-emerald-500/25 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-700">{message}</div>}
+      {error && <div role="alert" className="mt-3 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-600">{error}</div>}
+      {message && <div role="status" className="mt-3 rounded-lg border border-emerald-500/25 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-700">{message}</div>}
       <div className="mt-4 grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
         <input
           className="h-10 rounded-lg border border-[var(--sp-border)] bg-[var(--sp-surface-2)] px-3 text-sm text-[var(--sp-text)] outline-none focus:border-[var(--sp-accent)]"
           value={expectedVersion}
+          aria-label="Expected sidecar version"
           placeholder="expected sidecar version, e.g. v1.2.0"
           onChange={(event) => setExpectedVersion(event.target.value)}
         />
@@ -564,9 +569,9 @@ function AlertWebhooksSection({ operatorToken }: { operatorToken: string }) {
       <p className="mt-1 text-xs text-[var(--sp-muted)]">Receive generic JSON or Slack-compatible alerts when a node goes offline or drifts, or a rollout pauses or fails.</p>
 
       {!tokenReady && <div className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-700">Operator token required to manage webhooks.</div>}
-      {error && <div className="mt-3 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-600">{error}</div>}
+      {error && <div role="alert" className="mt-3 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-600">{error}</div>}
       {createdSecret && (
-        <div className="mt-3 rounded-lg border border-emerald-500/25 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-700">
+        <div role="status" className="mt-3 rounded-lg border border-emerald-500/25 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-700">
           Signing secret (shown once): <span className="font-mono break-all">{createdSecret}</span>
         </div>
       )}
@@ -575,12 +580,14 @@ function AlertWebhooksSection({ operatorToken }: { operatorToken: string }) {
         <input
           className="h-10 rounded-lg border border-[var(--sp-border)] bg-[var(--sp-surface-2)] px-3 text-sm text-[var(--sp-text)] outline-none focus:border-[var(--sp-accent)]"
           value={url}
+          aria-label="Webhook URL"
           placeholder="https://hooks.example.com/sideplane"
           onChange={(event) => setUrl(event.target.value)}
         />
         <select
           className="h-10 rounded-lg border border-[var(--sp-border)] bg-[var(--sp-surface-2)] px-3 text-sm text-[var(--sp-text)] outline-none focus:border-[var(--sp-accent)]"
           value={kind}
+          aria-label="Webhook kind"
           onChange={(event) => {
             const next = event.target.value as AlertWebhookKind
             setKind(next)

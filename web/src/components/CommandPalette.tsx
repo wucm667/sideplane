@@ -13,15 +13,21 @@ export function CommandPalette({ open, commands, onClose }: { open: boolean; com
   const [query, setQuery] = useState('')
   const [activeIndex, setActiveIndex] = useState(0)
   const inputRef = useRef<HTMLInputElement>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
+  const openerRef = useRef<HTMLElement | null>(null)
 
   const results = useMemo(() => filterFuzzy(commands, query, (command) => `${command.label} ${command.keywords}`).slice(0, 50), [commands, query])
 
   useEffect(() => {
     if (open) {
+      openerRef.current = document.activeElement as HTMLElement | null
       setQuery('')
       setActiveIndex(0)
       // Focus after the dialog mounts.
       window.setTimeout(() => inputRef.current?.focus(), 0)
+    } else {
+      // Restore focus to whatever opened the palette.
+      openerRef.current?.focus?.()
     }
   }, [open])
 
@@ -52,6 +58,24 @@ export function CommandPalette({ open, commands, onClose }: { open: boolean; com
     } else if (event.key === 'Enter') {
       event.preventDefault()
       runActive()
+    } else if (event.key === 'Tab') {
+      // Keep focus inside the palette instead of leaking to the page behind it.
+      const container = panelRef.current
+      if (!container) return
+      const focusable = container.querySelectorAll<HTMLElement>(
+        'a[href], button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      )
+      if (focusable.length === 0) return
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+      const active = document.activeElement
+      if (event.shiftKey && (active === first || !container.contains(active))) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && active === last) {
+        event.preventDefault()
+        first.focus()
+      }
     }
   }
 
@@ -64,6 +88,7 @@ export function CommandPalette({ open, commands, onClose }: { open: boolean; com
       onClick={onClose}
     >
       <div
+        ref={panelRef}
         className="w-full max-w-xl overflow-hidden rounded-xl border border-[var(--sp-border)] bg-[var(--sp-surface)] shadow-2xl"
         onClick={(event) => event.stopPropagation()}
         onKeyDown={onKeyDown}

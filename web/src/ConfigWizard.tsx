@@ -56,6 +56,7 @@ export default function ConfigWizard({
   const [historyError, setHistoryError] = useState<string | null>(null)
   const [revertingHistoryId, setRevertingHistoryId] = useState<string | null>(null)
   const mountedRef = useRef(true)
+  const panelRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     mountedRef.current = true
@@ -63,6 +64,23 @@ export default function ConfigWizard({
       mountedRef.current = false
     }
   }, [])
+
+  // Keep keyboard focus inside the dialog and restore it to the opener on close.
+  useEffect(() => {
+    const opener = document.activeElement as HTMLElement | null
+    panelRef.current?.focus()
+    return () => opener?.focus?.()
+  }, [])
+
+  const onDialogKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      onClose()
+      return
+    }
+    if (event.key !== 'Tab') return
+    trapTabKey(event, panelRef.current)
+  }
 
   const authedFetch = useCallback(
     (url: string, init?: RequestInit) => {
@@ -245,12 +263,12 @@ export default function ConfigWizard({
   const terminalCopy = terminal ? applyTerminalMessage(applyStatus, applyResult) : ''
 
   return (
-    <div className="fixed inset-0 z-50 flex justify-end bg-black/40" role="dialog" aria-modal="true">
-      <button type="button" aria-label="Close" className="flex-1 cursor-default" onClick={onClose} />
-      <div className="flex h-full w-full max-w-xl flex-col overflow-y-auto border-l border-[var(--sp-border)] bg-[var(--sp-surface)] shadow-xl">
+    <div className="fixed inset-0 z-50 flex justify-end bg-black/40" role="dialog" aria-modal="true" aria-labelledby="config-wizard-title" onKeyDown={onDialogKeyDown}>
+      <button type="button" aria-label="Close" tabIndex={-1} className="flex-1 cursor-default" onClick={onClose} />
+      <div ref={panelRef} tabIndex={-1} className="flex h-full w-full max-w-xl flex-col overflow-y-auto border-l border-[var(--sp-border)] bg-[var(--sp-surface)] shadow-xl outline-none">
         <div className="flex items-start justify-between border-b border-[var(--sp-border)] px-6 py-4">
           <div>
-            <div className="text-lg font-bold tracking-tight">Change configuration</div>
+            <div id="config-wizard-title" className="text-lg font-bold tracking-tight">Change configuration</div>
             <div className="mt-0.5 font-mono text-xs text-[var(--sp-muted)]">{nodeId} · {runtimeType}/{profile}</div>
           </div>
           <button type="button" className="rounded-lg border border-[var(--sp-border)] px-2.5 py-1 text-sm text-[var(--sp-muted)] hover:bg-[var(--sp-surface-2)]" onClick={onClose}>
@@ -262,7 +280,7 @@ export default function ConfigWizard({
 
         <div className="flex-1 px-6 py-5">
           {error && (
-            <div className="mb-4 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-600">{error}</div>
+            <div role="alert" className="mb-4 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-600">{error}</div>
           )}
 
           {step === 'Edit' && (
@@ -372,6 +390,28 @@ export default function ConfigWizard({
       </div>
     </div>
   )
+}
+
+// trapTabKey keeps Tab/Shift+Tab focus cycling inside the given container so a
+// modal dialog does not leak focus to the page behind it.
+function trapTabKey(event: React.KeyboardEvent, container: HTMLElement | null) {
+  if (!container) return
+  const focusable = container.querySelectorAll<HTMLElement>(
+    'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+  )
+  if (focusable.length === 0) return
+  const first = focusable[0]
+  const last = focusable[focusable.length - 1]
+  const active = document.activeElement
+  if (event.shiftKey) {
+    if (active === first || !container.contains(active)) {
+      event.preventDefault()
+      last.focus()
+    }
+  } else if (active === last) {
+    event.preventDefault()
+    first.focus()
+  }
 }
 
 function nodeRuntimeProfileKey(nodeId: string, runtimeType: string, profile: string): string {

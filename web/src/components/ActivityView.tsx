@@ -61,12 +61,14 @@ export function ActivityView({
         <input
           className="h-9 rounded-lg border border-[var(--sp-border)] bg-[var(--sp-surface-2)] px-3 font-mono text-xs text-[var(--sp-text)] outline-none focus:border-[var(--sp-accent)]"
           value={filters.nodeId}
+          aria-label="Filter by node ID"
           placeholder="Filter by node ID"
           onChange={(event) => onFiltersChange({ ...filters, nodeId: event.target.value })}
         />
         <select
           className="h-9 rounded-lg border border-[var(--sp-border)] bg-[var(--sp-surface-2)] px-3 font-mono text-xs text-[var(--sp-text)] outline-none focus:border-[var(--sp-accent)]"
           value={filters.action}
+          aria-label="Filter by action"
           onChange={(event) => onFiltersChange({ ...filters, action: event.target.value as AuditAction | '' })}
         >
           <option value="">All actions</option>
@@ -77,6 +79,7 @@ export function ActivityView({
         <select
           className="h-9 rounded-lg border border-[var(--sp-border)] bg-[var(--sp-surface-2)] px-3 font-mono text-xs text-[var(--sp-text)] outline-none focus:border-[var(--sp-accent)]"
           value={limit}
+          aria-label="Number of events to load"
           onChange={(event) => onLimitChange(Number(event.target.value))}
         >
           <option value={50}>50 events</option>
@@ -95,12 +98,12 @@ export function ActivityView({
       </div>
 
       {error && (
-        <div className="mb-5 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-600">
+        <div role="alert" className="mb-5 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-600">
           Failed to load activity: {error}
         </div>
       )}
 
-      <div className="overflow-hidden rounded-xl border border-[var(--sp-border)] bg-[var(--sp-surface)] shadow-sm">
+      <div role="region" aria-label="Audit events" className="overflow-hidden rounded-xl border border-[var(--sp-border)] bg-[var(--sp-surface)] shadow-sm">
         <div className="hidden grid-cols-[1fr_1fr_1.4fr_1.4fr] gap-4 border-b border-[var(--sp-border)] px-5 py-3 text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--sp-faint)] sm:grid">
           <div>Time</div>
           <div>Actor</div>

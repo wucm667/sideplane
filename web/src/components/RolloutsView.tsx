@@ -63,7 +63,7 @@ export function RolloutsView({
       </div>
 
       {error && (
-        <div className="mb-5 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-600">
+        <div role="alert" className="mb-5 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-600">
           {error}
         </div>
       )}
@@ -395,6 +395,7 @@ function RolloutCreateForm({
         <input
           className={inputClassName + ' max-w-[12rem]'}
           value={templateName}
+          aria-label="Template name"
           placeholder="save as template name"
           onChange={(event) => setTemplateName(event.target.value)}
         />
@@ -407,8 +408,8 @@ function RolloutCreateForm({
           Save as template
         </button>
       </div>
-      {templateMessage && <div className="mt-2 text-xs text-emerald-600">{templateMessage}</div>}
-      {formError && <div className="mt-3 text-xs text-rose-600">{formError}</div>}
+      {templateMessage && <div role="status" className="mt-2 text-xs text-emerald-600">{templateMessage}</div>}
+      {formError && <div role="alert" className="mt-3 text-xs text-rose-600">{formError}</div>}
     </form>
   )
 }
