@@ -1,4 +1,8 @@
-.PHONY: all build generate test test-race vet fmt web web-dev typecheck lint openapi-check smoke release-local clean docker install
+.PHONY: all build generate test test-race vet fmt web web-dev typecheck lint openapi-check smoke release-local release-dist clean docker install
+
+# RELEASE_PLATFORMS mirrors the .github/workflows/release.yml build matrix.
+RELEASE_PLATFORMS ?= linux/amd64 linux/arm64
+RELEASE_CMDS ?= sideplane-server sideplane-sidecar sideplane
 
 GO ?= go
 BIN_DIR ?= bin
@@ -58,6 +62,26 @@ release-local: web
 	$(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(DIST_DIR)/sideplane-server ./cmd/sideplane-server
 	$(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(DIST_DIR)/sideplane-sidecar ./cmd/sideplane-sidecar
 	$(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(DIST_DIR)/sideplane ./cmd/sideplane
+
+# release-dist cross-compiles the release matrix locally and writes checksummed
+# binaries plus a SHA256SUMS file into dist/. It never pushes or publishes; the
+# git tag and GitHub release remain a manual maintainer step. The Web UI is
+# rebuilt first so each server binary embeds current assets.
+release-dist:
+	cd web && npm run build
+	mkdir -p $(DIST_DIR)
+	@for platform in $(RELEASE_PLATFORMS); do \
+		goos="$${platform%/*}"; goarch="$${platform#*/}"; \
+		for cmd in $(RELEASE_CMDS); do \
+			out="$(DIST_DIR)/$${cmd}_$${goos}_$${goarch}"; \
+			echo "building $$out"; \
+			GOOS="$$goos" GOARCH="$$goarch" CGO_ENABLED=0 $(GO) build -trimpath -ldflags "$(LDFLAGS)" -o "$$out" ./cmd/$$cmd || exit 1; \
+		done; \
+	done
+	cd $(DIST_DIR) && rm -f SHA256SUMS && \
+		if command -v sha256sum >/dev/null 2>&1; then sha256sum sideplane* > SHA256SUMS; \
+		else shasum -a 256 sideplane* > SHA256SUMS; fi
+	@echo "wrote $(DIST_DIR)/SHA256SUMS"
 
 clean:
 	rm -rf $(BIN_DIR) $(DIST_DIR) web/dist
