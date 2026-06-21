@@ -500,8 +500,14 @@ export function useFleetPageController() {
     }
     const query = params.toString()
     const path = query ? `/api/nodes?${query}` : '/api/nodes'
-    const res = await fetch(apiURL(path))
+    const headers: HeadersInit = {}
+    const token = operatorToken.trim()
+    if (token) {
+      headers.Authorization = `Bearer ${token}`
+    }
+    const res = await fetch(apiURL(path), { headers })
     if (!res.ok) {
+      if (res.status === 401) throw new Error('Operator token required or invalid')
       throw new Error(await apiErrorMessage(res))
     }
     const payload = (await res.json()) as NodeStatus[] | ListNodesResponse
@@ -510,7 +516,7 @@ export function useFleetPageController() {
     setNodes(data)
     setError(null)
     return data
-  }, [selector])
+  }, [operatorToken, selector])
 
   const refreshFleet = useCallback(async (showRefreshing = true) => {
     if (!mountedRef.current) return
@@ -829,8 +835,14 @@ export function useFleetPageController() {
         params.set('action', auditFilters.action)
       }
       const query = params.toString()
-      const res = await fetch(apiURL(query ? `/api/audit?${query}` : '/api/audit'))
+      const headers: HeadersInit = {}
+      const token = operatorToken.trim()
+      if (token) {
+        headers.Authorization = `Bearer ${token}`
+      }
+      const res = await fetch(apiURL(query ? `/api/audit?${query}` : '/api/audit'), { headers })
       if (!res.ok) {
+        if (res.status === 401) throw new Error('Operator token required or invalid')
         throw new Error(await apiErrorMessage(res))
       }
       const data: ListAuditEventsResponse = await res.json()
@@ -845,7 +857,7 @@ export function useFleetPageController() {
         setAuditLoading(false)
       }
     }
-  }, [auditFilters, auditLimit])
+  }, [auditFilters, auditLimit, operatorToken])
 
   const loadRollouts = useCallback(async (showLoading = true) => {
     if (!mountedRef.current) return
@@ -958,8 +970,14 @@ export function useFleetPageController() {
   const loadEffectiveConfig = useCallback(async (nodeId: string, runtimeType = 'hermes', profile = 'default') => {
     try {
       const params = new URLSearchParams({ nodeId, runtimeType, profile })
-      const res = await fetch(apiURL(`/api/config/effective?${params.toString()}`))
+      const headers: HeadersInit = {}
+      const token = operatorToken.trim()
+      if (token) {
+        headers.Authorization = `Bearer ${token}`
+      }
+      const res = await fetch(apiURL(`/api/config/effective?${params.toString()}`), { headers })
       if (!res.ok) {
+        if (res.status === 401) throw new Error('Operator token required or invalid')
         throw new Error(await apiErrorMessage(res))
       }
       const data: EffectiveConfigResponse = await res.json()
@@ -977,7 +995,7 @@ export function useFleetPageController() {
         [nodeId]: e instanceof Error ? e.message : 'Unknown error',
       }))
     }
-  }, [])
+  }, [operatorToken])
 
   useEffect(() => {
     refreshFleet(false)

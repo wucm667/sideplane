@@ -224,7 +224,7 @@ export default function ConfigWizard({
     setApplyStatus(null)
     setStep('Apply')
     try {
-      const current: DesiredConfig = await fetch(apiURL('/api/config/desired')).then((res) => {
+      const current: DesiredConfig = await authedFetch('/api/config/desired', { method: 'GET' }).then((res) => {
         if (!res.ok) return failMessage(res).then((message) => { throw new Error(message) })
         return res.json()
       })
