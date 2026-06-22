@@ -3081,6 +3081,10 @@ func (h *handler) writeEffectiveConfig(w http.ResponseWriter, r *http.Request, n
 		writeAPIError(w, http.StatusInternalServerError, "get actual config")
 		return
 	}
+	diff := spconfig.DiffProviderModelConfig(actual, effective)
+	if diff == nil {
+		diff = []protocol.ConfigDiffEntry{}
+	}
 	writeJSON(w, http.StatusOK, protocol.EffectiveConfigResponse{
 		NodeID:      nodeID,
 		RuntimeType: runtimeType,
@@ -3088,7 +3092,7 @@ func (h *handler) writeEffectiveConfig(w http.ResponseWriter, r *http.Request, n
 		Effective:   effective,
 		DesiredHash: hashDesired(effective),
 		Actual:      actual,
-		Diff:        spconfig.DiffProviderModelConfig(actual, effective),
+		Diff:        diff,
 	})
 }
 

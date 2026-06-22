@@ -671,7 +671,15 @@ function parseJobResult<T>(job: Job): T | null {
   }
 }
 
+type EffectiveConfigDiffSource = { diff?: ConfigDiffEntry[] | null } | null | undefined
+
+export function effectiveConfigDiffEntries(effective: EffectiveConfigDiffSource): ConfigDiffEntry[] {
+  return effective?.diff ?? []
+}
+
 function ConfigDiffPanel({ effective, error }: { effective?: EffectiveConfigResponse; error?: string }) {
+  const diff = effectiveConfigDiffEntries(effective)
+
   return (
     <section className="mb-6 rounded-xl border border-[var(--sp-border)] bg-[var(--sp-surface)]">
       <div className="flex flex-col gap-2 border-b border-[var(--sp-border)] px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
@@ -690,11 +698,11 @@ function ConfigDiffPanel({ effective, error }: { effective?: EffectiveConfigResp
       <div className="border-t border-[var(--sp-border)] px-4 py-4">
         {!effective ? (
           <div className="text-sm text-[var(--sp-muted)]">Desired diff not loaded yet.</div>
-        ) : effective.diff.length === 0 ? (
+        ) : diff.length === 0 ? (
           <div className="text-sm text-emerald-600">Actual provider/model matches desired effective config.</div>
         ) : (
           <div className="grid gap-2">
-            {effective.diff.map((entry) => <DiffRow key={`${entry.field}-${entry.change}`} entry={entry} />)}
+            {diff.map((entry) => <DiffRow key={`${entry.field}-${entry.change}`} entry={entry} />)}
           </div>
         )}
       </div>

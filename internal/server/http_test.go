@@ -1942,6 +1942,33 @@ func TestEffectiveConfigPreviewDoesNotPersistDesiredConfig(t *testing.T) {
 	}
 }
 
+func TestEffectiveConfigReturnsEmptyDiffArrayWhenNoDesiredConfig(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	enrollTestNode(t, nodeStore, "node-empty-diff")
+	handler := newDevHandlerWithStore(t, nodeStore)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/config/effective?nodeId=node-empty-diff", nil)
+	handler.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusOK)
+
+	body := rec.Body.Bytes()
+	if bytes.Contains(body, []byte(`"diff":null`)) {
+		t.Fatalf("effective config response encoded null diff: %s", body)
+	}
+	if !bytes.Contains(body, []byte(`"diff":[]`)) {
+		t.Fatalf("effective config response = %s, want empty diff array", body)
+	}
+
+	var effective protocol.EffectiveConfigResponse
+	if err := json.Unmarshal(body, &effective); err != nil {
+		t.Fatalf("decode effective response: %v", err)
+	}
+	if len(effective.Diff) != 0 {
+		t.Fatalf("diff = %#v, want empty", effective.Diff)
+	}
+}
+
 func TestEffectiveConfigPreviewRejectsUnsafeProviderModelValues(t *testing.T) {
 	nodeStore := store.NewMemoryNodeStore()
 	enrollTestNode(t, nodeStore, "node-preview")
