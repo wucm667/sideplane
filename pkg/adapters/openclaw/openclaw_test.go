@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/wucm667/sideplane/pkg/adapters"
+	"github.com/wucm667/sideplane/pkg/protocol"
 )
 
 func newTestAdapter(paths ...string) *Adapter {
@@ -395,6 +396,50 @@ func TestAdapterStatusVersionCommandUnsetLeavesVersionEmpty(t *testing.T) {
 	}
 	if len(status.Warnings) != 0 {
 		t.Fatalf("Warnings = %#v, want none", status.Warnings)
+	}
+}
+
+func TestAdapterStatusDeploymentModeLocal(t *testing.T) {
+	a := newTestAdapter()
+	status, err := a.Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status error = %v, want nil", err)
+	}
+	if status.DeploymentMode != protocol.DeploymentModeLocal {
+		t.Fatalf("DeploymentMode = %q, want local", status.DeploymentMode)
+	}
+}
+
+func TestAdapterStatusDeploymentModeSystemd(t *testing.T) {
+	a := newTestAdapter()
+	a.serviceUnitName = "openclaw.service"
+	status, err := a.Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status error = %v, want nil", err)
+	}
+	if status.DeploymentMode != protocol.DeploymentModeSystemd {
+		t.Fatalf("DeploymentMode = %q, want systemd", status.DeploymentMode)
+	}
+}
+
+func TestAdapterStatusDeploymentModeContainer(t *testing.T) {
+	path := writeConfig(t, `{"provider":"openai","model":"gpt-4o"}`)
+	a := newTestAdapter(path)
+	a.container = "openclaw-agent"
+	a.serviceUnitName = "openclaw.service"
+	a.runCommand = func(_ context.Context, name string, args ...string) ([]byte, error) {
+		if name != "docker" {
+			return nil, errors.New("unexpected command " + name + " " + strings.Join(args, " "))
+		}
+		return []byte("ghcr.io/openclaw/openclaw:v2026.4.30\n"), nil
+	}
+	status, err := a.Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status error = %v, want nil", err)
+	}
+	// A configured container takes precedence over a configured service unit.
+	if status.DeploymentMode != protocol.DeploymentModeContainer {
+		t.Fatalf("DeploymentMode = %q, want container", status.DeploymentMode)
 	}
 }
 

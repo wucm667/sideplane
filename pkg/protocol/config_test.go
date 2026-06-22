@@ -56,16 +56,17 @@ func TestRuntimeConfigSnapshotJSONShape(t *testing.T) {
 
 func TestRuntimeStatusJSONShape(t *testing.T) {
 	status := RuntimeStatus{
-		Name:       "hermes",
-		Type:       "hermes",
-		Version:    "v2026.5.1",
-		State:      "present",
-		Provider:   "openai",
-		Model:      "gpt-5",
-		ConfigHash: "sha256:abc",
-		Health:     RuntimeHealth{State: RuntimeHealthDegraded, Reason: "service inactive"},
-		Warnings:   []string{"config path unreadable"},
-		Outdated:   true,
+		Name:           "hermes",
+		Type:           "hermes",
+		Version:        "v2026.5.1",
+		DeploymentMode: DeploymentModeContainer,
+		State:          "present",
+		Provider:       "openai",
+		Model:          "gpt-5",
+		ConfigHash:     "sha256:abc",
+		Health:         RuntimeHealth{State: RuntimeHealthDegraded, Reason: "service inactive"},
+		Warnings:       []string{"config path unreadable"},
+		Outdated:       true,
 	}
 
 	payload, err := json.Marshal(status)
@@ -77,7 +78,7 @@ func TestRuntimeStatusJSONShape(t *testing.T) {
 	if err := json.Unmarshal(payload, &got); err != nil {
 		t.Fatalf("unmarshal runtime status: %v", err)
 	}
-	for _, key := range []string{"name", "type", "version", "state", "provider", "model", "configHash", "health", "warnings", "outdated"} {
+	for _, key := range []string{"name", "type", "version", "deploymentMode", "state", "provider", "model", "configHash", "health", "warnings", "outdated"} {
 		if _, ok := got[key]; !ok {
 			t.Fatalf("runtime status JSON omits %q: %s", key, payload)
 		}

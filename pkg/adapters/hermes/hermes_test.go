@@ -522,6 +522,60 @@ func TestAdapterStatusVersionCommandUnsetLeavesVersionEmpty(t *testing.T) {
 	}
 }
 
+func TestAdapterStatusDeploymentModeLocal(t *testing.T) {
+	a := &Adapter{lookup: func(string) (string, error) { return "/usr/bin/hermes", nil }, getenv: func(string) string { return "" }}
+	status, err := a.Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status error = %v, want nil", err)
+	}
+	if status.DeploymentMode != protocol.DeploymentModeLocal {
+		t.Fatalf("DeploymentMode = %q, want local", status.DeploymentMode)
+	}
+}
+
+func TestAdapterStatusDeploymentModeSystemd(t *testing.T) {
+	a := &Adapter{
+		lookup:          func(string) (string, error) { return "/usr/bin/hermes", nil },
+		serviceUnitName: "hermes.service",
+		getenv:          func(string) string { return "" },
+	}
+	status, err := a.Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status error = %v, want nil", err)
+	}
+	if status.DeploymentMode != protocol.DeploymentModeSystemd {
+		t.Fatalf("DeploymentMode = %q, want systemd", status.DeploymentMode)
+	}
+}
+
+func TestAdapterStatusDeploymentModeContainer(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hermes.json")
+	if err := os.WriteFile(path, []byte(`{"model":{"provider":"openai","default":"gpt-5"}}`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	a := &Adapter{
+		lookup:          func(string) (string, error) { return "", errors.New("not found") },
+		configPaths:     []string{path},
+		container:       "hermes-agent",
+		serviceUnitName: "hermes.service",
+		getenv:          func(string) string { return "" },
+		runCommand: func(_ context.Context, name string, args ...string) ([]byte, error) {
+			if name != "docker" {
+				return nil, fmt.Errorf("unexpected command %s %s", name, strings.Join(args, " "))
+			}
+			return []byte("nousresearch/hermes-agent:v2026.4.30\n"), nil
+		},
+	}
+	status, err := a.Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status error = %v, want nil", err)
+	}
+	// A configured container takes precedence over a configured service unit.
+	if status.DeploymentMode != protocol.DeploymentModeContainer {
+		t.Fatalf("DeploymentMode = %q, want container", status.DeploymentMode)
+	}
+}
+
 func containsWarningFragment(warnings []string, want string) bool {
 	for _, warning := range warnings {
 		if strings.Contains(warning, want) {

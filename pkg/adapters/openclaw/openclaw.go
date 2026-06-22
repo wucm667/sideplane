@@ -121,9 +121,10 @@ func (a *Adapter) Status(ctx context.Context) (protocol.RuntimeStatus, error) {
 		return protocol.RuntimeStatus{}, nil
 	}
 	status := protocol.RuntimeStatus{
-		Name:  AdapterName,
-		Type:  AdapterType,
-		State: "present",
+		Name:           AdapterName,
+		Type:           AdapterType,
+		State:          "present",
+		DeploymentMode: a.deploymentMode(),
 	}
 	status.Version, status.Warnings = a.runtimeVersion(ctx)
 
@@ -286,6 +287,20 @@ func validateConfigSyntax(path string, contents []byte) error {
 		return fmt.Errorf("parse openclaw JSON config: %w", err)
 	}
 	return nil
+}
+
+// deploymentMode derives how the adapter manages OpenClaw from existing config:
+// a configured Docker container -> container; else a configured systemd service
+// unit -> systemd; else local. It runs no commands and never guesses beyond the
+// configured options.
+func (a *Adapter) deploymentMode() string {
+	if a.dockerContainer() != "" {
+		return protocol.DeploymentModeContainer
+	}
+	if a.serviceUnit() != "" {
+		return protocol.DeploymentModeSystemd
+	}
+	return protocol.DeploymentModeLocal
 }
 
 func (a *Adapter) dockerContainer() string {

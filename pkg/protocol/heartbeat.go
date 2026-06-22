@@ -11,18 +11,34 @@ const (
 	NodeStateOffline NodeState = "offline"
 )
 
+// Deployment modes describe how a managed runtime is deployed/managed. They are
+// adapter-derived from existing configuration and are best-effort; an empty
+// string means the adapter could not determine the deployment mode.
+const (
+	// DeploymentModeContainer means the runtime is managed as a Docker container.
+	DeploymentModeContainer = "container"
+	// DeploymentModeSystemd means the runtime is managed as a systemd unit.
+	DeploymentModeSystemd = "systemd"
+	// DeploymentModeLocal means the runtime is a plain local process / config file.
+	DeploymentModeLocal = "local"
+)
+
 // RuntimeStatus is the lightweight status summary for a managed runtime.
 type RuntimeStatus struct {
-	Name       string        `json:"name"`
-	Type       string        `json:"type,omitempty"`
-	Version    string        `json:"version,omitempty"`
-	State      string        `json:"state,omitempty"`
-	Provider   string        `json:"provider,omitempty"`
-	Model      string        `json:"model,omitempty"`
-	ConfigHash string        `json:"configHash,omitempty"`
-	Health     RuntimeHealth `json:"health,omitzero"`
-	LastError  string        `json:"lastError,omitempty"`
-	Warnings   []string      `json:"warnings,omitempty"`
+	Name    string `json:"name"`
+	Type    string `json:"type,omitempty"`
+	Version string `json:"version,omitempty"`
+	// DeploymentMode is how the adapter manages the runtime: one of
+	// DeploymentModeContainer, DeploymentModeSystemd, or DeploymentModeLocal.
+	// It is empty when the deployment mode is unknown.
+	DeploymentMode string        `json:"deploymentMode,omitempty"`
+	State          string        `json:"state,omitempty"`
+	Provider       string        `json:"provider,omitempty"`
+	Model          string        `json:"model,omitempty"`
+	ConfigHash     string        `json:"configHash,omitempty"`
+	Health         RuntimeHealth `json:"health,omitzero"`
+	LastError      string        `json:"lastError,omitempty"`
+	Warnings       []string      `json:"warnings,omitempty"`
 	// Outdated is true only when both actual and expected runtime versions are
 	// known and differ.
 	Outdated bool `json:"outdated,omitempty"`

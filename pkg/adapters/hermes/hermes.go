@@ -121,9 +121,10 @@ func (a *Adapter) Status(ctx context.Context) (protocol.RuntimeStatus, error) {
 		return protocol.RuntimeStatus{}, nil
 	}
 	status := protocol.RuntimeStatus{
-		Name:  AdapterName,
-		Type:  AdapterType,
-		State: "present",
+		Name:           AdapterName,
+		Type:           AdapterType,
+		State:          "present",
+		DeploymentMode: a.deploymentMode(),
 	}
 	status.Version, status.Warnings = a.runtimeVersion(ctx)
 
@@ -344,6 +345,20 @@ func (a *Adapter) dockerConfigHash(ctx context.Context, container string, fallba
 		return "sha256:" + hex.EncodeToString(sum[:]), fmt.Errorf("docker compose config hash unavailable")
 	}
 	return "sha256:" + hex.EncodeToString(sum[:]), nil
+}
+
+// deploymentMode derives how the adapter manages Hermes from existing config:
+// a configured Docker container -> container; else a configured systemd service
+// unit -> systemd; else local. It runs no commands and never guesses beyond the
+// configured options.
+func (a *Adapter) deploymentMode() string {
+	if a.dockerContainer() != "" {
+		return protocol.DeploymentModeContainer
+	}
+	if a.serviceUnit() != "" {
+		return protocol.DeploymentModeSystemd
+	}
+	return protocol.DeploymentModeLocal
 }
 
 func (a *Adapter) dockerContainer() string {
