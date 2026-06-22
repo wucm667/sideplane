@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import ConfigWizard from '../ConfigWizard.tsx'
-import { apiErrorMessage, apiURL, compactHash, formatDate, formatRelativeTime, hasActiveConfigApply, hasActiveDeepProbe, hasActiveRestart, hasActiveRollback, jobBadgeClasses, latestConfigSnapshots, runtimeKey, snapshotForRuntime, stateBadgeClasses } from '../helpers.ts'
+import { apiErrorMessage, apiURL, compactHash, formatDate, hasActiveConfigApply, hasActiveDeepProbe, hasActiveRestart, hasActiveRollback, jobBadgeClasses, latestConfigSnapshots, runtimeKey, snapshotForRuntime, stateBadgeClasses } from '../helpers.ts'
+import { formatRelativeTimeLabel, useT, type TFunction } from '../i18n.ts'
 import type { ConfigApplyResult, ConfigDiffEntry, DeepProbeResult, EffectiveConfigResponse, Job, JobStatus, NodeLabels, NodeStatus, RestartJobResult, RestartRequest, RollbackBackupInventoryItem, RollbackJobResult, RollbackRequest, RuntimeConfigSnapshot, RuntimeHealth, RuntimeStatus } from '../types.ts'
 
 export function NodeDetailView({
@@ -62,6 +63,7 @@ export function NodeDetailView({
   onSaveLabels: (labels: NodeLabels) => void
   onApplied: () => void
 }) {
+  const { t } = useT()
   const activeProbe = hasActiveDeepProbe(jobs)
   const activeConfigApply = hasActiveConfigApply(jobs)
   const activeRestart = hasActiveRestart(jobs)
@@ -96,7 +98,7 @@ export function NodeDetailView({
 
   const removeNode = async () => {
     if (!canRemoveNode || removing) return
-    const confirmed = window.confirm(`Remove node ${node.nodeId} from Sideplane? This clears its fleet record, jobs, credentials, and node-scoped audit history.`)
+    const confirmed = window.confirm(t('node.removeConfirm', { nodeId: node.nodeId }))
     if (!confirmed) return
 
     setRemoving(true)
@@ -110,13 +112,13 @@ export function NodeDetailView({
         },
       })
       if (!res.ok) {
-        if (res.status === 401) throw new Error('Operator token required or invalid')
+        if (res.status === 401) throw new Error(t('common.operatorTokenRequiredInvalid'))
         throw new Error(await apiErrorMessage(res))
       }
       removed = true
       onBack()
     } catch (e) {
-      setRemoveError(e instanceof Error ? e.message : 'Unknown error')
+      setRemoveError(e instanceof Error ? e.message : t('common.unknownError'))
     } finally {
       if (!removed) {
         setRemoving(false)
@@ -127,7 +129,7 @@ export function NodeDetailView({
   const createRestart = (live: boolean) => {
     if (!canRestart) return
     if (live) {
-      const confirmed = window.confirm(`Create a live restart job for ${node.nodeId}? The sidecar must be running with live apply enabled.`)
+      const confirmed = window.confirm(t('node.restartConfirm', { nodeId: node.nodeId }))
       if (!confirmed) return
     }
     const request: RestartRequest = {
@@ -143,7 +145,7 @@ export function NodeDetailView({
   const createRollback = (live: boolean) => {
     if (!rollbackBackup || !canRollback) return
     if (live) {
-      const confirmed = window.confirm(`Create a live rollback job for ${node.nodeId} using backup ${rollbackBackup.ref}? The sidecar must be running with live apply enabled.`)
+      const confirmed = window.confirm(t('node.rollbackConfirm', { nodeId: node.nodeId, backupRef: rollbackBackup.ref }))
       if (!confirmed) return
     }
     const request: RollbackRequest = {
@@ -161,30 +163,30 @@ export function NodeDetailView({
   return (
     <div className="mx-auto max-w-5xl px-4 py-6 sm:px-6 lg:px-9 lg:py-8">
       <button type="button" className="mb-5 rounded-lg px-2 py-1 text-sm font-medium text-[var(--sp-muted)] hover:bg-[var(--sp-surface-2)] hover:text-[var(--sp-text)]" onClick={onBack}>
-        ‹ Fleet
+        {t('node.backToFleet')}
       </button>
       <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <div className="flex flex-wrap items-center gap-3">
             <h1 className="text-2xl font-bold tracking-tight">{node.nodeId}</h1>
-            <CopyButton value={node.nodeId} label="Copy node ID" />
+            <CopyButton value={node.nodeId} label={t('node.copyNodeId')} />
             <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-semibold ${stateBadgeClasses(node.state)}`}>
               <span className="h-1.5 w-1.5 rounded-full bg-current" />
               {node.state}
             </span>
             {node.drift === true && (
               <span className="inline-flex items-center rounded-full border border-amber-500/30 bg-amber-500/10 px-2.5 py-1 text-xs font-semibold text-amber-600">
-                config drift
+                {t('node.configDrift')}
               </span>
             )}
             {node.maintenance && (
               <span className="inline-flex items-center rounded-full border border-amber-500/30 bg-amber-500/10 px-2.5 py-1 text-xs font-semibold text-amber-700">
-                maintenance
+                {t('node.maintenance')}
               </span>
             )}
             {node.sidecarOutdated && (
-              <span className="inline-flex items-center rounded-full border border-amber-500/30 bg-amber-500/10 px-2.5 py-1 text-xs font-semibold text-amber-600" title="sidecar version differs from expected">
-                sidecar outdated
+              <span className="inline-flex items-center rounded-full border border-amber-500/30 bg-amber-500/10 px-2.5 py-1 text-xs font-semibold text-amber-600" title={t('fleet.sidecarOutdatedTitle')}>
+                {t('node.sidecarOutdated')}
               </span>
             )}
           </div>
@@ -202,44 +204,44 @@ export function NodeDetailView({
             type="button"
             className={node.maintenance ? 'h-9 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 text-sm font-medium text-amber-700 hover:bg-amber-500/15 disabled:cursor-not-allowed disabled:opacity-55' : 'h-9 rounded-lg border border-[var(--sp-border-strong)] bg-[var(--sp-surface)] px-3 text-sm font-medium hover:bg-[var(--sp-surface-2)] disabled:cursor-not-allowed disabled:opacity-60'}
             disabled={!canToggleMaintenance}
-            title={!tokenReady ? 'Set an operator token before changing maintenance mode' : node.maintenance ? 'Exit maintenance mode for this node' : 'Enter maintenance mode for this node'}
+            title={!tokenReady ? t('node.title.setTokenMaintenance') : node.maintenance ? t('node.title.exitMaintenance') : t('node.title.enterMaintenance')}
             onClick={() => onMaintenanceChange(!Boolean(node.maintenance))}
           >
-            {maintenanceSaving ? 'Saving...' : node.maintenance ? 'Exit maintenance' : 'Enter maintenance'}
+            {maintenanceSaving ? t('common.saving') : node.maintenance ? t('node.exitMaintenance') : t('node.enterMaintenance')}
           </button>
           <button
             type="button"
             className="h-9 rounded-lg border border-[var(--sp-border-strong)] bg-[var(--sp-surface)] px-3 text-sm font-medium hover:bg-[var(--sp-surface-2)] disabled:cursor-not-allowed disabled:opacity-60"
             disabled={!canDeepProbe}
-            title={!tokenReady ? 'Set an operator token before creating jobs' : activeProbe ? 'A deep probe is already pending or running' : 'Create a deep probe job'}
+            title={!tokenReady ? t('node.title.setTokenJobs') : activeProbe ? t('node.title.deepProbeActive') : t('node.deepProbe')}
             onClick={onDeepProbe}
           >
-            {creating ? 'Creating…' : activeProbe ? 'Probe active' : 'Deep probe'}
+            {creating ? t('common.creating') : activeProbe ? t('node.probeActive') : t('node.deepProbe')}
           </button>
           <button
             type="button"
             className="h-9 rounded-lg border border-[var(--sp-border-strong)] bg-[var(--sp-surface)] px-3 text-sm font-medium hover:bg-[var(--sp-surface-2)] disabled:cursor-not-allowed disabled:opacity-60"
             disabled={!canRestart}
-            title={!tokenReady ? 'Set an operator token before creating restart jobs' : activeRestart ? 'A restart job is already pending or running' : 'Create a dry-run restart job'}
+            title={!tokenReady ? t('node.title.setTokenRestart') : activeRestart ? t('node.title.restartActive') : t('node.title.restartDryRun')}
             onClick={() => createRestart(false)}
           >
-            {restarting ? 'Creating...' : activeRestart ? 'Restart active' : 'Restart'}
+            {restarting ? t('common.creating') : activeRestart ? t('node.restartActive') : t('node.restart')}
           </button>
           <button
             type="button"
             className="h-9 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 text-sm font-medium text-amber-700 hover:bg-amber-500/15 disabled:cursor-not-allowed disabled:opacity-55"
             disabled={!canRestart}
-            title={!tokenReady ? 'Set an operator token before live restart' : activeRestart ? 'A restart job is already pending or running' : 'Confirm and create a live restart job'}
+            title={!tokenReady ? t('node.title.setTokenLiveRestart') : activeRestart ? t('node.title.restartActive') : t('node.title.liveRestart')}
             onClick={() => createRestart(true)}
           >
-            Live restart
+            {t('node.liveRestart')}
           </button>
           {backups.length > 0 && (
             <div className="flex flex-wrap gap-2">
               <select
                 className="h-9 max-w-80 rounded-lg border border-[var(--sp-border)] bg-[var(--sp-surface)] px-2 font-mono text-xs outline-none disabled:cursor-not-allowed disabled:opacity-60"
                 value={rollbackBackup?.ref ?? ''}
-                aria-label="Backup to roll back to"
+                aria-label={t('node.backupToRollback')}
                 disabled={!tokenReady || rollingBack || activeRollback || backupsLoading}
                 onChange={(event) => setSelectedBackupRef(event.target.value)}
               >
@@ -253,19 +255,19 @@ export function NodeDetailView({
                 type="button"
                 className="h-9 rounded-lg border border-[var(--sp-border-strong)] bg-[var(--sp-surface)] px-3 text-sm font-medium hover:bg-[var(--sp-surface-2)] disabled:cursor-not-allowed disabled:opacity-60"
                 disabled={!canRollback}
-                title={!tokenReady ? 'Set an operator token before creating rollback jobs' : activeRollback ? 'A rollback job is already pending or running' : `Create a dry-run rollback job for ${rollbackBackup.ref}`}
+                title={!tokenReady ? t('node.title.setTokenRollback') : activeRollback ? t('node.title.rollbackActive') : t('node.title.applyDryRunRollback', { backupRef: rollbackBackup.ref })}
                 onClick={() => createRollback(false)}
               >
-                {rollingBack ? 'Creating...' : activeRollback ? 'Rollback active' : 'Rollback'}
+                {rollingBack ? t('common.creating') : activeRollback ? t('node.rollbackActive') : t('node.rollback')}
               </button>
               <button
                 type="button"
                 className="h-9 rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 text-sm font-medium text-rose-600 hover:bg-rose-500/15 disabled:cursor-not-allowed disabled:opacity-55"
                 disabled={!canRollback}
-                title={!tokenReady ? 'Set an operator token before live rollback' : activeRollback ? 'A rollback job is already pending or running' : `Confirm and create a live rollback job for ${rollbackBackup.ref}`}
+                title={!tokenReady ? t('node.title.setTokenLiveRollback') : activeRollback ? t('node.title.rollbackActive') : t('node.title.applyLiveRollback', { backupRef: rollbackBackup.ref })}
                 onClick={() => createRollback(true)}
               >
-                Live rollback
+                {t('node.liveRollback')}
               </button>
             </div>
           )}
@@ -273,62 +275,62 @@ export function NodeDetailView({
             type="button"
             className="h-9 rounded-lg bg-[var(--sp-accent)] px-3 text-sm font-medium text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-55"
             disabled={!canEditConfig}
-            title={!tokenReady ? 'Set an operator token before changing config' : canEditConfig ? 'Open the change configuration wizard' : 'Run a deep probe first to discover the config path'}
+            title={!tokenReady ? t('node.title.setTokenConfig') : canEditConfig ? t('node.title.editConfig') : t('node.title.noConfigPath')}
             onClick={() => setWizardOpen(true)}
           >
-            Edit config
+            {t('node.editConfig')}
           </button>
           <button
             type="button"
             className="h-9 rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 text-sm font-medium text-rose-600 hover:bg-rose-500/15 disabled:cursor-not-allowed disabled:opacity-55"
             disabled={!canRemoveNode || removing}
-            title={canRemoveNode ? 'Remove this node from the fleet inventory' : 'Set an operator token before removing a node'}
+            title={canRemoveNode ? t('node.title.removeNode') : t('node.title.setTokenRemove')}
             onClick={removeNode}
           >
-            {removing ? 'Removing…' : 'Remove node'}
+            {removing ? t('node.removing') : t('node.remove')}
           </button>
         </div>
       </div>
 
       {removeError && (
         <div role="alert" className="mb-5 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-600">
-          Failed to remove node: {removeError}
+          {t('node.errorRemove', { error: removeError })}
         </div>
       )}
 
       {maintenanceError && (
         <div role="alert" className="mb-5 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-600">
-          Failed to update maintenance: {maintenanceError}
+          {t('node.errorUpdateMaintenance', { error: maintenanceError })}
         </div>
       )}
 
       {backupsError && (
         <div role="alert" className="mb-5 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-600">
-          Failed to load backups: {backupsError}
+          {t('node.errorLoadBackups', { error: backupsError })}
         </div>
       )}
 
       <div className="mb-5 rounded-xl border border-sky-500/25 bg-sky-500/10 px-4 py-3 text-sm text-[var(--sp-muted)]">
-        Edit config opens a signed plan wizard. It defaults to a dry run; a live apply (replace + restart + rollback) requires the sidecar to run with <span className="font-mono">--allow-live-apply</span>.
+        {t('node.configInfo')}
       </div>
 
       <div className="mb-6 grid gap-px overflow-hidden rounded-xl border border-[var(--sp-border)] bg-[var(--sp-border)] sm:grid-cols-2 lg:grid-cols-4">
-        <MetricCard label="Heartbeat" value={formatRelativeTime(node.lastHeartbeatAt)} title={formatDate(node.lastHeartbeatAt)} />
-        <MetricCard label="Config hash" value={compactHash(node.configHash || primarySnapshot?.configHash)} monospace />
-        <MetricCard label="Desired hash" value={compactHash(effective?.desiredHash)} monospace muted={!effective?.desiredHash} title={effective?.desiredHash} />
-        <MetricCard label="Last error" value={node.lastError || 'none'} tone={node.lastError ? 'danger' : 'normal'} />
+        <MetricCard label={t('node.metric.heartbeat')} value={formatRelativeTimeLabel(node.lastHeartbeatAt, t)} title={formatDate(node.lastHeartbeatAt)} />
+        <MetricCard label={t('node.metric.configHash')} value={compactHash(node.configHash || primarySnapshot?.configHash)} monospace />
+        <MetricCard label={t('node.desired.hash')} value={compactHash(effective?.desiredHash)} monospace muted={!effective?.desiredHash} title={effective?.desiredHash} />
+        <MetricCard label={t('node.lastError')} value={node.lastError || t('node.none')} tone={node.lastError ? 'danger' : 'normal'} />
       </div>
 
       <ConfigDiffPanel effective={effective} error={effectiveError} />
 
       <section className="mb-6">
-        <div className="mb-3 text-xs font-semibold uppercase tracking-[0.14em] text-[var(--sp-faint)]">Runtimes</div>
+        <div className="mb-3 text-xs font-semibold uppercase tracking-[0.14em] text-[var(--sp-faint)]">{t('node.runtimes')}</div>
         <div className="grid gap-3">
           {(node.runtimes ?? []).length > 0 ? node.runtimes?.map((runtime, index) => (
             <RuntimeCard key={runtimeKey(runtime, index)} runtime={runtime} snapshot={snapshotForRuntime(runtime, snapshots)} />
           )) : (
             <div className="rounded-xl border border-[var(--sp-border)] bg-[var(--sp-surface)] px-4 py-6 text-sm text-[var(--sp-muted)]">
-              No runtimes reported yet. Run a deep probe to refresh runtime discovery.
+              {t('node.runtimesEmpty')}
             </div>
           )}
         </div>
@@ -336,19 +338,19 @@ export function NodeDetailView({
 
       <section className="rounded-xl border border-[var(--sp-border)] bg-[var(--sp-surface)]">
         <div className="flex flex-col gap-3 border-b border-[var(--sp-border)] px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
-          <div className="text-sm font-semibold">Recent jobs</div>
+          <div className="text-sm font-semibold">{t('node.recentJobs')}</div>
           <div className="flex flex-wrap items-center gap-2">
             <select
               className="h-8 rounded-lg border border-[var(--sp-border)] bg-[var(--sp-surface-2)] px-2 text-xs outline-none"
               value={jobStatusFilter}
-              aria-label="Filter jobs by status"
+              aria-label={t('node.job.filterStatus')}
               onChange={(event) => onJobStatusFilterChange(event.target.value as JobStatus | '')}
             >
-              <option value="">All statuses</option>
-              <option value="pending">Pending</option>
-              <option value="claimed">Claimed</option>
-              <option value="completed">Completed</option>
-              <option value="failed">Failed</option>
+              <option value="">{t('node.job.allStatuses')}</option>
+              <option value="pending">{t('node.job.pending')}</option>
+              <option value="claimed">{t('node.job.claimed')}</option>
+              <option value="completed">{t('node.job.completed')}</option>
+              <option value="failed">{t('node.job.failed')}</option>
             </select>
             <button
               type="button"
@@ -356,15 +358,15 @@ export function NodeDetailView({
               disabled={jobsLoading}
               onClick={onLoadMoreJobs}
             >
-              Load more
+              {t('node.loadMore')}
             </button>
             <span className="font-mono text-[11px] text-[var(--sp-faint)]">{jobLimit}</span>
-            {jobsLoading && <div className="text-xs text-[var(--sp-muted)]">Loading jobs...</div>}
+            {jobsLoading && <div className="text-xs text-[var(--sp-muted)]">{t('node.loadingJobs')}</div>}
           </div>
         </div>
-        {jobsError && <div role="alert" className="mt-4 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-600">Failed to load jobs: {jobsError}</div>}
+        {jobsError && <div role="alert" className="mt-4 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-600">{t('node.errorLoadJobs', { error: jobsError })}</div>}
         <div className="divide-y divide-[var(--sp-border)]">
-          {!jobsLoading && jobs.length === 0 && <div className="px-4 py-4 text-xs text-[var(--sp-muted)]">No jobs yet.</div>}
+          {!jobsLoading && jobs.length === 0 && <div className="px-4 py-4 text-xs text-[var(--sp-muted)]">{t('node.job.noJobs')}</div>}
           {jobs.map((job) => (
             <div key={job.id}>
               <div className="grid w-full gap-2 px-4 py-3 text-left text-xs hover:bg-[var(--sp-surface-2)] sm:grid-cols-[1fr_auto_auto_auto] sm:items-center">
@@ -382,9 +384,9 @@ export function NodeDetailView({
                     <span className="block truncate text-[10px] text-[var(--sp-faint)]">{job.id}</span>
                   </span>
                 </button>
-                <CopyButton value={job.id} label="Copy job ID" />
+                <CopyButton value={job.id} label={t('node.copyJobId')} />
                 <span className={`inline-flex w-fit rounded border px-2 py-0.5 font-semibold ${jobBadgeClasses(job.status)}`}>{job.status}</span>
-                <span className="text-[var(--sp-faint)]" title={formatDate(job.createdAt)}>{formatRelativeTime(job.createdAt)}</span>
+                <span className="text-[var(--sp-faint)]" title={formatDate(job.createdAt)}>{formatRelativeTimeLabel(job.createdAt, t)}</span>
               </div>
               {selectedJobId === job.id && <JobDetail job={job} />}
             </div>
@@ -421,6 +423,7 @@ function LabelEditor({
   tokenReady: boolean
   onSave: (labels: NodeLabels) => void
 }) {
+  const { t } = useT()
   const [draft, setDraft] = useState(formatLabelDraft(labels))
   const [draftError, setDraftError] = useState<string | null>(null)
 
@@ -429,7 +432,7 @@ function LabelEditor({
   }, [labels])
 
   const save = () => {
-    const parsed = parseLabelDraft(draft)
+    const parsed = parseLabelDraft(draft, t)
     if (typeof parsed === 'string') {
       setDraftError(parsed)
       return
@@ -446,24 +449,24 @@ function LabelEditor({
           <span key={key} className="rounded border border-[var(--sp-border)] bg-[var(--sp-surface-2)] px-2 py-1 font-mono text-[11px] text-[var(--sp-muted)]">
             {key}={value}
           </span>
-        )) : <span className="text-xs text-[var(--sp-faint)]">No labels</span>}
+        )) : <span className="text-xs text-[var(--sp-faint)]">{t('node.labels.none')}</span>}
       </div>
       <div className="flex flex-col gap-2 sm:flex-row">
         <input
           className="h-9 min-w-0 flex-1 rounded-lg border border-[var(--sp-border)] bg-[var(--sp-surface-2)] px-3 font-mono text-xs text-[var(--sp-text)] outline-none focus:border-[var(--sp-accent)] disabled:cursor-not-allowed disabled:opacity-60"
           value={draft}
           disabled={!tokenReady || saving}
-          placeholder="role=canary,zone=lab"
+          placeholder={t('node.labels.placeholder')}
           onChange={(event) => setDraft(event.target.value)}
         />
         <button
           type="button"
           className="h-9 rounded-lg border border-[var(--sp-border-strong)] bg-[var(--sp-surface)] px-3 text-sm font-medium hover:bg-[var(--sp-surface-2)] disabled:cursor-not-allowed disabled:opacity-60"
           disabled={!tokenReady || saving}
-          title={tokenReady ? 'Save labels' : 'Set an operator token before editing labels'}
+          title={tokenReady ? t('node.labels.title') : t('node.title.setTokenLabels')}
           onClick={save}
         >
-          {saving ? 'Saving...' : 'Save labels'}
+          {saving ? t('common.saving') : t('node.labels.save')}
         </button>
       </div>
       {(draftError || error) && (
@@ -477,19 +480,19 @@ function formatLabelDraft(labels: NodeLabels): string {
   return labelPairs(labels).map(([key, value]) => `${key}=${value}`).join(',')
 }
 
-function parseLabelDraft(value: string): NodeLabels | string {
+function parseLabelDraft(value: string, t: TFunction): NodeLabels | string {
   const trimmed = value.trim()
   if (!trimmed) return {}
   const labels: NodeLabels = {}
   for (const part of trimmed.split(',')) {
     const entry = part.trim()
-    if (!entry) return 'label entry is empty'
+    if (!entry) return t('node.labels.emptyEntry')
     const index = entry.indexOf('=')
-    if (index <= 0) return `invalid label ${entry}`
+    if (index <= 0) return t('node.labels.invalid', { label: entry })
     const key = entry.slice(0, index).trim()
     const labelValue = entry.slice(index + 1).trim()
-    if (!key) return 'label key is required'
-    if (labels[key] !== undefined) return `duplicate label ${key}`
+    if (!key) return t('node.labels.keyRequired')
+    if (labels[key] !== undefined) return t('node.labels.duplicate', { key })
     labels[key] = labelValue
   }
   return labels
@@ -500,8 +503,9 @@ function labelPairs(labels: NodeLabels): [string, string][] {
 }
 
 function JobDetail({ job }: { job: Job }) {
+  const { t } = useT()
   if (job.status === 'pending' || job.status === 'claimed') {
-    return <JobDetailShell>Waiting for sidecar...</JobDetailShell>
+    return <JobDetailShell>{t('node.job.waiting')}</JobDetailShell>
   }
   if (job.type === 'deep_probe') {
     return <DeepProbeJobDetail job={job} />
@@ -516,16 +520,17 @@ function JobDetail({ job }: { job: Job }) {
     return <RollbackJobDetail job={job} />
   }
   if (job.status === 'failed') {
-    return <JobDetailShell tone="danger">{job.error || 'Job failed without an error message.'}</JobDetailShell>
+    return <JobDetailShell tone="danger">{job.error || t('node.job.failedNoMessage')}</JobDetailShell>
   }
-  return <JobDetailShell>No structured result available.</JobDetailShell>
+  return <JobDetailShell>{t('node.job.noStructured')}</JobDetailShell>
 }
 
 function DeepProbeJobDetail({ job }: { job: Job }) {
+  const { t } = useT()
   const result = parseJobResult<DeepProbeResult>(job)
   const snapshots = result?.configSnapshots ?? []
   if (snapshots.length === 0) {
-    return <JobDetailShell>No config snapshots reported.</JobDetailShell>
+    return <JobDetailShell>{t('node.job.noConfigSnapshots')}</JobDetailShell>
   }
 
   return (
@@ -533,10 +538,10 @@ function DeepProbeJobDetail({ job }: { job: Job }) {
       <div className="grid gap-2">
         {snapshots.map((snapshot, index) => (
           <div key={`${snapshot.runtimeName || snapshot.runtimeType}-${snapshot.profile || index}`} className="grid gap-2 rounded-lg border border-[var(--sp-border)] bg-[var(--sp-surface)] px-3 py-2 sm:grid-cols-[1fr_1fr_1fr_1fr]">
-            <RuntimeField label="Runtime" value={snapshot.runtimeName || snapshot.runtimeType || '-'} />
-            <RuntimeField label="Provider" value={snapshot.provider || '-'} />
-            <RuntimeField label="Model" value={snapshot.model || '-'} />
-            <RuntimeField label="Hash" value={compactHash(snapshot.configHash)} title={snapshot.configHash} />
+            <RuntimeField label={t('node.runtime.runtime')} value={snapshot.runtimeName || snapshot.runtimeType || '-'} />
+            <RuntimeField label={t('node.runtime.provider')} value={snapshot.provider || '-'} />
+            <RuntimeField label={t('node.runtime.model')} value={snapshot.model || '-'} />
+            <RuntimeField label={t('node.runtime.hash')} value={compactHash(snapshot.configHash)} title={snapshot.configHash} />
           </div>
         ))}
       </div>
@@ -545,10 +550,11 @@ function DeepProbeJobDetail({ job }: { job: Job }) {
 }
 
 function ConfigApplyJobDetail({ job }: { job: Job }) {
+  const { t } = useT()
   const result = parseJobResult<ConfigApplyResult>(job)
   const steps = result?.steps ?? []
   if (steps.length === 0) {
-    return <JobDetailShell>No config apply steps reported.</JobDetailShell>
+    return <JobDetailShell>{t('node.job.noApplySteps')}</JobDetailShell>
   }
 
   return (
@@ -556,10 +562,12 @@ function ConfigApplyJobDetail({ job }: { job: Job }) {
       {result?.planId && (
         <div className="mb-2 flex items-center gap-2 font-mono text-[11px] text-[var(--sp-faint)]">
           <span>{result.planId}</span>
-          <CopyButton value={result.planId} label="Copy plan ID" />
+          <CopyButton value={result.planId} label={t('node.copyPlanId')} />
         </div>
       )}
-      <div className="mb-2 font-mono text-[11px] text-[var(--sp-faint)]">{result?.dryRun ? 'dry-run' : 'live'} apply</div>
+      <div className="mb-2 font-mono text-[11px] text-[var(--sp-faint)]">
+        {t('node.applyDetail.apply', { mode: result?.dryRun ? t('node.applyDetail.dryRun') : t('node.applyDetail.live') })}
+      </div>
       <div className="grid gap-2">
         {steps.map((step, index) => (
           <div key={`${step.name}-${index}`} className="grid gap-2 rounded-lg border border-[var(--sp-border)] bg-[var(--sp-surface)] px-3 py-2 sm:grid-cols-[1fr_auto_2fr] sm:items-center">
@@ -574,17 +582,18 @@ function ConfigApplyJobDetail({ job }: { job: Job }) {
 }
 
 function RestartJobDetail({ job }: { job: Job }) {
+  const { t } = useT()
   const result = parseJobResult<RestartJobResult>(job)
   const steps = result?.steps ?? []
   if (steps.length === 0) {
-    return <JobDetailShell tone={job.status === 'failed' ? 'danger' : 'normal'}>{job.error || 'No restart steps reported.'}</JobDetailShell>
+    return <JobDetailShell tone={job.status === 'failed' ? 'danger' : 'normal'}>{job.error || t('node.job.noRestartSteps')}</JobDetailShell>
   }
 
   return (
     <JobDetailShell tone={job.status === 'failed' ? 'danger' : 'normal'}>
       <div className="mb-2 grid gap-2 font-mono text-[11px] text-[var(--sp-faint)] sm:grid-cols-2">
-        <span>controller: {result?.controller || '-'}</span>
-        <span>health: {result?.healthStatus || '-'}</span>
+        <span>{t('node.batch.controller')} {result?.controller || '-'}</span>
+        <span>{t('node.batch.health')} {result?.healthStatus || '-'}</span>
       </div>
       <div className="grid gap-2">
         {steps.map((step, index) => (
@@ -600,17 +609,18 @@ function RestartJobDetail({ job }: { job: Job }) {
 }
 
 function RollbackJobDetail({ job }: { job: Job }) {
+  const { t } = useT()
   const result = parseJobResult<RollbackJobResult>(job)
   const steps = result?.steps ?? []
   if (steps.length === 0) {
-    return <JobDetailShell tone={job.status === 'failed' ? 'danger' : 'normal'}>{job.error || 'No rollback steps reported.'}</JobDetailShell>
+    return <JobDetailShell tone={job.status === 'failed' ? 'danger' : 'normal'}>{job.error || t('node.job.noRollbackSteps')}</JobDetailShell>
   }
 
   return (
     <JobDetailShell tone={job.status === 'failed' ? 'danger' : 'normal'}>
       <div className="mb-2 grid gap-2 font-mono text-[11px] text-[var(--sp-faint)] sm:grid-cols-2">
-        <span>backup: {result?.backupRef || '-'}</span>
-        <span>health: {result?.healthStatus || '-'}</span>
+        <span>{t('node.batch.backup')} {result?.backupRef || '-'}</span>
+        <span>{t('node.batch.health')} {result?.healthStatus || '-'}</span>
       </div>
       <div className="grid gap-2">
         {steps.map((step, index) => (
@@ -630,6 +640,7 @@ function knownRestartRuntime(value: string | undefined): RestartRequest['runtime
 }
 
 function CopyButton({ value, label }: { value: string; label: string }) {
+  const { t } = useT()
   const [copied, setCopied] = useState(false)
 
   const copy = async () => {
@@ -649,7 +660,7 @@ function CopyButton({ value, label }: { value: string; label: string }) {
       title={label}
       onClick={copy}
     >
-      {copied ? 'Copied' : 'Copy'}
+      {copied ? t('common.copied') : t('common.copy')}
     </button>
   )
 }
@@ -678,28 +689,29 @@ export function effectiveConfigDiffEntries(effective: EffectiveConfigDiffSource)
 }
 
 function ConfigDiffPanel({ effective, error }: { effective?: EffectiveConfigResponse; error?: string }) {
+  const { t } = useT()
   const diff = effectiveConfigDiffEntries(effective)
 
   return (
     <section className="mb-6 rounded-xl border border-[var(--sp-border)] bg-[var(--sp-surface)]">
       <div className="flex flex-col gap-2 border-b border-[var(--sp-border)] px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <div className="text-sm font-semibold">Desired configuration</div>
-          <div className="mt-1 text-xs text-[var(--sp-muted)]">Effective provider/model and read-only actual diff</div>
+          <div className="text-sm font-semibold">{t('node.desired.title')}</div>
+          <div className="mt-1 text-xs text-[var(--sp-muted)]">{t('node.desired.panelSubtitle')}</div>
         </div>
         <div className="font-mono text-xs text-[var(--sp-faint)]">{effective?.runtimeType || 'hermes'}/{effective?.profile || 'default'}</div>
       </div>
-      {error && <div className="border-b border-rose-500/30 bg-rose-500/10 px-4 py-3 text-xs text-rose-600">Failed to load desired diff: {error}</div>}
+      {error && <div className="border-b border-rose-500/30 bg-rose-500/10 px-4 py-3 text-xs text-rose-600">{t('node.desired.errorLoad', { error })}</div>}
       <div className="grid gap-4 px-4 py-4 sm:grid-cols-3">
-        <RuntimeField label="Desired provider" value={effective?.effective.provider || '-'} />
-        <RuntimeField label="Desired model" value={effective?.effective.model || '-'} />
-        <RuntimeField label="Desired hash" value={compactHash(effective?.desiredHash)} title={effective?.desiredHash} />
+        <RuntimeField label={t('node.desired.provider')} value={effective?.effective.provider || '-'} />
+        <RuntimeField label={t('node.desired.model')} value={effective?.effective.model || '-'} />
+        <RuntimeField label={t('node.desired.hash')} value={compactHash(effective?.desiredHash)} title={effective?.desiredHash} />
       </div>
       <div className="border-t border-[var(--sp-border)] px-4 py-4">
         {!effective ? (
-          <div className="text-sm text-[var(--sp-muted)]">Desired diff not loaded yet.</div>
+          <div className="text-sm text-[var(--sp-muted)]">{t('node.desired.notLoaded')}</div>
         ) : diff.length === 0 ? (
-          <div className="text-sm text-emerald-600">Actual provider/model matches desired effective config.</div>
+          <div className="text-sm text-emerald-600">{t('node.desired.match')}</div>
         ) : (
           <div className="grid gap-2">
             {diff.map((entry) => <DiffRow key={`${entry.field}-${entry.change}`} entry={entry} />)}
@@ -711,11 +723,12 @@ function ConfigDiffPanel({ effective, error }: { effective?: EffectiveConfigResp
 }
 
 function DiffRow({ entry }: { entry: ConfigDiffEntry }) {
+  const { t } = useT()
   return (
     <div className="grid gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs sm:grid-cols-[1fr_1fr_1fr_auto] sm:items-center">
       <span className="font-mono font-semibold text-[var(--sp-text)]">{entry.field}</span>
-      <span className="font-mono text-[var(--sp-muted)]">actual: {entry.actual || '-'}</span>
-      <span className="font-mono text-[var(--sp-muted)]">desired: {entry.desired || '-'}</span>
+      <span className="font-mono text-[var(--sp-muted)]">{t('node.desired.actual', { value: entry.actual || '-' })}</span>
+      <span className="font-mono text-[var(--sp-muted)]">{t('node.desired.desired', { value: entry.desired || '-' })}</span>
       <span className="font-semibold text-amber-700">{entry.change}</span>
     </div>
   )
@@ -736,6 +749,7 @@ function MetricCard({ label, value, title, monospace = false, muted = false, ton
 }
 
 function RuntimeCard({ runtime, snapshot }: { runtime: RuntimeStatus; snapshot?: RuntimeConfigSnapshot }) {
+  const { t } = useT()
   const warnings = [...(runtime.warnings ?? []), ...(snapshot?.warnings ?? [])]
   if (runtime.lastError) warnings.unshift(runtime.lastError)
   const health = snapshot?.health ?? runtime.health
@@ -744,7 +758,7 @@ function RuntimeCard({ runtime, snapshot }: { runtime: RuntimeStatus; snapshot?:
     <div className="overflow-hidden rounded-xl border border-[var(--sp-border)] bg-[var(--sp-surface)]">
       <div className="flex flex-col gap-3 border-b border-[var(--sp-border)] px-4 py-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex flex-wrap items-center gap-2">
-          <span className="font-mono text-sm font-semibold">{runtime.name || runtime.type || 'runtime'}</span>
+          <span className="font-mono text-sm font-semibold">{runtime.name || runtime.type || t('node.runtime.runtime')}</span>
           {runtime.type && <span className="text-xs text-[var(--sp-faint)]">{runtime.type}</span>}
           {runtime.state && <span className={`inline-flex rounded border px-2 py-0.5 text-[11px] font-semibold ${runtime.state === 'error' ? 'border-rose-500/30 bg-rose-500/10 text-rose-600' : 'border-[var(--sp-border)] bg-[var(--sp-surface-2)] text-[var(--sp-muted)]'}`}>{runtime.state}</span>}
           <RuntimeHealthBadge health={health} />
@@ -752,15 +766,15 @@ function RuntimeCard({ runtime, snapshot }: { runtime: RuntimeStatus; snapshot?:
         <span className="font-mono text-xs text-[var(--sp-faint)]">{runtime.version || '-'}</span>
       </div>
       <div className="grid gap-4 px-4 py-4 sm:grid-cols-3">
-        <RuntimeField label="Provider" value={snapshot?.provider || runtime.provider || '-'} />
-        <RuntimeField label="Model" value={snapshot?.model || runtime.model || '-'} />
-        <RuntimeField label="Config hash" value={compactHash(snapshot?.configHash || runtime.configHash)} title={snapshot?.configHash || runtime.configHash} />
+        <RuntimeField label={t('node.runtime.provider')} value={snapshot?.provider || runtime.provider || '-'} />
+        <RuntimeField label={t('node.runtime.model')} value={snapshot?.model || runtime.model || '-'} />
+        <RuntimeField label={t('node.runtime.configHash')} value={compactHash(snapshot?.configHash || runtime.configHash)} title={snapshot?.configHash || runtime.configHash} />
       </div>
       {snapshot && (
         <div className="border-t border-[var(--sp-border)] bg-[var(--sp-surface-2)] px-4 py-4">
           <div className="grid gap-3 text-xs sm:grid-cols-2">
-            <RuntimeField label="Snapshot source" value={snapshot.configPath || snapshot.source || '-'} />
-            <RuntimeField label="Profile" value={snapshot.profile || '-'} />
+            <RuntimeField label={t('node.runtime.snapshotSource')} value={snapshot.configPath || snapshot.source || '-'} />
+            <RuntimeField label={t('node.runtime.profile')} value={snapshot.profile || '-'} />
           </div>
         </div>
       )}

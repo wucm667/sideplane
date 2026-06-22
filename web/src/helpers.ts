@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { LANG_STORAGE_KEY, loadStoredLang, type Lang } from './i18n.ts'
 import type { AuditEvent, AuditFilters, ConfigApplyResult, CreateRolloutRequest, DeepProbeResult, EffectiveConfigResponse, Job, JobStatus, ListAuditEventsResponse, ListNodesResponse, ListRollbackBackupsResponse, ListRolloutsResponse, NodeLabels, NodeLabelsResponse, NodeMaintenanceResponse, NodeState, NodeStatus, RestartRequest, RollbackBackupInventoryItem, RollbackRequest, Rollout, RolloutAction, RolloutActionResponse, RolloutState, RuntimeConfigSnapshot, RuntimeStatus } from './types.ts'
 
 const NODE_REFRESH_MS = 10_000
@@ -400,6 +401,7 @@ export function useFleetPageController() {
   const [effectiveErrorByNode, setEffectiveErrorByNode] = useState<Record<string, string>>({})
   const [liveConnected, setLiveConnected] = useState(false)
   const [theme, setTheme] = useState<Theme>(loadStoredTheme)
+  const [lang, setLang] = useState<Lang>(loadStoredLang)
   const [view, setView] = useState<View>('fleet')
   const [selector, setSelector] = useState('')
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
@@ -432,6 +434,19 @@ export function useFleetPageController() {
       // Theme persistence is optional.
     }
   }, [theme])
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(LANG_STORAGE_KEY, lang)
+    } catch {
+      // Language persistence is optional.
+    }
+    try {
+      document.documentElement.lang = lang
+    } catch {
+      // Document metadata is best-effort in non-browser test environments.
+    }
+  }, [lang])
 
   const loadNodeJobs = useCallback(async (nodeId: string, showLoading = true, options?: { status?: JobStatus | ''; limit?: number }) => {
     if (!mountedRef.current) return
@@ -1167,6 +1182,7 @@ export function useFleetPageController() {
   }
 
   const toggleTheme = () => setTheme((current) => (current === 'dark' ? 'light' : 'dark'))
+  const toggleLang = () => setLang((current) => (current === 'en' ? 'zh' : 'en'))
 
   const refreshSelectedNodeAfterApply = () => {
     if (!selectedNodeId) return
@@ -1229,10 +1245,13 @@ export function useFleetPageController() {
     setNodeJobStatusFilter,
     setSelector,
     labelErrorByNode,
+    lang,
     saveNodeLabels,
     setNodeMaintenance,
     stats,
+    setLang,
     theme,
+    toggleLang,
     toggleTheme,
     view,
     loadAuditEvents,

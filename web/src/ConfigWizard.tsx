@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { apiErrorMessage, apiURL, formatDate } from './helpers.ts'
+import { useT, type TFunction } from './i18n.ts'
 import type { ConfigApplyResult, ConfigApplyStep, DesiredConfig, DesiredConfigHistoryEntry, EffectiveConfigPreviewRequest, EffectiveConfigResponse, Job, ListDesiredConfigHistoryResponse, RevertDesiredConfigResponse } from './types.ts'
 
 const WIZARD_STEPS = ['Edit', 'Review', 'Apply', 'Done'] as const
@@ -7,15 +8,15 @@ type WizardStep = (typeof WIZARD_STEPS)[number]
 
 // Canonical pipeline order so the Apply checklist renders steps that have not
 // been reported yet as pending.
-const PIPELINE_STEPS: Array<{ name: string; label: string }> = [
-  { name: 'plan_received', label: 'Plan received' },
-  { name: 'signature_verified', label: 'Plan signature verified' },
-  { name: 'backup_created', label: 'Local backup created' },
-  { name: 'temp_written', label: 'Temp config written' },
-  { name: 'validated', label: 'Config validated' },
-  { name: 'replaced', label: 'Config replaced' },
-  { name: 'restarted', label: 'Runtime restarted' },
-  { name: 'health_checked', label: 'Health checked' },
+const PIPELINE_STEPS: Array<{ name: string; labelKey: string }> = [
+  { name: 'plan_received', labelKey: 'wizard.step.planReceived' },
+  { name: 'signature_verified', labelKey: 'wizard.step.signatureVerified' },
+  { name: 'backup_created', labelKey: 'wizard.step.backupCreated' },
+  { name: 'temp_written', labelKey: 'wizard.step.localTempWritten' },
+  { name: 'validated', labelKey: 'wizard.step.configValidated' },
+  { name: 'replaced', labelKey: 'wizard.step.configReplaced' },
+  { name: 'restarted', labelKey: 'wizard.step.runtimeRestarted' },
+  { name: 'health_checked', labelKey: 'wizard.step.healthChecked' },
 ]
 
 const APPLY_POLL_MS = 1_500
@@ -42,6 +43,7 @@ export default function ConfigWizard({
   onClose,
   onApplied,
 }: ConfigWizardProps) {
+  const { t } = useT()
   const [step, setStep] = useState<WizardStep>('Edit')
   const [provider, setProvider] = useState(effective?.effective.provider ?? '')
   const [model, setModel] = useState(effective?.effective.model ?? '')
@@ -93,10 +95,10 @@ export default function ConfigWizard({
     [operatorToken],
   )
 
-  const failMessage = async (res: Response): Promise<string> => {
-    if (res.status === 401) return 'Operator token required or invalid'
+  const failMessage = useCallback(async (res: Response): Promise<string> => {
+    if (res.status === 401) return t('common.operatorTokenRequiredInvalid')
     return apiErrorMessage(res)
-  }
+  }, [t])
 
   const loadHistory = useCallback(async () => {
     if (!operatorToken.trim()) {
@@ -114,11 +116,11 @@ export default function ConfigWizard({
       if (!mountedRef.current) return
       setHistory(data.history ?? [])
     } catch (e) {
-      if (mountedRef.current) setHistoryError(e instanceof Error ? e.message : 'Unknown error')
+      if (mountedRef.current) setHistoryError(e instanceof Error ? e.message : t('common.unknownError'))
     } finally {
       if (mountedRef.current) setHistoryLoading(false)
     }
-  }, [authedFetch, operatorToken])
+  }, [authedFetch, failMessage, operatorToken, t])
 
   useEffect(() => {
     void loadHistory()
@@ -135,7 +137,7 @@ export default function ConfigWizard({
 
   const revertHistory = useCallback(async (entry: DesiredConfigHistoryEntry) => {
     if (!operatorToken.trim() || revertingHistoryId) return
-    if (!window.confirm(`Revert desired config to ${entry.id}?`)) return
+    if (!window.confirm(t('wizard.history.revertConfirm', { id: entry.id }))) return
     setRevertingHistoryId(entry.id)
     setHistoryError(null)
     try {
@@ -150,15 +152,15 @@ export default function ConfigWizard({
       applyDesiredToFields(data.desired)
       onApplied()
     } catch (e) {
-      if (mountedRef.current) setHistoryError(e instanceof Error ? e.message : 'Unknown error')
+      if (mountedRef.current) setHistoryError(e instanceof Error ? e.message : t('common.unknownError'))
     } finally {
       if (mountedRef.current) setRevertingHistoryId(null)
     }
-  }, [applyDesiredToFields, authedFetch, onApplied, operatorToken, revertingHistoryId])
+  }, [applyDesiredToFields, authedFetch, failMessage, onApplied, operatorToken, revertingHistoryId, t])
 
   const goReview = useCallback(async () => {
     if (!provider.trim() || !model.trim()) {
-      setError('Provider and model are required')
+      setError(t('wizard.providerModelRequired'))
       return
     }
     setBusy(true)
@@ -177,11 +179,11 @@ export default function ConfigWizard({
       setReview(effData)
       setStep('Review')
     } catch (e) {
-      if (mountedRef.current) setError(e instanceof Error ? e.message : 'Unknown error')
+      if (mountedRef.current) setError(e instanceof Error ? e.message : t('common.unknownError'))
     } finally {
       if (mountedRef.current) setBusy(false)
     }
-  }, [authedFetch, model, nodeId, profile, provider, runtimeType])
+  }, [authedFetch, failMessage, model, nodeId, profile, provider, runtimeType, t])
 
   const pollApply = useCallback(
     async (jobId: string) => {
@@ -208,14 +210,14 @@ export default function ConfigWizard({
           return
         }
       }
-      if (mountedRef.current) setError('Timed out waiting for the apply job to finish')
+      if (mountedRef.current) setError(t('wizard.timedOut'))
     },
-    [authedFetch, nodeId, onApplied],
+    [authedFetch, nodeId, onApplied, t],
   )
 
   const startApply = useCallback(async () => {
     if (activeConfigApply) {
-      setError('A config apply job is already pending or running for this node.')
+      setError(t('wizard.activeApply'))
       return
     }
     setBusy(true)
@@ -245,30 +247,30 @@ export default function ConfigWizard({
         body: JSON.stringify({ runtimeType, profile, dryRun }),
       })
       if (!res.ok) {
-        if (res.status === 401) throw new Error('Operator token required or invalid')
-        if (res.status === 409) throw new Error('A config apply job is already pending or running for this node.')
+        if (res.status === 401) throw new Error(t('common.operatorTokenRequiredInvalid'))
+        if (res.status === 409) throw new Error(t('wizard.activeApply'))
         throw new Error(await failMessage(res))
       }
       const job: Job = await res.json()
       await pollApply(job.id)
     } catch (e) {
-      if (mountedRef.current) setError(e instanceof Error ? e.message : 'Unknown error')
+      if (mountedRef.current) setError(e instanceof Error ? e.message : t('common.unknownError'))
     } finally {
       if (mountedRef.current) setBusy(false)
     }
-  }, [activeConfigApply, authedFetch, dryRun, model, nodeId, pollApply, profile, provider, runtimeType])
+  }, [activeConfigApply, authedFetch, dryRun, failMessage, model, nodeId, pollApply, profile, provider, runtimeType, t])
 
   const terminal = applyStatus === 'completed' || applyStatus === 'failed'
   const rollback = rollbackStep(applyResult)
-  const terminalCopy = terminal ? applyTerminalMessage(applyStatus, applyResult) : ''
+  const terminalCopy = terminal ? applyTerminalMessage(applyStatus, applyResult, t) : ''
 
   return (
     <div className="fixed inset-0 z-50 flex justify-end bg-black/40" role="dialog" aria-modal="true" aria-labelledby="config-wizard-title" onKeyDown={onDialogKeyDown}>
-      <button type="button" aria-label="Close" tabIndex={-1} className="flex-1 cursor-default" onClick={onClose} />
+      <button type="button" aria-label={t('common.close')} tabIndex={-1} className="flex-1 cursor-default" onClick={onClose} />
       <div ref={panelRef} tabIndex={-1} className="flex h-full w-full max-w-xl flex-col overflow-y-auto border-l border-[var(--sp-border)] bg-[var(--sp-surface)] shadow-xl outline-none">
         <div className="flex items-start justify-between border-b border-[var(--sp-border)] px-6 py-4">
           <div>
-            <div id="config-wizard-title" className="text-lg font-bold tracking-tight">Change configuration</div>
+            <div id="config-wizard-title" className="text-lg font-bold tracking-tight">{t('wizard.changeConfiguration')}</div>
             <div className="mt-0.5 font-mono text-xs text-[var(--sp-muted)]">{nodeId} · {runtimeType}/{profile}</div>
           </div>
           <button type="button" className="rounded-lg border border-[var(--sp-border)] px-2.5 py-1 text-sm text-[var(--sp-muted)] hover:bg-[var(--sp-surface-2)]" onClick={onClose}>
@@ -285,19 +287,19 @@ export default function ConfigWizard({
 
           {step === 'Edit' && (
             <div className="grid gap-4">
-              <Field label="Provider">
+                <Field label={t('wizard.fieldProvider')}>
                 <input
                   className="h-10 w-full rounded-lg border border-[var(--sp-border)] bg-[var(--sp-surface-2)] px-3 font-mono text-sm outline-none focus:border-[var(--sp-accent)]"
                   value={provider}
-                  placeholder="anthropic"
+                  placeholder={t('wizard.placeholder.provider')}
                   onChange={(event) => setProvider(event.target.value)}
                 />
               </Field>
-              <Field label="Model">
+                <Field label={t('wizard.fieldModel')}>
                 <input
                   className="h-10 w-full rounded-lg border border-[var(--sp-border)] bg-[var(--sp-surface-2)] px-3 font-mono text-sm outline-none focus:border-[var(--sp-accent)]"
                   value={model}
-                  placeholder="claude-3.7-sonnet"
+                  placeholder={t('wizard.placeholder.model')}
                   onChange={(event) => setModel(event.target.value)}
                 />
               </Field>
@@ -317,16 +319,16 @@ export default function ConfigWizard({
           {step === 'Review' && (
             <div className="grid gap-4">
               <div className="text-sm text-[var(--sp-muted)]">
-                Preview only. Desired state is saved when you run apply, then the server signs the plan for the sidecar.
+                {t('wizard.previewCopy')}
               </div>
               <div className="grid grid-cols-2 gap-3">
-                <Readout label="Desired provider" value={review?.effective.provider || '-'} />
-                <Readout label="Desired model" value={review?.effective.model || '-'} />
+                <Readout label={t('wizard.readDesiredProvider')} value={review?.effective.provider || '-'} />
+                <Readout label={t('wizard.readDesiredModel')} value={review?.effective.model || '-'} />
               </div>
               <div className="rounded-lg border border-[var(--sp-border)] bg-[var(--sp-surface-2)] px-3 py-3">
-                <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--sp-faint)]">Diff vs actual</div>
+                <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--sp-faint)]">{t('wizard.diffVsActual')}</div>
                 {!review || review.diff.length === 0 ? (
-                  <div className="text-sm text-emerald-600">No change: actual already matches desired.</div>
+                  <div className="text-sm text-emerald-600">{t('wizard.noChange')}</div>
                 ) : (
                   <div className="grid gap-2">
                     {review.diff.map((entry) => (
@@ -341,8 +343,8 @@ export default function ConfigWizard({
               </div>
               <div className={`rounded-lg border px-3 py-2 text-xs ${dryRun ? 'border-sky-500/30 bg-sky-500/10 text-sky-700' : 'border-amber-500/35 bg-amber-500/10 text-amber-700'}`}>
                 {dryRun
-                  ? 'Dry run: validate the plan without replacing the live config or restarting the runtime.'
-                  : 'Live apply: replaces the config and restarts the runtime. Requires the sidecar to run with --allow-live-apply; otherwise it fails safely before any change.'}
+                  ? t('wizard.dryRunCopy')
+                  : t('wizard.liveApplyCopy')}
               </div>
             </div>
           )}
@@ -350,13 +352,13 @@ export default function ConfigWizard({
           {(step === 'Apply' || step === 'Done') && (
             <div className="grid gap-4">
               <div className="text-sm text-[var(--sp-muted)]">
-                Plan → diff → sign → sidecar → backup → validate → replace → restart → health check
+                {t('wizard.applyPipeline')}
               </div>
               <div className="grid gap-1.5">
                 {PIPELINE_STEPS.map((entry) => (
-                  <PipelineRow key={entry.name} label={entry.label} status={stepStatus(applyResult, entry.name)} />
+                  <PipelineRow key={entry.name} label={t(entry.labelKey)} status={stepStatus(applyResult, entry.name)} />
                 ))}
-                {rollback && <PipelineRow label="Rollback" status={rollback.status} />}
+                {rollback && <PipelineRow label={t('wizard.step.rollback')} status={rollback.status} />}
               </div>
               {terminal && (
                 <div className={`rounded-lg border px-3 py-2 text-sm ${applyStatus === 'completed' ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700' : 'border-rose-500/30 bg-rose-500/10 text-rose-600'}`}>
@@ -369,22 +371,22 @@ export default function ConfigWizard({
 
         <div className="flex items-center justify-between border-t border-[var(--sp-border)] px-6 py-4">
           <button type="button" className="rounded-lg px-3 py-2 text-sm text-[var(--sp-muted)] hover:bg-[var(--sp-surface-2)]" onClick={onClose}>
-            Close
+            {t('common.close')}
           </button>
           <div className="flex gap-2">
             {step === 'Edit' && (
-              <PrimaryButton disabled={busy} label={busy ? 'Loading…' : 'Preview'} onClick={goReview} />
+              <PrimaryButton disabled={busy} label={busy ? t('common.loading') : t('wizard.preview')} onClick={goReview} />
             )}
             {step === 'Review' && (
               <>
-                <SecondaryButton disabled={busy} label="Back" onClick={() => setStep('Edit')} />
-                <PrimaryButton disabled={busy || activeConfigApply} label={activeConfigApply ? 'Apply in progress' : dryRun ? 'Save and run dry-run' : 'Save and run live apply'} onClick={startApply} />
+                <SecondaryButton disabled={busy} label={t('wizard.back')} onClick={() => setStep('Edit')} />
+                <PrimaryButton disabled={busy || activeConfigApply} label={activeConfigApply ? t('wizard.applyInProgress') : dryRun ? t('wizard.applyDryRun') : t('wizard.applyLive')} onClick={startApply} />
               </>
             )}
             {step === 'Apply' && terminal && (
-              <PrimaryButton disabled={busy} label="Done" onClick={() => setStep('Done')} />
+              <PrimaryButton disabled={busy} label={t('common.done')} onClick={() => setStep('Done')} />
             )}
-            {step === 'Done' && <PrimaryButton disabled={false} label="Close" onClick={onClose} />}
+            {step === 'Done' && <PrimaryButton disabled={false} label={t('common.close')} onClick={onClose} />}
           </div>
         </div>
       </div>
@@ -430,13 +432,13 @@ function runtimeProfileKey(runtimeType: string, profile: string): string {
   return `${trimmedRuntimeType}/${trimmedProfile}`
 }
 
-function desiredHistoryLabel(desired: DesiredConfig): string {
+function desiredHistoryLabel(desired: DesiredConfig, t: TFunction): string {
   const provider = desired.global?.provider?.trim()
   const model = desired.global?.model?.trim()
   if (provider && model) return `${provider}/${model}`
   if (provider) return provider
   if (model) return model
-  return 'no global default'
+  return t('wizard.history.defaultEmpty')
 }
 
 function stepStatus(result: ConfigApplyResult | null, name: string): string {
@@ -457,25 +459,38 @@ function rollbackOutcome(result: ConfigApplyResult | null): 'completed' | 'faile
   return 'unknown'
 }
 
-function applyTerminalMessage(status: Job['status'] | null, result: ConfigApplyResult | null): string {
+function applyTerminalMessage(status: Job['status'] | null, result: ConfigApplyResult | null, t: TFunction): string {
   if (status === 'completed') {
-    return result?.dryRun ? 'Dry run completed. No live change was made.' : 'Live apply completed.'
+    return result?.dryRun ? t('wizard.result.dryRunCompleted') : t('wizard.result.liveCompleted')
   }
   if (status !== 'failed') return ''
   switch (rollbackOutcome(result)) {
     case 'completed':
-      return 'Apply failed. Rollback completed and the previous config was restored.'
+      return t('wizard.result.failedRollbackCompleted')
     case 'failed':
-      return 'Apply failed. Rollback failed; inspect the job result before retrying.'
+      return t('wizard.result.failedRollbackFailed')
     case 'not_recorded':
-      return 'Apply failed before rollback was recorded.'
+      return t('wizard.result.failedNoRollback')
     case 'unknown':
-      return 'Apply failed. Rollback status is unknown because no result was returned.'
+      return t('wizard.result.failedRollbackUnknown')
   }
 }
 
 function StepIndicator({ current }: { current: WizardStep }) {
+  const { t } = useT()
   const currentIndex = WIZARD_STEPS.indexOf(current)
+  const stepLabel = (label: WizardStep) => {
+    switch (label) {
+      case 'Edit':
+        return t('wizard.step.edit')
+      case 'Review':
+        return t('wizard.step.review')
+      case 'Apply':
+        return t('wizard.step.apply')
+      case 'Done':
+        return t('wizard.step.done')
+    }
+  }
   return (
     <div className="flex gap-1 border-b border-[var(--sp-border)] px-6 py-3">
       {WIZARD_STEPS.map((label, index) => (
@@ -483,7 +498,7 @@ function StepIndicator({ current }: { current: WizardStep }) {
           <span className={`flex h-6 w-6 items-center justify-center rounded-full text-xs font-semibold ${index <= currentIndex ? 'bg-[var(--sp-accent)] text-white' : 'bg-[var(--sp-surface-2)] text-[var(--sp-faint)]'}`}>
             {index + 1}
           </span>
-          <span className={`text-xs font-medium ${index <= currentIndex ? 'text-[var(--sp-text)]' : 'text-[var(--sp-faint)]'}`}>{label}</span>
+          <span className={`text-xs font-medium ${index <= currentIndex ? 'text-[var(--sp-text)]' : 'text-[var(--sp-faint)]'}`}>{stepLabel(label)}</span>
           {index < WIZARD_STEPS.length - 1 && <span className="mx-1 text-[var(--sp-faint)]">›</span>}
         </div>
       ))}
@@ -532,12 +547,13 @@ function DesiredHistoryPanel({
   onRefresh: () => void
   onRevert: (entry: DesiredConfigHistoryEntry) => void
 }) {
+  const { t } = useT()
   return (
     <section className="rounded-lg border border-[var(--sp-border)] bg-[var(--sp-surface-2)]">
       <div className="flex items-center justify-between border-b border-[var(--sp-border)] px-3 py-2">
         <div>
-          <div className="text-sm font-semibold">Desired config history</div>
-          <div className="text-[11px] text-[var(--sp-faint)]">Past saved desired states</div>
+          <div className="text-sm font-semibold">{t('wizard.history.title')}</div>
+          <div className="text-[11px] text-[var(--sp-faint)]">{t('wizard.history.pastStates')}</div>
         </div>
         <button
           type="button"
@@ -545,7 +561,7 @@ function DesiredHistoryPanel({
           disabled={!tokenReady || loading}
           onClick={onRefresh}
         >
-          {loading ? 'Loading...' : 'Refresh'}
+          {loading ? t('common.loading') : t('common.refresh')}
         </button>
       </div>
       {error && (
@@ -556,7 +572,7 @@ function DesiredHistoryPanel({
       <div className="grid divide-y divide-[var(--sp-border)]">
         {entries.length === 0 && (
           <div className="px-3 py-4 text-sm text-[var(--sp-muted)]">
-            {loading ? 'Loading history...' : tokenReady ? 'No desired config history yet.' : 'Set an operator token to load history.'}
+            {loading ? t('wizard.history.loading') : tokenReady ? t('wizard.history.empty') : t('wizard.history.requiresToken')}
           </div>
         )}
         {entries.map((entry) => (
@@ -564,7 +580,7 @@ function DesiredHistoryPanel({
             <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
               <div className="min-w-0">
                 <div className="truncate font-mono text-xs text-[var(--sp-text)]">{entry.id}</div>
-                <div className="mt-1 text-xs text-[var(--sp-muted)]">{desiredHistoryLabel(entry.config)} · {formatDate(entry.updatedAt)}</div>
+                <div className="mt-1 text-xs text-[var(--sp-muted)]">{desiredHistoryLabel(entry.config, t)} · {formatDate(entry.updatedAt)}</div>
               </div>
               <button
                 type="button"
@@ -572,7 +588,7 @@ function DesiredHistoryPanel({
                 disabled={!tokenReady || Boolean(revertingId)}
                 onClick={() => onRevert(entry)}
               >
-                {revertingId === entry.id ? 'Reverting...' : 'Revert'}
+                {revertingId === entry.id ? t('wizard.history.reverting') : t('wizard.history.revert')}
               </button>
             </div>
             <div className="font-mono text-[11px] text-[var(--sp-faint)]">{entry.desiredHash || '-'}</div>
@@ -584,12 +600,13 @@ function DesiredHistoryPanel({
 }
 
 function ApplyModeToggle({ dryRun, onChange }: { dryRun: boolean; onChange: (value: boolean) => void }) {
+  const { t } = useT()
   return (
     <div className="grid gap-2">
-      <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--sp-faint)]">Apply mode</div>
+      <div className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--sp-faint)]">{t('wizard.applyMode')}</div>
       <div className="flex gap-2">
-        <ModeOption active={dryRun} label="Dry run" hint="safe, default" onClick={() => onChange(true)} />
-        <ModeOption active={!dryRun} label="Live apply" hint="needs operator flag" onClick={() => onChange(false)} />
+        <ModeOption active={dryRun} label={t('wizard.dryRunLabel')} hint={t('wizard.dryRunHint')} onClick={() => onChange(true)} />
+        <ModeOption active={!dryRun} label={t('wizard.liveApplyLabel')} hint={t('wizard.liveApplyHint')} onClick={() => onChange(false)} />
       </div>
     </div>
   )

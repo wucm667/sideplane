@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react'
-import { apiURL, formatDate, formatRelativeTime, rolloutBadgeClasses } from '../helpers.ts'
+import { apiURL, formatDate, rolloutBadgeClasses } from '../helpers.ts'
+import { formatRelativeTimeLabel, useT, type TFunction } from '../i18n.ts'
 import type { CreateRolloutRequest, ListRolloutTemplatesResponse, NodeStatus, Rollout, RolloutAction, RolloutBatch, RolloutNodeProgress, RolloutTemplate } from '../types.ts'
 import { TableMessage } from './FleetOverview.tsx'
 
@@ -30,6 +31,7 @@ export function RolloutsView({
   onOpenNode,
   onRefresh,
 }: RolloutsViewProps) {
+  const { t } = useT()
   const tokenReady = operatorToken.trim().length > 0
   const [selectedRolloutId, setSelectedRolloutId] = useState<string | null>(null)
   const selectedRollout = useMemo(() => {
@@ -49,8 +51,8 @@ export function RolloutsView({
     <div className="mx-auto max-w-6xl px-4 py-6 sm:px-6 lg:px-9 lg:py-8">
       <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Rollouts</h1>
-          <div className="mt-1 text-sm text-[var(--sp-muted)]">{rollouts.length} staged changes · {activeRolloutCount(rollouts)} active</div>
+          <h1 className="text-2xl font-bold tracking-tight">{t('rollouts.title')}</h1>
+          <div className="mt-1 text-sm text-[var(--sp-muted)]">{t('rollouts.subtitle', { staged: rollouts.length, active: activeRolloutCount(rollouts) })}</div>
         </div>
         <button
           type="button"
@@ -58,7 +60,7 @@ export function RolloutsView({
           disabled={loading}
           onClick={onRefresh}
         >
-          {loading ? 'Refreshing' : 'Refresh'}
+          {loading ? t('common.refreshing') : t('common.refresh')}
         </button>
       </div>
 
@@ -84,12 +86,12 @@ export function RolloutsView({
       <div className="mt-6 grid gap-6 xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.35fr)]">
         <section className="overflow-hidden rounded-xl border border-[var(--sp-border)] bg-[var(--sp-surface)] shadow-sm">
           <div className="grid grid-cols-[1fr_auto_auto] gap-3 border-b border-[var(--sp-border)] px-4 py-3 text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--sp-faint)]">
-            <div>Rollout</div>
-            <div>State</div>
-            <div>Updated</div>
+            <div>{t('rollouts.table.rollout')}</div>
+            <div>{t('rollouts.table.state')}</div>
+            <div>{t('rollouts.table.updated')}</div>
           </div>
-          {loading && <TableMessage message="Loading rollouts…" />}
-          {!loading && rollouts.length === 0 && <TableMessage message={tokenReady ? 'No rollouts yet.' : 'Operator token required.'} />}
+          {loading && <TableMessage message={t('rollouts.loading')} />}
+          {!loading && rollouts.length === 0 && <TableMessage message={tokenReady ? t('rollouts.empty') : t('common.operatorTokenRequired')} />}
           {!loading && rollouts.map((rollout) => (
             <button
               key={rollout.id}
@@ -102,7 +104,7 @@ export function RolloutsView({
                 <span className="mt-1 block truncate text-[var(--sp-faint)]">{rolloutTargetLabel(rollout)} · {rolloutRuntimeLabel(rollout)}</span>
               </span>
               <RolloutStateBadge rollout={rollout} />
-              <span className="text-[var(--sp-faint)]" title={formatDate(rollout.updatedAt)}>{formatRelativeTime(rollout.updatedAt)}</span>
+              <span className="text-[var(--sp-faint)]" title={formatDate(rollout.updatedAt)}>{formatRelativeTimeLabel(rollout.updatedAt, t)}</span>
             </button>
           ))}
         </section>
@@ -124,7 +126,7 @@ export function RolloutsView({
             />
           ) : (
             <div className="rounded-xl border border-[var(--sp-border)] bg-[var(--sp-surface)] px-4 py-10 text-center text-sm text-[var(--sp-muted)]">
-              Select a rollout to inspect progress.
+              {t('rollouts.noSelection')}
             </div>
           )}
         </section>
@@ -144,6 +146,7 @@ function RolloutCreateForm({
   operatorToken: string
   onCreate: (request: CreateRolloutRequest) => Promise<Rollout | null>
 }) {
+  const { t } = useT()
   const [selector, setSelector] = useState('')
   const [nodeIds, setNodeIds] = useState('')
   const [provider, setProvider] = useState('')
@@ -190,14 +193,14 @@ function RolloutCreateForm({
   }, [operatorToken])
 
   const buildSpec = (): CreateRolloutRequest['spec'] | string => {
-    const parsedSelector = parseSelector(selector)
+    const parsedSelector = parseSelector(selector, t)
     if (typeof parsedSelector === 'string') return parsedSelector
     const nodes = parseNodeIds(nodeIds)
-    if (Object.keys(parsedSelector).length === 0 && nodes.length === 0) return 'selector or node required'
-    if (Object.keys(parsedSelector).length > 0 && nodes.length > 0) return 'selector and nodes conflict'
-    if (!provider.trim() || !model.trim()) return 'provider and model required'
-    if (batchSize <= 0) return 'batch size must be positive'
-    const parsedStartAt = parseStartAtInput(startAt)
+    if (Object.keys(parsedSelector).length === 0 && nodes.length === 0) return t('rollouts.error.nodeRequired')
+    if (Object.keys(parsedSelector).length > 0 && nodes.length > 0) return t('rollouts.error.nodeConflict')
+    if (!provider.trim() || !model.trim()) return t('rollouts.error.providerModelRequired')
+    if (batchSize <= 0) return t('rollouts.error.batchPositive')
+    const parsedStartAt = parseStartAtInput(startAt, t)
     if (parsedStartAt.error) return parsedStartAt.error
     return {
       selector: Object.keys(parsedSelector).length > 0 ? parsedSelector : undefined,
@@ -217,7 +220,7 @@ function RolloutCreateForm({
     if (!tokenReady) return
     const name = templateName.trim()
     if (name === '') {
-      setFormError('template name required')
+      setFormError(t('rollouts.error.templateNameRequired'))
       return
     }
     const spec = buildSpec()
@@ -234,14 +237,14 @@ function RolloutCreateForm({
         body: JSON.stringify({ name, spec }),
       })
       if (!res.ok) {
-        if (res.status === 403) throw new Error('Operator token is read-only')
-        throw new Error('save template failed')
+        if (res.status === 403) throw new Error(t('common.operatorTokenReadOnly'))
+        throw new Error(t('rollouts.error.saveTemplate'))
       }
       setTemplateName('')
-      setTemplateMessage('Template saved')
+      setTemplateMessage(t('rollouts.templateSaved'))
       await loadTemplates()
     } catch (e) {
-      setFormError(e instanceof Error ? e.message : 'Unknown error')
+      setFormError(e instanceof Error ? e.message : t('common.unknownError'))
     }
   }
 
@@ -254,35 +257,35 @@ function RolloutCreateForm({
 
   const submit = async (event: FormEvent) => {
     event.preventDefault()
-    const parsedSelector = parseSelector(selector)
+    const parsedSelector = parseSelector(selector, t)
     if (typeof parsedSelector === 'string') {
       setFormError(parsedSelector)
       return
     }
     const nodes = parseNodeIds(nodeIds)
     if (Object.keys(parsedSelector).length === 0 && nodes.length === 0) {
-      setFormError('selector or node required')
+      setFormError(t('rollouts.error.nodeRequired'))
       return
     }
     if (Object.keys(parsedSelector).length > 0 && nodes.length > 0) {
-      setFormError('selector and nodes conflict')
+      setFormError(t('rollouts.error.nodeConflict'))
       return
     }
     if (!provider.trim() || !model.trim()) {
-      setFormError('provider and model required')
+      setFormError(t('rollouts.error.providerModelRequired'))
       return
     }
     if (batchSize <= 0) {
-      setFormError('batch size must be positive')
+      setFormError(t('rollouts.error.batchPositive'))
       return
     }
-    const parsedStartAt = parseStartAtInput(startAt)
+    const parsedStartAt = parseStartAtInput(startAt, t)
     if (parsedStartAt.error) {
       setFormError(parsedStartAt.error)
       return
     }
     if (live && !confirmedLive) {
-      setFormError('confirm live rollout')
+      setFormError(t('rollouts.error.confirmLive'))
       return
     }
 
@@ -311,64 +314,64 @@ function RolloutCreateForm({
   return (
     <form className="rounded-xl border border-[var(--sp-border)] bg-[var(--sp-surface)] p-4 shadow-sm" onSubmit={submit}>
       <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="text-sm font-semibold">New rollout</div>
+        <div className="text-sm font-semibold">{t('rollouts.new')}</div>
         <button
           type="submit"
           className="h-9 rounded-lg bg-[var(--sp-accent)] px-3 text-sm font-medium text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-55"
           disabled={!tokenReady || creating}
-          title={!tokenReady ? 'operator token required' : live && !confirmedLive ? 'confirm live rollout' : 'create rollout'}
+          title={!tokenReady ? t('common.operatorTokenRequired') : live && !confirmedLive ? t('rollouts.error.confirmLive') : t('rollouts.create')}
         >
-          {creating ? 'Creating…' : 'Create rollout'}
+          {creating ? t('common.creating') : t('rollouts.create')}
         </button>
       </div>
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-        <Field label="Selector">
-          <input className={inputClassName} value={selector} placeholder="role=canary,zone=lab" onChange={(event) => setSelector(event.target.value)} />
+        <Field label={t('rollouts.form.selector')}>
+          <input className={inputClassName} value={selector} placeholder={t('rollouts.placeholder.selector')} onChange={(event) => setSelector(event.target.value)} />
         </Field>
-        <Field label="Nodes">
-          <input className={inputClassName} value={nodeIds} placeholder="node-a,node-b" onChange={(event) => setNodeIds(event.target.value)} />
+        <Field label={t('rollouts.form.nodes')}>
+          <input className={inputClassName} value={nodeIds} placeholder={t('rollouts.placeholder.nodes')} onChange={(event) => setNodeIds(event.target.value)} />
         </Field>
-        <Field label="Provider">
-          <input className={inputClassName} value={provider} placeholder="openai" onChange={(event) => setProvider(event.target.value)} />
+        <Field label={t('rollouts.form.provider')}>
+          <input className={inputClassName} value={provider} placeholder={t('rollouts.placeholder.provider')} onChange={(event) => setProvider(event.target.value)} />
         </Field>
-        <Field label="Model">
-          <input className={inputClassName} value={model} placeholder="gpt-4o" onChange={(event) => setModel(event.target.value)} />
+        <Field label={t('rollouts.form.model')}>
+          <input className={inputClassName} value={model} placeholder={t('rollouts.placeholder.model')} onChange={(event) => setModel(event.target.value)} />
         </Field>
-        <Field label="Runtime">
+        <Field label={t('rollouts.form.runtime')}>
           <select className={inputClassName} value={runtimeType} onChange={(event) => setRuntimeType(event.target.value)}>
             <option value="hermes">hermes</option>
             <option value="openclaw">openclaw</option>
           </select>
         </Field>
-        <Field label="Profile">
-          <input className={inputClassName} value={profile} placeholder="default" onChange={(event) => setProfile(event.target.value)} />
+        <Field label={t('rollouts.form.profile')}>
+          <input className={inputClassName} value={profile} placeholder={t('rollouts.placeholder.profile')} onChange={(event) => setProfile(event.target.value)} />
         </Field>
-        <Field label="Batch">
+        <Field label={t('rollouts.form.batch')}>
           <input className={inputClassName} type="number" min={1} value={batchSize} onChange={(event) => setBatchSize(Number(event.target.value))} />
         </Field>
-        <Field label="Start">
+        <Field label={t('rollouts.form.start')}>
           <input className={inputClassName} type="datetime-local" value={startAt} onChange={(event) => setStartAt(event.target.value)} />
         </Field>
         <div className="grid gap-2">
           <label className="flex h-9 items-center gap-2 rounded-lg border border-[var(--sp-border)] bg-[var(--sp-surface-2)] px-3 text-xs text-[var(--sp-muted)]">
             <input type="checkbox" checked={live} onChange={(event) => setLive(event.target.checked)} />
-            live
+            {t('rollouts.live')}
           </label>
           {live && (
             <label className="flex h-9 items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 text-xs text-amber-700">
               <input type="checkbox" checked={confirmedLive} onChange={(event) => setConfirmedLive(event.target.checked)} />
-              confirm
+              {t('rollouts.confirm')}
             </label>
           )}
           {live && (
             <label className="flex h-9 items-center gap-2 rounded-lg border border-[var(--sp-border)] bg-[var(--sp-surface-2)] px-3 text-xs text-[var(--sp-muted)]">
               <input type="checkbox" checked={autoRollback} onChange={(event) => setAutoRollback(event.target.checked)} />
-              auto-rollback
+              {t('rollouts.autoRollback')}
             </label>
           )}
           <label className="flex h-9 items-center gap-2 rounded-lg border border-[var(--sp-border)] bg-[var(--sp-surface-2)] px-3 text-xs text-[var(--sp-muted)]">
             <input type="checkbox" checked={allowOverlap} onChange={(event) => setAllowOverlap(event.target.checked)} />
-            allow overlap
+            {t('rollouts.allowOverlap')}
           </label>
         </div>
       </div>
@@ -376,10 +379,10 @@ function RolloutCreateForm({
         <select
           className={inputClassName + ' max-w-xs'}
           value={selectedTemplate}
-          aria-label="rollout template"
+          aria-label={t('rollouts.templateSelect')}
           onChange={(event) => setSelectedTemplate(event.target.value)}
         >
-          <option value="">Use a template…</option>
+          <option value="">{t('rollouts.templateUse')}</option>
           {templates.map((template) => (
             <option key={template.id} value={template.id}>{template.name}</option>
           ))}
@@ -390,13 +393,13 @@ function RolloutCreateForm({
           disabled={!tokenReady || creating || selectedTemplate === ''}
           onClick={createFromTemplate}
         >
-          Create from template
+          {t('rollouts.createFromTemplate')}
         </button>
         <input
           className={inputClassName + ' max-w-[12rem]'}
           value={templateName}
-          aria-label="Template name"
-          placeholder="save as template name"
+          aria-label={t('rollouts.templateName')}
+          placeholder={t('rollouts.templateNamePlaceholder')}
           onChange={(event) => setTemplateName(event.target.value)}
         />
         <button
@@ -405,7 +408,7 @@ function RolloutCreateForm({
           disabled={!tokenReady || templateName.trim() === ''}
           onClick={saveAsTemplate}
         >
-          Save as template
+          {t('rollouts.saveAsTemplate')}
         </button>
       </div>
       {templateMessage && <div role="status" className="mt-2 text-xs text-emerald-600">{templateMessage}</div>}
@@ -429,6 +432,7 @@ function RolloutDetail({
   onAction: (action: RolloutAction) => void
   onOpenNode: (nodeId: string) => void
 }) {
+  const { t } = useT()
   const terminal = isTerminalRollout(rollout)
   const actioning = actioningId === rollout.id
   const nodeMap = useMemo(() => new Map(nodes.map((node) => [node.nodeId, node])), [nodes])
@@ -442,20 +446,20 @@ function RolloutDetail({
               <h2 className="truncate font-mono text-sm font-semibold">{rollout.id}</h2>
               <RolloutStateBadge rollout={rollout} />
               <span className="rounded border border-[var(--sp-border)] bg-[var(--sp-surface-2)] px-2 py-0.5 text-[11px] font-semibold text-[var(--sp-muted)]">
-                {rollout.spec.live ? 'live' : 'dry-run'}
+                {rollout.spec.live ? t('rollouts.live') : t('rollouts.dryRun')}
               </span>
               {rollout.spec.autoRollbackOnFailure && (
                 <span className="rounded border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[11px] font-semibold text-amber-700">
-                  auto-rollback
+                  {t('rollouts.autoRollbackBadge')}
                 </span>
               )}
               {rollout.spec.allowOverlap && (
                 <span className="rounded border border-[var(--sp-border)] bg-[var(--sp-surface-2)] px-2 py-0.5 text-[11px] font-semibold text-[var(--sp-muted)]">
-                  overlap allowed
+                  {t('rollouts.overlapAllowed')}
                 </span>
               )}
             </div>
-            <div className="mt-2 text-xs text-[var(--sp-muted)]">{rolloutTargetLabel(rollout)} · {rolloutRuntimeLabel(rollout)} · batch {rollout.spec.batchSize || 1}</div>
+            <div className="mt-2 text-xs text-[var(--sp-muted)]">{rolloutTargetLabel(rollout)} · {rolloutRuntimeLabel(rollout)} · {t('rollouts.batchLabel', { batchSize: rollout.spec.batchSize || 1 })}</div>
             {rollout.pauseReason && <div className="mt-2 text-xs text-amber-700">{rollout.pauseReason}</div>}
             {(rollout.failingNodeIds ?? []).length > 0 && (
               <div className="mt-1 font-mono text-[11px] text-rose-600">{rollout.failingNodeIds?.join(',')}</div>
@@ -464,21 +468,21 @@ function RolloutDetail({
           <div className="flex flex-wrap gap-2">
             <ActionButton
               disabled={!tokenReady || actioning || terminal || rollout.state === 'paused' || rollout.state === 'scheduled'}
-              label="Pause"
-              reason={!tokenReady ? 'operator token required' : terminal ? 'terminal rollout' : rollout.state === 'paused' ? 'already paused' : rollout.state === 'scheduled' ? 'abort scheduled rollouts before start' : 'pause rollout'}
+              label={t('rollouts.pause')}
+              reason={!tokenReady ? t('common.operatorTokenRequired') : terminal ? t('rollouts.action.terminal') : rollout.state === 'paused' ? t('rollouts.action.alreadyPaused') : rollout.state === 'scheduled' ? t('rollouts.action.abortScheduled') : t('rollouts.action.pause')}
               onClick={() => onAction('pause')}
             />
             <ActionButton
               disabled={!tokenReady || actioning || rollout.state !== 'paused'}
-              label="Resume"
-              reason={!tokenReady ? 'operator token required' : rollout.state !== 'paused' ? 'rollout is not paused' : 'resume rollout'}
+              label={t('rollouts.resume')}
+              reason={!tokenReady ? t('common.operatorTokenRequired') : rollout.state !== 'paused' ? t('rollouts.action.notPaused') : t('rollouts.action.resume')}
               onClick={() => onAction('resume')}
             />
             <ActionButton
               danger
               disabled={!tokenReady || actioning || terminal}
-              label="Abort"
-              reason={!tokenReady ? 'operator token required' : terminal ? 'terminal rollout' : 'abort rollout'}
+              label={t('rollouts.abort')}
+              reason={!tokenReady ? t('common.operatorTokenRequired') : terminal ? t('rollouts.action.terminal') : t('rollouts.action.abort')}
               onClick={() => onAction('abort')}
             />
           </div>
@@ -486,14 +490,14 @@ function RolloutDetail({
       </div>
 
       <div className="grid gap-px bg-[var(--sp-border)] sm:grid-cols-4">
-        <Metric label="Created" value={formatRelativeTime(rollout.createdAt)} title={formatDate(rollout.createdAt)} />
-        <Metric label="Start" value={rollout.spec.startAt ? formatDate(rollout.spec.startAt) : 'immediate'} />
-        <Metric label="Updated" value={formatRelativeTime(rollout.updatedAt)} title={formatDate(rollout.updatedAt)} />
-        <Metric label="Batches" value={batchProgress(rollout)} />
+        <Metric label={t('rollouts.metric.created')} value={formatRelativeTimeLabel(rollout.createdAt, t)} title={formatDate(rollout.createdAt)} />
+        <Metric label={t('rollouts.metric.start')} value={rollout.spec.startAt ? formatDate(rollout.spec.startAt) : t('rollouts.immediate')} />
+        <Metric label={t('rollouts.metric.updated')} value={formatRelativeTimeLabel(rollout.updatedAt, t)} title={formatDate(rollout.updatedAt)} />
+        <Metric label={t('rollouts.metric.batches')} value={batchProgress(rollout)} />
       </div>
 
       <div className="px-4 py-4">
-        <div className="mb-3 text-xs font-semibold uppercase tracking-[0.14em] text-[var(--sp-faint)]">Batches</div>
+        <div className="mb-3 text-xs font-semibold uppercase tracking-[0.14em] text-[var(--sp-faint)]">{t('rollouts.batches')}</div>
         <div className="grid gap-3">
           {rollout.batches.map((batch) => (
             <BatchPanel key={batch.index} batch={batch} nodeMap={nodeMap} onOpenNode={onOpenNode} />
@@ -505,10 +509,11 @@ function RolloutDetail({
 }
 
 function BatchPanel({ batch, nodeMap, onOpenNode }: { batch: RolloutBatch; nodeMap: Map<string, NodeStatus>; onOpenNode: (nodeId: string) => void }) {
+  const { t } = useT()
   return (
     <div className="overflow-hidden rounded-lg border border-[var(--sp-border)]">
       <div className="flex items-center justify-between border-b border-[var(--sp-border)] bg-[var(--sp-surface-2)] px-3 py-2">
-        <div className="font-mono text-xs font-semibold">batch {batch.index}</div>
+        <div className="font-mono text-xs font-semibold">{t('rollouts.batch', { index: batch.index })}</div>
         <span className="text-xs text-[var(--sp-muted)]">{batch.state}</span>
       </div>
       <div className="divide-y divide-[var(--sp-border)]">
@@ -521,6 +526,7 @@ function BatchPanel({ batch, nodeMap, onOpenNode }: { batch: RolloutBatch; nodeM
 }
 
 function NodeProgressRow({ nodeId, node, progress, onOpenNode }: { nodeId: string; node?: NodeStatus; progress?: RolloutNodeProgress; onOpenNode: (nodeId: string) => void }) {
+  const { t } = useT()
   const state = progress?.state ?? 'pending'
   return (
     <div className="grid gap-2 px-3 py-3 text-xs sm:grid-cols-[1fr_auto_1fr_auto] sm:items-center">
@@ -541,19 +547,19 @@ function NodeProgressRow({ nodeId, node, progress, onOpenNode }: { nodeId: strin
           <button
             type="button"
             className="mt-1 flex max-w-full items-center gap-1 truncate font-mono text-amber-700 hover:underline"
-            title={`rolled back via ${progress.rollbackJobId}`}
+            title={t('rollouts.rolledBackVia', { jobId: progress.rollbackJobId })}
             onClick={() => onOpenNode(nodeId)}
           >
-            <span className="text-[10px] font-semibold uppercase tracking-wide">rollback</span>
+            <span className="text-[10px] font-semibold uppercase tracking-wide">{t('rollouts.rollback')}</span>
             {progress.rollbackJobId}
           </button>
         ) : (
-          progress?.rolledBack && <div className="mt-1 text-[10px] font-semibold uppercase tracking-wide text-amber-700">rollback attempted</div>
+          progress?.rolledBack && <div className="mt-1 text-[10px] font-semibold uppercase tracking-wide text-amber-700">{t('rollouts.rollbackAttempted')}</div>
         )}
       </div>
       <div className="flex justify-start sm:justify-end">
         {node?.drift ? (
-          <span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-amber-600">drift</span>
+          <span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-amber-600">{t('rollouts.drift')}</span>
         ) : (
           <span className="font-mono text-[var(--sp-faint)]">-</span>
         )}
@@ -605,17 +611,17 @@ function Field({ children, label }: { children: ReactNode; label: string }) {
 
 const inputClassName = 'h-9 rounded-lg border border-[var(--sp-border)] bg-[var(--sp-surface-2)] px-3 font-mono text-xs text-[var(--sp-text)] outline-none focus:border-[var(--sp-accent)]'
 
-function parseSelector(value: string): Record<string, string> | string {
+function parseSelector(value: string, t: TFunction): Record<string, string> | string {
   const trimmed = value.trim()
   if (!trimmed) return {}
   const labels: Record<string, string> = {}
   for (const part of trimmed.split(',')) {
     const entry = part.trim()
-    if (!entry) return 'selector entry is empty'
+    if (!entry) return t('rollouts.error.selectorEmpty')
     const index = entry.indexOf('=')
-    if (index <= 0) return `invalid selector ${entry}`
+    if (index <= 0) return t('rollouts.error.selectorInvalid', { selector: entry })
     const key = entry.slice(0, index).trim()
-    if (labels[key] !== undefined) return `duplicate selector ${key}`
+    if (labels[key] !== undefined) return t('rollouts.error.selectorDuplicate', { key })
     labels[key] = entry.slice(index + 1).trim()
   }
   return labels
@@ -633,11 +639,11 @@ function parseNodeIds(value: string): string[] {
   return result
 }
 
-function parseStartAtInput(value: string): { value?: string; error?: string } {
+function parseStartAtInput(value: string, t: TFunction): { value?: string; error?: string } {
   const trimmed = value.trim()
   if (!trimmed) return {}
   const date = new Date(trimmed)
-  if (Number.isNaN(date.getTime())) return { error: 'start time is invalid' }
+  if (Number.isNaN(date.getTime())) return { error: t('rollouts.error.startInvalid') }
   return { value: date.toISOString() }
 }
 

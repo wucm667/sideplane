@@ -1,11 +1,14 @@
 import type { Theme, View } from '../helpers.ts'
+import { useT, type Lang } from '../i18n.ts'
 
 interface SidebarProps {
   currentView: View
   groups: Array<{ name: string; count: number }>
+  lang: Lang
   liveConnected: boolean
   operatorToken: string
   theme: Theme
+  onLangToggle: () => void
   onOperatorTokenChange: (value: string) => void
   onThemeToggle: () => void
   onViewChange: (view: View) => void
@@ -14,13 +17,17 @@ interface SidebarProps {
 export function Sidebar({
   currentView,
   groups,
+  lang,
   liveConnected,
   operatorToken,
   theme,
+  onLangToggle,
   onOperatorTokenChange,
   onThemeToggle,
   onViewChange,
 }: SidebarProps) {
+  const { t } = useT()
+
   return (
     <aside className="border-b border-[var(--sp-border)] bg-[var(--sp-surface)] md:flex md:h-screen md:w-60 md:flex-none md:flex-col md:border-b-0 md:border-r">
       <div className="flex items-center gap-3 border-b border-[var(--sp-border)] px-5 py-4">
@@ -30,27 +37,27 @@ export function Sidebar({
         </div>
         <div>
           <div className="text-sm font-bold tracking-tight">Sideplane</div>
-          <div className="text-[11px] text-[var(--sp-faint)]">control plane</div>
+          <div className="text-[11px] text-[var(--sp-faint)]">{t('sidebar.controlPlane')}</div>
         </div>
       </div>
 
-      <nav aria-label="Primary" className="grid grid-cols-4 gap-1 px-3 py-3 md:flex md:flex-col">
-        <NavButton active={currentView === 'fleet'} label="Fleet" onClick={() => onViewChange('fleet')} />
-        <NavButton active={currentView === 'rollouts'} label="Rollouts" onClick={() => onViewChange('rollouts')} />
-        <NavButton active={currentView === 'activity'} label="Activity" onClick={() => onViewChange('activity')} />
-        <NavButton active={currentView === 'enrollment'} label="Enrollment" onClick={() => onViewChange('enrollment')} />
+      <nav aria-label={t('sidebar.nav.primary')} className="grid grid-cols-4 gap-1 px-3 py-3 md:flex md:flex-col">
+        <NavButton active={currentView === 'fleet'} label={t('sidebar.nav.fleet')} onClick={() => onViewChange('fleet')} />
+        <NavButton active={currentView === 'rollouts'} label={t('sidebar.nav.rollouts')} onClick={() => onViewChange('rollouts')} />
+        <NavButton active={currentView === 'activity'} label={t('sidebar.nav.activity')} onClick={() => onViewChange('activity')} />
+        <NavButton active={currentView === 'enrollment'} label={t('sidebar.nav.enrollment')} onClick={() => onViewChange('enrollment')} />
       </nav>
 
       <div className="hidden px-4 pt-2 md:block">
         <div className="px-1 pb-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--sp-faint)]">
-          Groups
+          {t('sidebar.groups')}
         </div>
         <div className="space-y-1">
           {groups.map((group, index) => (
             <div key={group.name} className="flex items-center justify-between rounded-md px-2 py-1.5 text-xs text-[var(--sp-muted)] hover:bg-[var(--sp-surface-2)]">
               <span className="flex min-w-0 items-center gap-2">
                 <span className={`h-1.5 w-1.5 flex-none rounded-sm ${index === 0 ? 'bg-[var(--sp-accent)]' : 'bg-[var(--sp-faint)]'}`} />
-                <span className="truncate">{group.name}</span>
+                <span className="truncate">{groupLabel(group.name, t)}</span>
               </span>
               <span className="font-mono text-[var(--sp-faint)]">{group.count}</span>
             </div>
@@ -62,10 +69,10 @@ export function Sidebar({
         <label className="grid gap-1.5 text-xs text-[var(--sp-muted)]">
           <span className="flex items-center gap-2">
             <span className={`h-2 w-2 rounded-full ${operatorToken.trim() ? 'bg-emerald-500' : 'bg-amber-500'}`} />
-            Operator session
+            {t('sidebar.operatorSession')}
             {liveConnected && (
               <span className="ml-auto rounded border border-emerald-500/25 bg-emerald-500/10 px-1.5 py-0.5 font-mono text-[10px] uppercase tracking-normal text-emerald-600">
-                live
+                {t('sidebar.live')}
               </span>
             )}
           </span>
@@ -74,7 +81,7 @@ export function Sidebar({
             className="h-9 rounded-lg border border-[var(--sp-border)] bg-[var(--sp-surface-2)] px-3 font-mono text-xs text-[var(--sp-text)] outline-none focus:border-[var(--sp-accent)]"
             value={operatorToken}
             autoComplete="off"
-            placeholder="operator token"
+            placeholder={t('sidebar.operatorToken')}
             onChange={(event) => onOperatorTokenChange(event.target.value)}
           />
         </label>
@@ -84,23 +91,41 @@ export function Sidebar({
           disabled={!operatorToken.trim()}
           onClick={() => onOperatorTokenChange('')}
         >
-          Clear token
+          {t('sidebar.clearToken')}
         </button>
-        <button
-          type="button"
-          className="flex h-9 items-center justify-between rounded-lg border border-[var(--sp-border)] bg-[var(--sp-surface-2)] px-3 text-xs font-medium text-[var(--sp-text)] hover:border-[var(--sp-border-strong)]"
-          onClick={onThemeToggle}
-        >
-          <span>{theme === 'dark' ? 'Dark mode' : 'Light mode'}</span>
-          <span className="font-mono text-[var(--sp-faint)]">{theme === 'dark' ? 'on' : 'off'}</span>
-        </button>
+        <div className="grid grid-cols-2 gap-2">
+          <button
+            type="button"
+            className="flex h-9 items-center justify-between rounded-lg border border-[var(--sp-border)] bg-[var(--sp-surface-2)] px-3 text-xs font-medium text-[var(--sp-text)] hover:border-[var(--sp-border-strong)]"
+            onClick={onThemeToggle}
+          >
+            <span>{theme === 'dark' ? t('sidebar.darkMode') : t('sidebar.lightMode')}</span>
+            <span className="font-mono text-[var(--sp-faint)]">{theme === 'dark' ? t('sidebar.on') : t('sidebar.off')}</span>
+          </button>
+          <button
+            type="button"
+            aria-label={t('sidebar.language')}
+            className="flex h-9 items-center justify-center rounded-lg border border-[var(--sp-border)] bg-[var(--sp-surface-2)] px-2 font-mono text-xs font-semibold text-[var(--sp-text)] hover:border-[var(--sp-border-strong)]"
+            onClick={onLangToggle}
+          >
+            <span className={lang === 'en' ? 'text-[var(--sp-text)]' : 'text-[var(--sp-faint)]'}>EN</span>
+            <span className="px-1 text-[var(--sp-faint)]">|</span>
+            <span className={lang === 'zh' ? 'text-[var(--sp-text)]' : 'text-[var(--sp-faint)]'}>中文</span>
+          </button>
+        </div>
         <div className="flex items-center justify-between px-1 text-[11px] text-[var(--sp-faint)]">
           <span>?</span>
-          <span>shortcuts</span>
+          <span>{t('sidebar.shortcuts')}</span>
         </div>
       </div>
     </aside>
   )
+}
+
+function groupLabel(name: string, t: (key: string) => string): string {
+  if (name === 'all nodes') return t('sidebar.allNodes')
+  if (name === 'no runtime') return t('sidebar.noRuntime')
+  return name
 }
 
 function NavButton({ active, label, onClick }: { active: boolean; label: string; onClick: () => void }) {

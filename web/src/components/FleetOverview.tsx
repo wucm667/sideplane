@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
-import { apiErrorMessage, apiURL, compactHash, fleetOverviewMetrics, formatDate, formatRelativeTime, hasActiveDeepProbe, runtimeKey, runtimeLabel, stateBadgeClasses } from '../helpers.ts'
+import { apiErrorMessage, apiURL, compactHash, fleetOverviewMetrics, formatDate, hasActiveDeepProbe, runtimeKey, runtimeLabel, stateBadgeClasses } from '../helpers.ts'
 import type { FleetOverviewMetrics } from '../helpers.ts'
+import { formatRelativeTimeLabel, useT, type TFunction } from '../i18n.ts'
 import type { BulkJobResponse, BulkNodeLabelsResponse, Job, NodeStatus, Rollout } from '../types.ts'
 
 type SortKey = 'node' | 'state' | 'heartbeat'
@@ -43,6 +44,7 @@ export function FleetOverview({
   onRefresh,
   onSelectorChange,
 }: FleetOverviewProps) {
+  const { t } = useT()
   const [sort, setSort] = useState<{ key: SortKey; direction: SortDirection }>({ key: 'state', direction: 'asc' })
   const [searchQuery, setSearchQuery] = useState('')
   const [selected, setSelected] = useState<Set<string>>(new Set())
@@ -110,16 +112,16 @@ export function FleetOverview({
         body: JSON.stringify({ nodeIds: selectedIds, type: 'deep_probe' }),
       })
       if (!res.ok) {
-        if (res.status === 401) throw new Error('Operator token required or invalid')
-        if (res.status === 403) throw new Error('Operator token is read-only')
+        if (res.status === 401) throw new Error(t('common.operatorTokenRequiredInvalid'))
+        if (res.status === 403) throw new Error(t('common.operatorTokenReadOnly'))
         throw new Error(await apiErrorMessage(res))
       }
       const data = (await res.json()) as BulkJobResponse
-      setBulkMessage(`Probed ${data.created} of ${selectedIds.length} node(s).`)
+      setBulkMessage(t('fleet.bulk.probed', { created: data.created, total: selectedIds.length }))
       setSelected(new Set())
       onRefresh()
     } catch (e) {
-      setBulkError(e instanceof Error ? e.message : 'Unknown error')
+      setBulkError(e instanceof Error ? e.message : t('common.unknownError'))
     } finally {
       setBulkBusy(false)
     }
@@ -127,7 +129,7 @@ export function FleetOverview({
 
   const bulkLabel = async () => {
     if (selectedIds.length === 0 || bulkBusy) return
-    const labels = parseLabelAssignments(labelInput)
+    const labels = parseLabelAssignments(labelInput, t)
     if (typeof labels === 'string') {
       setBulkError(labels)
       return
@@ -142,17 +144,17 @@ export function FleetOverview({
         body: JSON.stringify({ nodeIds: selectedIds, labels }),
       })
       if (!res.ok) {
-        if (res.status === 401) throw new Error('Operator token required or invalid')
-        if (res.status === 403) throw new Error('Operator token is read-only')
+        if (res.status === 401) throw new Error(t('common.operatorTokenRequiredInvalid'))
+        if (res.status === 403) throw new Error(t('common.operatorTokenReadOnly'))
         throw new Error(await apiErrorMessage(res))
       }
       const data = (await res.json()) as BulkNodeLabelsResponse
-      setBulkMessage(`Applied ${Object.keys(labels).length} label(s) to ${data.updated} node(s).`)
+      setBulkMessage(t('fleet.bulk.appliedLabels', { labelCount: Object.keys(labels).length, updated: data.updated }))
       setLabelInput('')
       setSelected(new Set())
       onRefresh()
     } catch (e) {
-      setBulkError(e instanceof Error ? e.message : 'Unknown error')
+      setBulkError(e instanceof Error ? e.message : t('common.unknownError'))
     } finally {
       setBulkBusy(false)
     }
@@ -162,7 +164,7 @@ export function FleetOverview({
     <div className="mx-auto max-w-6xl px-4 py-6 sm:px-6 lg:px-9 lg:py-8">
       <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Fleet</h1>
+          <h1 className="text-2xl font-bold tracking-tight">{t('fleet.title')}</h1>
           <div className="mt-1 text-sm text-[var(--sp-muted)]">{fleetSubtitle}</div>
         </div>
         <button
@@ -172,7 +174,7 @@ export function FleetOverview({
           onClick={onRefresh}
         >
           <span className={refreshing ? 'animate-spin' : ''}>↻</span>
-          {refreshing ? 'Refreshing' : 'Refresh'}
+          {refreshing ? t('common.refreshing') : t('common.refresh')}
         </button>
       </div>
 
@@ -186,7 +188,7 @@ export function FleetOverview({
 
       {error && (
         <div role="alert" className="mb-5 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-600">
-          Failed to load nodes: {error}
+          {t('fleet.errorLoadNodes', { error })}
         </div>
       )}
 
@@ -194,35 +196,35 @@ export function FleetOverview({
         <input
           className="h-9 w-full rounded-lg border border-[var(--sp-border)] bg-[var(--sp-surface)] px-3 font-mono text-xs text-[var(--sp-text)] outline-none focus:border-[var(--sp-accent)] sm:max-w-sm"
           value={searchQuery}
-          aria-label="Filter nodes"
-          placeholder="Filter nodes..."
+          aria-label={t('fleet.filterNodes')}
+          placeholder={t('fleet.filterPlaceholder')}
           onChange={(event) => setSearchQuery(event.target.value)}
         />
         <input
           className="h-9 w-full rounded-lg border border-[var(--sp-border)] bg-[var(--sp-surface)] px-3 font-mono text-xs text-[var(--sp-text)] outline-none focus:border-[var(--sp-accent)] sm:max-w-sm"
           value={selector}
-          aria-label="Node selector"
-          placeholder="Selector role=canary,zone=lab"
+          aria-label={t('fleet.nodeSelector')}
+          placeholder={t('fleet.selectorPlaceholder')}
           onChange={(event) => onSelectorChange(event.target.value)}
         />
       </div>
 
       {selectedIds.length > 0 && (
         <div className="mb-3 flex flex-col gap-2 rounded-xl border border-[var(--sp-accent)]/40 bg-[var(--sp-surface-2)] px-4 py-3 sm:flex-row sm:items-center sm:gap-3">
-          <span className="text-sm font-medium">{selectedIds.length} selected</span>
+          <span className="text-sm font-medium">{t('fleet.bulk.selected', { count: selectedIds.length })}</span>
           <button
             type="button"
             className="h-9 rounded-lg bg-[var(--sp-accent)] px-3 text-sm font-medium text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-55"
             disabled={bulkBusy}
             onClick={bulkProbe}
           >
-            Probe selected
+            {t('fleet.bulk.probeSelected')}
           </button>
           <input
             className="h-9 min-w-0 flex-1 rounded-lg border border-[var(--sp-border)] bg-[var(--sp-surface)] px-3 font-mono text-xs text-[var(--sp-text)] outline-none focus:border-[var(--sp-accent)] sm:max-w-xs"
             value={labelInput}
-            aria-label="Labels to apply to selected nodes"
-            placeholder="role=canary,zone=lab"
+            aria-label={t('fleet.labelsSelected')}
+            placeholder={t('fleet.labelsPlaceholder')}
             onChange={(event) => setLabelInput(event.target.value)}
           />
           <button
@@ -231,38 +233,38 @@ export function FleetOverview({
             disabled={bulkBusy || labelInput.trim() === ''}
             onClick={bulkLabel}
           >
-            Label selected
+            {t('fleet.labelSelected')}
           </button>
           <button
             type="button"
             className="h-9 rounded-lg px-2 text-sm text-[var(--sp-muted)] hover:text-[var(--sp-text)]"
             onClick={() => setSelected(new Set())}
           >
-            Clear
+            {t('common.clear')}
           </button>
         </div>
       )}
       {bulkMessage && <div role="status" className="mb-3 rounded-lg border border-emerald-500/25 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-600">{bulkMessage}</div>}
       {bulkError && <div role="alert" className="mb-3 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-600">{bulkError}</div>}
 
-      <div role="region" aria-label="Fleet nodes" className="overflow-hidden rounded-xl border border-[var(--sp-border)] bg-[var(--sp-surface)] shadow-sm">
+      <div role="region" aria-label={t('fleet.nodesRegion')} className="overflow-hidden rounded-xl border border-[var(--sp-border)] bg-[var(--sp-surface)] shadow-sm">
         <div className="hidden border-b border-[var(--sp-border)] px-5 py-3 lg:flex lg:items-center lg:gap-4">
           <label className="flex w-6 items-center justify-center">
-            <input type="checkbox" aria-label="select all nodes" checked={allVisibleSelected} onChange={toggleSelectAllVisible} />
+            <input type="checkbox" aria-label={t('fleet.selectAll')} checked={allVisibleSelected} onChange={toggleSelectAllVisible} />
           </label>
           <div className="grid flex-1 grid-cols-[2fr_1fr_1.4fr_1fr_1fr_2.5rem] gap-4 text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--sp-faint)]">
-            <SortHeader active={sort.key === 'node'} direction={sort.direction} label="Node" onClick={() => toggleSort('node')} />
-            <SortHeader active={sort.key === 'state'} direction={sort.direction} label="State" onClick={() => toggleSort('state')} />
-            <div>Runtimes</div>
-            <div>Config</div>
-            <SortHeader active={sort.key === 'heartbeat'} direction={sort.direction} label="Heartbeat" onClick={() => toggleSort('heartbeat')} />
+            <SortHeader active={sort.key === 'node'} direction={sort.direction} label={t('fleet.table.node')} onClick={() => toggleSort('node')} />
+            <SortHeader active={sort.key === 'state'} direction={sort.direction} label={t('fleet.table.state')} onClick={() => toggleSort('state')} />
+            <div>{t('fleet.table.runtimes')}</div>
+            <div>{t('fleet.table.config')}</div>
+            <SortHeader active={sort.key === 'heartbeat'} direction={sort.direction} label={t('fleet.table.heartbeat')} onClick={() => toggleSort('heartbeat')} />
             <div />
           </div>
         </div>
 
-        {loading && <TableMessage message="Loading nodes…" />}
-        {!loading && nodes.length === 0 && <TableMessage message="No nodes registered yet." />}
-        {!loading && nodes.length > 0 && sortedNodes.length === 0 && <TableMessage message="No nodes match the current filter." />}
+        {loading && <TableMessage message={t('fleet.table.loading')} />}
+        {!loading && nodes.length === 0 && <TableMessage message={t('fleet.table.noNodes')} />}
+        {!loading && nodes.length > 0 && sortedNodes.length === 0 && <TableMessage message={t('fleet.table.noMatch')} />}
         {!loading && sortedNodes.map((node) => (
           <FleetRow
             key={node.nodeId}
@@ -339,35 +341,36 @@ function SortHeader({ active, direction, label, onClick }: { active: boolean; di
 }
 
 function FleetMetricsPanel({ metrics }: { metrics: FleetOverviewMetrics }) {
+  const { t } = useT()
   const rolloutDetail = metrics.activeRollouts > 0
-    ? `${metrics.runningRollouts} running · ${metrics.pausedRollouts} paused`
-    : 'none active'
+    ? t('fleet.metrics.rolloutDetail', { running: metrics.runningRollouts, paused: metrics.pausedRollouts })
+    : t('fleet.metrics.rolloutNone')
 
   return (
     <section className="mb-5 overflow-hidden rounded-xl border border-[var(--sp-border)] bg-[var(--sp-surface)] shadow-sm">
       <div className="grid divide-y divide-[var(--sp-border)] sm:grid-cols-2 sm:divide-x sm:divide-y-0 xl:grid-cols-4">
         <MetricCell
           accentClass="bg-emerald-500"
-          detail={`${metrics.freshNodes} fresh · ${metrics.staleNodes} stale · ${metrics.offlineNodes} offline · ${metrics.maintenanceNodes} maint`}
-          label="Fleet nodes"
+          detail={t('fleet.metrics.nodesDetail', { fresh: metrics.freshNodes, stale: metrics.staleNodes, offline: metrics.offlineNodes, maintenance: metrics.maintenanceNodes })}
+          label={t('fleet.metrics.nodes')}
           value={metrics.totalNodes}
         />
         <MetricCell
           accentClass={metrics.driftedNodes > 0 || metrics.outdatedSidecars > 0 ? 'bg-amber-500' : 'bg-emerald-500'}
-          detail={`${metrics.outdatedSidecars} sidecars outdated · ${metrics.runtimeCount} runtimes`}
-          label="Config drift"
+          detail={t('fleet.metrics.configDriftDetail', { outdated: metrics.outdatedSidecars, runtimes: metrics.runtimeCount })}
+          label={t('fleet.metrics.configDrift')}
           value={metrics.driftedNodes}
         />
         <MetricCell
           accentClass={metrics.activeJobs > 0 ? 'bg-sky-500' : 'bg-[var(--sp-faint)]'}
-          detail="pending or claimed jobs"
-          label="Active jobs"
+          detail={t('fleet.metrics.activeJobsDetail')}
+          label={t('fleet.metrics.activeJobs')}
           value={metrics.activeJobs}
         />
         <MetricCell
           accentClass={metrics.activeRollouts > 0 ? 'bg-sky-500' : 'bg-[var(--sp-faint)]'}
           detail={rolloutDetail}
-          label="Rollout activity"
+          label={t('fleet.metrics.rolloutActivity')}
           value={metrics.activeRollouts}
         />
       </div>
@@ -399,7 +402,8 @@ function MetricCell({
 }
 
 function FleetRow({ activeProbe, node, selected, onToggleSelect, onOpen }: { activeProbe: boolean; node: NodeStatus; selected: boolean; onToggleSelect: () => void; onOpen: () => void }) {
-  const configLabel = node.lastError ? 'Error' : node.configHash ? 'Observed' : 'Unknown'
+  const { t } = useT()
+  const configLabel = node.lastError ? t('fleet.config.error') : node.configHash ? t('fleet.config.observed') : t('fleet.config.unknown')
   const configColor = node.lastError ? 'text-rose-600' : node.configHash ? 'text-emerald-600' : 'text-[var(--sp-muted)]'
 
   return (
@@ -407,7 +411,7 @@ function FleetRow({ activeProbe, node, selected, onToggleSelect, onOpen }: { act
       <label className="flex items-center self-stretch px-5 py-4 lg:px-5" onClick={(event) => event.stopPropagation()}>
         <input
           type="checkbox"
-          aria-label={`select ${node.nodeId}`}
+          aria-label={t('fleet.selectNode', { nodeId: node.nodeId })}
           checked={selected}
           onChange={onToggleSelect}
         />
@@ -420,9 +424,9 @@ function FleetRow({ activeProbe, node, selected, onToggleSelect, onOpen }: { act
       <div className="min-w-0">
         <div className="flex min-w-0 items-center gap-2">
           <span className="truncate font-mono text-sm font-semibold">{node.nodeId}</span>
-          {activeProbe && <span className="rounded bg-sky-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-sky-600">probe</span>}
-          {node.maintenance && <span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700">maint</span>}
-          {node.sidecarOutdated && <span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-amber-600" title="sidecar version differs from expected">outdated</span>}
+          {activeProbe && <span className="rounded bg-sky-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-sky-600">{t('fleet.row.probe')}</span>}
+          {node.maintenance && <span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700">{t('fleet.row.maint')}</span>}
+          {node.sidecarOutdated && <span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-amber-600" title={t('fleet.sidecarOutdatedTitle')}>{t('fleet.row.outdated')}</span>}
         </div>
         <div className="mt-1 truncate font-mono text-xs text-[var(--sp-faint)]">{node.hostname || '-'}</div>
         {Object.keys(node.labels ?? {}).length > 0 && (
@@ -456,14 +460,14 @@ function FleetRow({ activeProbe, node, selected, onToggleSelect, onOpen }: { act
         <div className="flex items-center gap-1.5">
           <span className={`text-xs font-semibold ${configColor}`}>{configLabel}</span>
           {node.drift === true && (
-            <span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-amber-600">drift</span>
+            <span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-amber-600">{t('fleet.config.drift')}</span>
           )}
         </div>
         <div className="mt-1 font-mono text-[11px] text-[var(--sp-faint)]">{compactHash(node.configHash)}</div>
       </div>
 
       <div className="text-xs text-[var(--sp-muted)]" title={formatDate(node.lastHeartbeatAt)}>
-        {formatRelativeTime(node.lastHeartbeatAt)}
+        {formatRelativeTimeLabel(node.lastHeartbeatAt, t)}
       </div>
 
         <div className="hidden justify-end text-[var(--sp-faint)] lg:flex">›</div>
@@ -474,19 +478,19 @@ function FleetRow({ activeProbe, node, selected, onToggleSelect, onOpen }: { act
 
 // parseLabelAssignments parses "key=value,key2=value2" into a label record, or
 // returns an error string when an entry is malformed.
-function parseLabelAssignments(raw: string): Record<string, string> | string {
+function parseLabelAssignments(raw: string, t: TFunction): Record<string, string> | string {
   const labels: Record<string, string> = {}
   for (const part of raw.split(',')) {
     const trimmed = part.trim()
     if (trimmed === '') continue
     const index = trimmed.indexOf('=')
     if (index <= 0) {
-      return `invalid label "${trimmed}", want key=value`
+      return t('fleet.bulk.invalidLabel', { label: trimmed })
     }
     labels[trimmed.slice(0, index).trim()] = trimmed.slice(index + 1).trim()
   }
   if (Object.keys(labels).length === 0) {
-    return 'provide at least one key=value label'
+    return t('fleet.bulk.provideLabel')
   }
   return labels
 }

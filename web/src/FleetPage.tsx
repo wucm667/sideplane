@@ -7,8 +7,20 @@ import { NodeDetailView } from './components/NodeDetailView.tsx'
 import { RolloutsView } from './components/RolloutsView.tsx'
 import { Sidebar } from './components/Sidebar.tsx'
 import { useFleetPageController } from './helpers.ts'
+import { LanguageProvider, useT } from './i18n.ts'
 
 export default function FleetPage() {
+  const controller = useFleetPageController()
+
+  return (
+    <LanguageProvider lang={controller.lang} setLang={controller.setLang}>
+      <FleetPageContent controller={controller} />
+    </LanguageProvider>
+  )
+}
+
+function FleetPageContent({ controller }: { controller: ReturnType<typeof useFleetPageController> }) {
+  const { t } = useT()
   const {
     auditError,
     auditEvents,
@@ -18,7 +30,6 @@ export default function FleetPage() {
     backupsByNode,
     backupsErrorByNode,
     backupsLoadingByNode,
-    bannerText,
     changeView,
     createDeepProbe,
     createRollback,
@@ -29,7 +40,6 @@ export default function FleetPage() {
     effectiveByNode,
     effectiveErrorByNode,
     error,
-    fleetSubtitle,
     groups,
     jobsByNode,
     jobsErrorByNode,
@@ -37,6 +47,7 @@ export default function FleetPage() {
     jobsLoadingByNode,
     jobStatusByNode,
     labelErrorByNode,
+    lang,
     liveConnected,
     loading,
     loadMoreNodeJobs,
@@ -59,6 +70,7 @@ export default function FleetPage() {
     restartingByNode,
     selectedNode,
     selector,
+    stats,
     setAuditFilters,
     setAuditLimit,
     setNodeJobStatusFilter,
@@ -66,30 +78,37 @@ export default function FleetPage() {
     setOperatorToken,
     setSelector,
     theme,
+    toggleLang,
     toggleTheme,
     view,
     loadAuditEvents,
     performRolloutAction,
-  } = useFleetPageController()
+  } = controller
 
   const [paletteOpen, setPaletteOpen] = useState(false)
+  const fleetSubtitle = t('fleet.subtitle', { nodes: nodes.length, groups: groups.length, healthy: stats.healthy })
+  const bannerText = [
+    stats.drift > 0 ? t(stats.drift === 1 ? 'fleet.banner.driftOne' : 'fleet.banner.driftMany', { count: stats.drift }) : '',
+    stats.stale > 0 ? t('fleet.banner.stale', { count: stats.stale }) : '',
+    stats.offline > 0 ? t('fleet.banner.offline', { count: stats.offline }) : '',
+  ].filter(Boolean).join(' · ')
 
   const commands = useMemo<CommandItem[]>(() => {
     const items: CommandItem[] = [
-      { id: 'view:fleet', label: 'Go to Fleet', keywords: 'fleet nodes view', run: () => changeView('fleet') },
-      { id: 'view:activity', label: 'Go to Activity', keywords: 'activity audit view', run: () => changeView('activity') },
-      { id: 'view:enrollment', label: 'Go to Enrollment & Settings', keywords: 'enrollment tokens webhooks settings view', run: () => changeView('enrollment') },
-      { id: 'view:rollouts', label: 'Go to Rollouts', keywords: 'rollouts view', run: () => changeView('rollouts') },
-      { id: 'action:new-rollout', label: 'New rollout', keywords: 'create rollout deploy', run: () => changeView('rollouts') },
+      { id: 'view:fleet', label: t('command.goFleet'), keywords: t('command.fleetKeywords'), run: () => changeView('fleet') },
+      { id: 'view:activity', label: t('command.goActivity'), keywords: t('command.activityKeywords'), run: () => changeView('activity') },
+      { id: 'view:enrollment', label: t('command.goEnrollment'), keywords: t('command.enrollmentKeywords'), run: () => changeView('enrollment') },
+      { id: 'view:rollouts', label: t('command.goRollouts'), keywords: t('command.rolloutsKeywords'), run: () => changeView('rollouts') },
+      { id: 'action:new-rollout', label: t('command.newRollout'), keywords: t('command.newRolloutKeywords'), run: () => changeView('rollouts') },
     ]
     for (const node of nodes) {
       const labels = Object.entries(node.labels ?? {}).map(([key, value]) => `${key}=${value}`).join(' ')
       const keywords = `${node.nodeId} ${node.hostname ?? ''} ${labels}`
-      items.push({ id: `open:${node.nodeId}`, label: `Open node ${node.nodeId}`, hint: node.hostname, keywords, run: () => openNode(node.nodeId) })
-      items.push({ id: `probe:${node.nodeId}`, label: `Deep probe ${node.nodeId}`, hint: node.hostname, keywords: `probe ${keywords}`, run: () => void createDeepProbe(node.nodeId) })
+      items.push({ id: `open:${node.nodeId}`, label: t('command.openNode', { nodeId: node.nodeId }), hint: node.hostname, keywords, run: () => openNode(node.nodeId) })
+      items.push({ id: `probe:${node.nodeId}`, label: t('command.probeNode', { nodeId: node.nodeId }), hint: node.hostname, keywords: t('command.probeNodeKeywords', { keywords }), run: () => void createDeepProbe(node.nodeId) })
     }
     return items
-  }, [changeView, createDeepProbe, nodes, openNode])
+  }, [changeView, createDeepProbe, nodes, openNode, t])
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -150,8 +169,10 @@ export default function FleetPage() {
           currentView={view}
           groups={groups}
           liveConnected={liveConnected}
+          lang={lang}
           operatorToken={operatorToken}
           theme={theme}
+          onLangToggle={toggleLang}
           onOperatorTokenChange={setOperatorToken}
           onThemeToggle={toggleTheme}
           onViewChange={changeView}
@@ -208,7 +229,7 @@ export default function FleetPage() {
             />
           )}
           {view === 'node' && !selectedNode && (
-            <EmptyState title="Node not found" body="Return to Fleet and select a registered node." />
+            <EmptyState title={t('node.emptyTitle')} body={t('node.emptyBody')} />
           )}
           {view === 'rollouts' && (
             <RolloutsView

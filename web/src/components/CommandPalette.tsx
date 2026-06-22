@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { filterFuzzy } from '../helpers.ts'
+import { useT } from '../i18n.ts'
 
 export interface CommandItem {
   id: string
@@ -10,6 +11,7 @@ export interface CommandItem {
 }
 
 export function CommandPalette({ open, commands, onClose }: { open: boolean; commands: CommandItem[]; onClose: () => void }) {
+  const { t } = useT()
   const [query, setQuery] = useState('')
   const [activeIndex, setActiveIndex] = useState(0)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -84,7 +86,7 @@ export function CommandPalette({ open, commands, onClose }: { open: boolean; com
       className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 px-4 pt-[12vh]"
       role="dialog"
       aria-modal="true"
-      aria-label="Command palette"
+      aria-label={t('command.palette')}
       onClick={onClose}
     >
       <div
@@ -97,13 +99,13 @@ export function CommandPalette({ open, commands, onClose }: { open: boolean; com
           ref={inputRef}
           className="h-12 w-full border-b border-[var(--sp-border)] bg-transparent px-4 text-sm text-[var(--sp-text)] outline-none"
           value={query}
-          placeholder="Search nodes, views, actions…"
-          aria-label="command palette search"
+          placeholder={t('command.searchPlaceholder')}
+          aria-label={t('command.search')}
           onChange={(event) => setQuery(event.target.value)}
         />
         <ul className="max-h-80 overflow-y-auto py-1">
           {results.length === 0 && (
-            <li className="px-4 py-3 text-sm text-[var(--sp-muted)]">No matches</li>
+            <li className="px-4 py-3 text-sm text-[var(--sp-muted)]">{t('command.noMatches')}</li>
           )}
           {results.map((command, index) => (
             <li key={command.id}>
