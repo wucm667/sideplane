@@ -87,6 +87,37 @@ func TestFleetStatusPrintsCompactTable(t *testing.T) {
 	}
 }
 
+func TestFleetStatusForwardsOperatorToken(t *testing.T) {
+	var gotAuth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode([]cliNodeStatus{})
+	}))
+	defer server.Close()
+
+	// Flag form.
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"fleet", "status", "--server", server.URL, "--operator-token", "dev-token"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("run returned %d, stderr=%q", code, stderr.String())
+	}
+	if gotAuth != "Bearer dev-token" {
+		t.Fatalf("Authorization = %q, want Bearer dev-token", gotAuth)
+	}
+
+	// Environment fallback.
+	gotAuth = ""
+	t.Setenv("SIDEPLANE_OPERATOR_TOKEN", "env-token")
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"fleet", "status", "--server", server.URL}, &stdout, &stderr); code != 0 {
+		t.Fatalf("run (env) returned %d, stderr=%q", code, stderr.String())
+	}
+	if gotAuth != "Bearer env-token" {
+		t.Fatalf("env Authorization = %q, want Bearer env-token", gotAuth)
+	}
+}
+
 func TestFleetStatusJSONOutput(t *testing.T) {
 	response := cliListNodesResponse{Nodes: []cliNodeStatus{{
 		NodeStatus: protocol.NodeStatus{

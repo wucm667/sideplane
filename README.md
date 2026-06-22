@@ -411,14 +411,14 @@ Generate shell completion with `sideplane completion bash` or
 
 | Command | Purpose | Key flags |
 | --- | --- | --- |
-| `sideplane fleet status` | Show fleet node status. | `--server`, `--selector`, `--json` |
+| `sideplane fleet status` | Show fleet node status. | `--server`, `--operator-token`, `--selector`, `--json` |
 | `sideplane whoami` | Show authenticated operator scope and token name. | `--server`, `--operator-token`, `--json` |
 | `sideplane status` | Show server version, uptime, schema, and fleet counts. | `--server`, `--operator-token`, `--json` |
 | `sideplane probe <nodeId>` | Create a deep-probe job, or a bulk probe with `--selector`. | `--server`, `--operator-token`, `--selector`, `--wait`, `--json` |
 | `sideplane restart <nodeId>` | Create a dry-run or live restart job. | `--server`, `--operator-token`, `--runtime-type`, `--profile`, `--live`, `--yes`, `--wait`, `--json` |
 | `sideplane rollback <nodeId>` | Create a dry-run or live rollback job from a backup ref. | `--server`, `--operator-token`, `--backup-ref`, `--runtime-type`, `--profile`, `--live`, `--yes`, `--wait`, `--json` |
 | `sideplane jobs list <nodeId>` | List node jobs with optional filters. | `--server`, `--operator-token`, `--limit`, `--status`, `--json` |
-| `sideplane audit list` | List audit events newest first. | `--server`, `--node-id`, `--action`, `--limit`, `--json` |
+| `sideplane audit list` | List audit events newest first. | `--server`, `--operator-token`, `--node-id`, `--action`, `--limit`, `--json` |
 | `sideplane audit export` | Export the audit log as ndjson or csv. | `--server`, `--operator-token`, `--format`, `--out`, `--node-id`, `--action`, `--limit` |
 | `sideplane token create` | Create a named operator token shown once. | `--server`, `--operator-token`, `--name`, `--scope`, `--json` |
 | `sideplane token list` | List named operator token metadata. | `--server`, `--operator-token`, `--json` |
@@ -428,15 +428,15 @@ Generate shell completion with `sideplane completion bash` or
 | `sideplane rollout status <id>` | Show rollout batches and per-node progress. | `--server`, `--operator-token`, `--watch`, `--json` |
 | `sideplane rollout pause/resume/abort <id>` | Control a rollout. | `--server`, `--operator-token`, `--json` |
 | `sideplane rollout template create/list/delete` | Manage reusable rollout templates. | `--server`, `--operator-token`, `--name`, `--json` |
-| `sideplane config preview <nodeId>` | Show effective desired config and diff. | `--server`, `--runtime-type`, `--profile`, `--actual-hash`, `--json` |
+| `sideplane config preview <nodeId>` | Show effective desired config and diff. | `--server`, `--operator-token`, `--runtime-type`, `--profile`, `--actual-hash`, `--json` |
 | `sideplane config apply <nodeId>` | Create a dry-run or live config apply job. | `--server`, `--operator-token`, `--runtime-type`, `--profile`, `--config-path`, `--live`, `--yes`, `--wait`, `--json` |
-| `sideplane config get` | Show desired configuration. | `--server`, `--json` |
+| `sideplane config get` | Show desired configuration. | `--server`, `--operator-token`, `--json` |
 | `sideplane config set` | Update global desired provider/model. | `--server`, `--operator-token`, `--provider`, `--model` |
 | `sideplane config history` | List desired config history. | `--server`, `--operator-token`, `--limit`, `--offset`, `--json` |
 | `sideplane config revert <historyId>` | Revert desired configuration. | `--server`, `--operator-token`, `--yes` |
 | `sideplane config-file path` | Print the resolved CLI config path. | none |
 | `sideplane completion bash/zsh` | Print a shell completion script. | none |
-| `sideplane node inspect <nodeId>` | Show detailed node state and runtime status. | `--server`, `--json` |
+| `sideplane node inspect <nodeId>` | Show detailed node state and runtime status. | `--server`, `--operator-token`, `--json` |
 | `sideplane node label <nodeId>` | Set or remove labels, or apply in bulk with `--selector`. | `--server`, `--operator-token`, `--selector`, `--remove`, `--json` |
 | `sideplane node maintenance <nodeId>` | Enter or exit node maintenance mode. | `--server`, `--operator-token`, `--on`, `--off`, `--json` |
 | `sideplane node remove <nodeId>` | Remove a decommissioned node record. | `--server`, `--operator-token`, `--yes` |

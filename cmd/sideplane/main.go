@@ -1228,11 +1228,12 @@ func runConfigPreview(args []string, stdout io.Writer, stderr io.Writer) int {
 	flags.SetOutput(stderr)
 
 	serverURL := flags.String("server", "", "Sideplane server URL; can also be set with SIDEPLANE_SERVER_URL")
+	operatorTokenFlag := flags.String("operator-token", "", "operator bearer token; can also be set with SIDEPLANE_OPERATOR_TOKEN")
 	runtimeType := flags.String("runtime-type", runtimeTypeDefault(cfg), "runtime type")
 	profile := flags.String("profile", profileDefault(cfg), "runtime profile")
 	actualHash := flags.String("actual-hash", "", "optional actual config hash to display")
 	jsonOutput := flags.Bool("json", false, "print JSON output")
-	usage := "sideplane config preview <nodeId> [--server URL] [--runtime-type TYPE] [--profile PROFILE] [--actual-hash HASH] [--json]"
+	usage := "sideplane config preview <nodeId> [--server URL] [--operator-token TOKEN] [--runtime-type TYPE] [--profile PROFILE] [--actual-hash HASH] [--json]"
 	if commandHelpRequested(args) {
 		printCommandHelp(stdout, usage, flags)
 		return 0
@@ -1262,7 +1263,7 @@ func runConfigPreview(args []string, stdout io.Writer, stderr io.Writer) int {
 		params.Set("actualHash", trimmed)
 	}
 	path := "/api/config/effective?" + params.Encode()
-	effective, body, err := getJSON[protocol.EffectiveConfigResponse](context.Background(), serverURLValue(*serverURL), path, "")
+	effective, body, err := getJSON[protocol.EffectiveConfigResponse](context.Background(), serverURLValue(*serverURL), path, operatorTokenValue(*operatorTokenFlag))
 	if err != nil {
 		fmt.Fprintf(stderr, "config preview: %v\n", err)
 		return 1
@@ -1280,11 +1281,12 @@ func runAuditList(args []string, stdout io.Writer, stderr io.Writer) int {
 	flags.SetOutput(stderr)
 
 	serverURL := flags.String("server", "", "Sideplane server URL; can also be set with SIDEPLANE_SERVER_URL")
+	operatorTokenFlag := flags.String("operator-token", "", "operator bearer token; can also be set with SIDEPLANE_OPERATOR_TOKEN")
 	nodeID := flags.String("node-id", "", "optional node ID filter")
 	action := flags.String("action", "", "optional audit action filter")
 	limit := flags.Int("limit", 0, "maximum audit events to list")
 	jsonOutput := flags.Bool("json", false, "print JSON output")
-	usage := "sideplane audit list [--server URL] [--node-id NODE] [--action ACTION] [--limit N] [--json]"
+	usage := "sideplane audit list [--server URL] [--operator-token TOKEN] [--node-id NODE] [--action ACTION] [--limit N] [--json]"
 	if commandHelpRequested(args) {
 		printCommandHelp(stdout, usage, flags)
 		return 0
@@ -1315,7 +1317,7 @@ func runAuditList(args []string, stdout io.Writer, stderr io.Writer) int {
 	if query := params.Encode(); query != "" {
 		path += "?" + query
 	}
-	resp, body, err := getJSON[protocol.ListAuditEventsResponse](context.Background(), serverURLValue(*serverURL), path, "")
+	resp, body, err := getJSON[protocol.ListAuditEventsResponse](context.Background(), serverURLValue(*serverURL), path, operatorTokenValue(*operatorTokenFlag))
 	if err != nil {
 		fmt.Fprintf(stderr, "audit list: %v\n", err)
 		return 1
@@ -1456,8 +1458,9 @@ func runNodeInspect(args []string, stdout io.Writer, stderr io.Writer) int {
 	flags.SetOutput(stderr)
 
 	serverURL := flags.String("server", "", "Sideplane server URL; can also be set with SIDEPLANE_SERVER_URL")
+	operatorTokenFlag := flags.String("operator-token", "", "operator bearer token; can also be set with SIDEPLANE_OPERATOR_TOKEN")
 	jsonOutput := flags.Bool("json", false, "print JSON output")
-	usage := "sideplane node inspect <nodeId> [--server URL] [--json]"
+	usage := "sideplane node inspect <nodeId> [--server URL] [--operator-token TOKEN] [--json]"
 	if commandHelpRequested(args) {
 		printCommandHelp(stdout, usage, flags)
 		return 0
@@ -1476,7 +1479,7 @@ func runNodeInspect(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 1
 	}
 
-	nodes, _, err := getNodeList(context.Background(), serverURLValue(*serverURL), "")
+	nodes, _, err := getNodeList(context.Background(), serverURLValue(*serverURL), "", operatorTokenValue(*operatorTokenFlag))
 	if err != nil {
 		fmt.Fprintf(stderr, "node inspect: %v\n", err)
 		return 1
@@ -2078,8 +2081,9 @@ func runConfigGet(args []string, stdout io.Writer, stderr io.Writer) int {
 	flags.SetOutput(stderr)
 
 	serverURL := flags.String("server", "", "Sideplane server URL; can also be set with SIDEPLANE_SERVER_URL")
+	operatorTokenFlag := flags.String("operator-token", "", "operator bearer token; can also be set with SIDEPLANE_OPERATOR_TOKEN")
 	jsonOutput := flags.Bool("json", false, "print raw JSON response")
-	usage := "sideplane config get [--server URL] [--json]"
+	usage := "sideplane config get [--server URL] [--operator-token TOKEN] [--json]"
 	if commandHelpRequested(args) {
 		printCommandHelp(stdout, usage, flags)
 		return 0
@@ -2092,7 +2096,7 @@ func runConfigGet(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 1
 	}
 
-	desired, body, err := getJSON[protocol.DesiredConfig](context.Background(), serverURLValue(*serverURL), "/api/config/desired", "")
+	desired, body, err := getJSON[protocol.DesiredConfig](context.Background(), serverURLValue(*serverURL), "/api/config/desired", operatorTokenValue(*operatorTokenFlag))
 	if err != nil {
 		fmt.Fprintf(stderr, "config get: %v\n", err)
 		return 1
@@ -2336,9 +2340,10 @@ func runFleetStatus(args []string, stdout io.Writer, stderr io.Writer) int {
 	flags.SetOutput(stderr)
 
 	serverURL := flags.String("server", "", "Sideplane server URL; can also be set with SIDEPLANE_SERVER_URL")
+	operatorTokenFlag := flags.String("operator-token", "", "operator bearer token; can also be set with SIDEPLANE_OPERATOR_TOKEN")
 	selector := flags.String("selector", "", "label selector with AND semantics, for example role=canary,zone=lab")
 	jsonOutput := flags.Bool("json", false, "print raw JSON response")
-	usage := "sideplane fleet status [--server URL] [--selector key=value[,key2=value2]] [--json]"
+	usage := "sideplane fleet status [--server URL] [--operator-token TOKEN] [--selector key=value[,key2=value2]] [--json]"
 	if commandHelpRequested(args) {
 		printCommandHelp(stdout, usage, flags)
 		return 0
@@ -2352,7 +2357,7 @@ func runFleetStatus(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 
 	server := serverURLValue(*serverURL)
-	nodes, body, err := getNodeList(context.Background(), server, strings.TrimSpace(*selector))
+	nodes, body, err := getNodeList(context.Background(), server, strings.TrimSpace(*selector), operatorTokenValue(*operatorTokenFlag))
 	if err != nil {
 		fmt.Fprintf(stderr, "fleet status: %v\n", err)
 		return 1
@@ -2367,14 +2372,14 @@ func runFleetStatus(args []string, stdout io.Writer, stderr io.Writer) int {
 	return 0
 }
 
-func getNodeList(ctx context.Context, server string, selector string) ([]cliNodeStatus, []byte, error) {
+func getNodeList(ctx context.Context, server string, selector string, operatorToken string) ([]cliNodeStatus, []byte, error) {
 	path := "/api/nodes"
 	if selector = strings.TrimSpace(selector); selector != "" {
 		params := url.Values{}
 		params.Set("selector", selector)
 		path += "?" + params.Encode()
 	}
-	_, body, err := getJSON[json.RawMessage](ctx, server, path, "")
+	_, body, err := getJSON[json.RawMessage](ctx, server, path, operatorToken)
 	if err != nil {
 		return nil, nil, err
 	}
