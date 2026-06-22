@@ -9,6 +9,11 @@ This project follows the spirit of Keep a Changelog and will use semantic versio
 ### Server
 
 - Require operator authentication for fleet, audit, and configuration read endpoints (previously readable without a token).
+- Added expected Hermes/OpenClaw runtime version settings, per-runtime outdated flags, and the `sideplane_fleet_runtime_outdated` metric.
+
+### Sidecar
+
+- Added runtime version capture from Docker image tags or opt-in single allowlisted read-only version commands.
 
 ## [0.1.0] - 2026-06-21
 

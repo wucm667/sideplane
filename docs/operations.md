@@ -127,7 +127,7 @@ bounded number of attempts; other `4xx` responses are treated as permanent and
 dropped. A persistently failing or slow receiver is dropped without stalling
 producers.
 
-## Expected Sidecar Version
+## Expected Version Visibility
 
 Set an expected sidecar version to flag nodes running a different version:
 
@@ -139,6 +139,37 @@ Nodes whose reported `sidecarVersion` differs are marked `sidecarOutdated` in th
 fleet view and counted by the `sideplane_fleet_sidecar_outdated` metric gauge.
 Leave the value empty to disable the check. Sideplane never downloads or executes
 sidecar binaries; this is visibility only.
+
+Runtime versions use the same visibility-only model for Hermes Agent and
+OpenClaw:
+
+```bash
+sideplane settings set --expected-hermes-version v2026.5.1
+sideplane settings set --expected-openclaw-version v2026.5.1
+```
+
+Container-managed runtimes report the running container image tag from Docker
+inspection, for example `nousresearch/hermes-agent:v2026.4.30` reports
+`v2026.4.30`. If Docker reports an image without a tag or with `latest`,
+Sideplane reports that value as-is.
+
+Non-container runtime version capture is opt-in. Configure one exact read-only
+command per adapter with `--hermes-version-command` /
+`SIDEPLANE_HERMES_VERSION_COMMAND` or `--openclaw-version-command` /
+`SIDEPLANE_OPENCLAW_VERSION_COMMAND`. The sidecar executes only that configured
+command without a shell and trims stdout as the version. If the command is
+unset, fails, or returns no version, the runtime version remains empty; failures
+are reported as discovery warnings.
+
+A runtime is marked `outdated` only when both the actual runtime version and the
+operator-configured expected version for that runtime type are known and differ.
+Unknown actual or expected versions never produce an outdated flag. Counts are
+exported as `sideplane_fleet_runtime_outdated{runtime_type="hermes"}` and
+`sideplane_fleet_runtime_outdated{runtime_type="openclaw"}`.
+
+Sideplane does not query upstream releases, registries, or "latest version"
+endpoints. It also does not execute runtime upgrades or expose a remote shell;
+upgrade execution remains outside this feature.
 
 ## Sidecar Delivery Resilience
 

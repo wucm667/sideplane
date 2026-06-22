@@ -19,7 +19,7 @@ Production operators should still treat it as pre-1.0 infrastructure. Run it on 
 - Sidecar enrollment token flow with one-time tokens exchanged for long-lived node credentials.
 - Sidecar delivery resilience for short server outages: latest-wins heartbeat retry and bounded in-memory job-result retry.
 - Named, revocable operator tokens for API and Web sessions.
-- Hermes and OpenClaw adapters for read-only runtime discovery, config hash reporting, and provider/model snapshots.
+- Hermes and OpenClaw adapters for read-only runtime discovery, runtime version visibility, config hash reporting, and provider/model snapshots.
 - Desired configuration layering with effective config preview and read-only actual-vs-desired diffs.
 - Desired config history with explicit revert.
 - Signed config apply plans, dry-run by default, with live apply gated behind explicit sidecar opt-in and rollback handling.
@@ -29,7 +29,7 @@ Production operators should still treat it as pre-1.0 infrastructure. Run it on 
 - Generic and Slack-compatible alert webhooks for important fleet and rollout events.
 - Node removal API and UI flow for decommissioned fleet entries.
 - Conservative retention pruning for old completed/failed jobs and audit events.
-- Prometheus-compatible `/metrics`, including job counters and fleet freshness/drift gauges.
+- Prometheus-compatible `/metrics`, including job counters and fleet freshness/drift/version gauges.
 - Server-sent events for live Web refresh, with polling fallback when SSE is unavailable.
 - Compact infrastructure-console Web UI served directly by `sideplane-server`.
 - Docker Compose, server and sidecar systemd units, and a Linux install script for local systemd setup.
@@ -274,7 +274,7 @@ Core endpoints:
 - `GET/POST /api/rollout-templates` and `DELETE /api/rollout-templates/{templateId}` manage reusable rollout templates.
 - `GET/POST /api/webhooks` and `DELETE /api/webhooks/{webhookId}` manage generic or Slack-compatible outbound alert webhooks.
 - `GET /api/audit/export?format=ndjson|csv` streams the filtered audit log.
-- `GET/PUT /api/settings` reads and updates server settings such as the expected sidecar version.
+- `GET/PUT /api/settings` reads and updates server settings such as expected sidecar and runtime versions.
 - `GET /api/config/desired/history` lists desired config history; `POST /api/config/desired/revert` restores a history entry.
 - `GET /api/audit?nodeId=...&action=...&limit=...` lists audit events with additive filters.
 - `POST /api/events/tickets` creates a short-lived browser SSE ticket; `GET /api/events` streams `node`, `job`, and `rollout` events as `text/event-stream`.
@@ -443,7 +443,7 @@ Generate shell completion with `sideplane completion bash` or
 | `sideplane backups list <nodeId>` | List rollback backups for a node. | `--server`, `--operator-token`, `--limit`, `--json` |
 | `sideplane enrollment create` | Create a one-time sidecar enrollment token. | `--server`, `--operator-token`, `--expires-in` |
 | `sideplane webhook create/list/delete` | Manage alert webhooks. | `--server`, `--operator-token`, `--url`, `--kind`, `--event`, `--sign`, `--json` |
-| `sideplane settings get/set` | Show or update server settings (expected sidecar version). | `--server`, `--operator-token`, `--expected-sidecar-version`, `--json` |
+| `sideplane settings get/set` | Show or update server settings (expected sidecar and runtime versions). | `--server`, `--operator-token`, `--expected-sidecar-version`, `--expected-hermes-version`, `--expected-openclaw-version`, `--json` |
 | `sideplane version` | Print CLI version. | `--json` |
 
 ## Web Operator Notes
@@ -467,8 +467,8 @@ The Web UI is intentionally a compact infrastructure console. It includes:
 ## Observability
 
 `/metrics` exposes Prometheus text format, including HTTP request counters, job
-counters, fleet freshness/drift gauges, runtime health, rollout state/outcome
-metrics, and alert webhook delivery outcomes. The optional Docker Compose
+counters, fleet freshness/drift gauges, sidecar/runtime version-outdated gauges,
+runtime health, rollout state/outcome metrics, and alert webhook delivery outcomes. The optional Docker Compose
 observability override adds Prometheus and Grafana with a pre-provisioned
 Sideplane dashboard. The Web Fleet view mirrors the most important overview
 numbers for operators who are not watching Prometheus directly.

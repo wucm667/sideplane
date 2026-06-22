@@ -82,6 +82,7 @@ export interface RuntimeStatus {
   configHash?: string;
   lastError?: string;
   warnings?: string[];
+  outdated?: boolean;
   health?: RuntimeHealth;
 }
 
@@ -432,12 +433,19 @@ export interface AlertWebhookPayload {
   occurredAt: string;
 }
 
+export interface ExpectedRuntimeVersions {
+  hermes?: string;
+  openclaw?: string;
+}
+
 export interface ServerSettings {
   expectedSidecarVersion: string;
+  expectedRuntimeVersions: ExpectedRuntimeVersions;
 }
 
 export interface UpdateServerSettingsRequest {
   expectedSidecarVersion: string;
+  expectedRuntimeVersions?: ExpectedRuntimeVersions;
 }
 
 export interface CreateRolloutResponse {

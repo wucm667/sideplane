@@ -1458,6 +1458,9 @@ components:
           type: array
           items:
             type: string
+        outdated:
+          type: boolean
+          description: True only when this runtime reports an actual version and an expected version is configured for its runtime type, and the two differ.
         health:
           $ref: "#/components/schemas/RuntimeHealth"
     RuntimeHealth:
@@ -2160,18 +2163,32 @@ components:
         occurredAt:
           type: string
           format: date-time
+    ExpectedRuntimeVersions:
+      type: object
+      additionalProperties: false
+      properties:
+        hermes:
+          type: string
+          description: Operator-configured expected Hermes Agent version. Empty or absent disables the Hermes runtime version check.
+        openclaw:
+          type: string
+          description: Operator-configured expected OpenClaw version. Empty or absent disables the OpenClaw runtime version check.
     ServerSettings:
       type: object
-      required: [expectedSidecarVersion]
+      required: [expectedSidecarVersion, expectedRuntimeVersions]
       properties:
         expectedSidecarVersion:
           type: string
+        expectedRuntimeVersions:
+          $ref: "#/components/schemas/ExpectedRuntimeVersions"
     UpdateServerSettingsRequest:
       type: object
       required: [expectedSidecarVersion]
       properties:
         expectedSidecarVersion:
           type: string
+        expectedRuntimeVersions:
+          $ref: "#/components/schemas/ExpectedRuntimeVersions"
     CreateRolloutResponse:
       type: object
       required: [rollout]
