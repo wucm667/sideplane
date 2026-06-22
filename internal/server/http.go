@@ -3110,10 +3110,7 @@ func (h *handler) latestActualSnapshot(ctx context.Context, nodeID string, runti
 			continue
 		}
 		for _, snapshot := range result.ConfigSnapshots {
-			if runtimeType != "" && snapshot.RuntimeType != runtimeType {
-				continue
-			}
-			if profile != "" && snapshot.Profile != profile {
+			if !runtimeConfigSnapshotMatchesTarget(snapshot, runtimeType, profile) {
 				continue
 			}
 			matched := snapshot
@@ -3121,6 +3118,16 @@ func (h *handler) latestActualSnapshot(ctx context.Context, nodeID string, runti
 		}
 	}
 	return nil, nil
+}
+
+func runtimeConfigSnapshotMatchesTarget(snapshot protocol.RuntimeConfigSnapshot, runtimeType string, profile string) bool {
+	if runtimeType != "" && snapshot.RuntimeType != runtimeType {
+		return false
+	}
+	if profile != "" && snapshot.Profile != "" && snapshot.Profile != profile {
+		return false
+	}
+	return true
 }
 
 func hashDesired(effective protocol.ProviderModelConfig) string {

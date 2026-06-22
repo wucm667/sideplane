@@ -282,6 +282,36 @@ func TestCreateConfigApplyJobUsesNodeRuntimeProfileOverride(t *testing.T) {
 	}
 }
 
+func TestCreateConfigApplyJobMatchesEmptyProfileSnapshotForDefaultProfile(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	enrollTestNode(t, nodeStore, "node-apply")
+	seedDesiredAndProfileProbe(t, nodeStore, "node-apply", "/etc/hermes/config.yaml", "")
+	handler := newDevHandlerWithStore(t, nodeStore)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/nodes/node-apply/config-apply", strings.NewReader(`{"runtimeType":"hermes","profile":"default"}`))
+	handler.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusCreated)
+
+	var job protocol.Job
+	if err := json.NewDecoder(rec.Body).Decode(&job); err != nil {
+		t.Fatalf("decode job: %v", err)
+	}
+	if job.Type != protocol.JobTypeConfigApply || job.Status != protocol.JobStatusPending {
+		t.Fatalf("job = %#v, want pending config_apply", job)
+	}
+	var signed protocol.SignedConfigPlan
+	if err := json.Unmarshal([]byte(job.PayloadJSON), &signed); err != nil {
+		t.Fatalf("decode signed plan: %v", err)
+	}
+	if signed.Plan.Body.Profile != "/etc/hermes/config.yaml" {
+		t.Fatalf("plan config path = %q, want empty-profile snapshot path", signed.Plan.Body.Profile)
+	}
+	if !signed.Plan.Body.DryRun || signed.Plan.Mode != protocol.ConfigPlanModeDryRun {
+		t.Fatalf("plan mode=%q dryRun=%t, want dry-run", signed.Plan.Mode, signed.Plan.Body.DryRun)
+	}
+}
+
 func TestCreateConfigApplyJobRejectsUnsafeProviderModelValues(t *testing.T) {
 	nodeStore := store.NewMemoryNodeStore()
 	enrollTestNode(t, nodeStore, "node-apply")

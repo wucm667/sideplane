@@ -303,10 +303,7 @@ func latestActualSnapshotFromStore(ctx context.Context, dataStore store.Store, n
 			continue
 		}
 		for _, snapshot := range result.ConfigSnapshots {
-			if runtimeType != "" && snapshot.RuntimeType != runtimeType {
-				continue
-			}
-			if profile != "" && snapshot.Profile != profile {
+			if !runtimeConfigSnapshotMatchesTarget(snapshot, runtimeType, profile) {
 				continue
 			}
 			matched := snapshot
