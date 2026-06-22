@@ -1994,6 +1994,8 @@ func runSettingsGet(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 0
 	}
 	fmt.Fprintf(stdout, "Expected sidecar version: %s\n", valueOrDash(resp.ExpectedSidecarVersion))
+	fmt.Fprintf(stdout, "Expected Hermes version: %s\n", valueOrDash(resp.ExpectedRuntimeVersions["hermes"]))
+	fmt.Fprintf(stdout, "Expected OpenClaw version: %s\n", valueOrDash(resp.ExpectedRuntimeVersions["openclaw"]))
 	return 0
 }
 
@@ -2003,8 +2005,10 @@ func runSettingsSet(args []string, stdout io.Writer, stderr io.Writer) int {
 	serverURL := flags.String("server", "", "Sideplane server URL; can also be set with SIDEPLANE_SERVER_URL")
 	operatorTokenFlag := flags.String("operator-token", "", "operator bearer token; can also be set with SIDEPLANE_OPERATOR_TOKEN")
 	expected := flags.String("expected-sidecar-version", "", "expected sidecar version; empty clears the check")
+	expectedHermes := flags.String("expected-hermes-version", "", "expected Hermes runtime version; empty clears the check")
+	expectedOpenClaw := flags.String("expected-openclaw-version", "", "expected OpenClaw runtime version; empty clears the check")
 	jsonOutput := flags.Bool("json", false, "print raw JSON response")
-	usage := "sideplane settings set --expected-sidecar-version VERSION [--server URL] [--operator-token TOKEN] [--json]"
+	usage := "sideplane settings set [--expected-sidecar-version VERSION] [--expected-hermes-version VERSION] [--expected-openclaw-version VERSION] [--server URL] [--operator-token TOKEN] [--json]"
 	if commandHelpRequested(args) {
 		printCommandHelp(stdout, usage, flags)
 		return 0
@@ -2016,9 +2020,31 @@ func runSettingsSet(args []string, stdout io.Writer, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "usage: "+usage)
 		return 1
 	}
-	resp, body, err := putJSON[protocol.ServerSettings](context.Background(), serverURLValue(*serverURL), "/api/settings", protocol.UpdateServerSettingsRequest{
-		ExpectedSidecarVersion: strings.TrimSpace(*expected),
-	}, operatorTokenValue(*operatorTokenFlag))
+	setFlags := visitedFlagNames(flags)
+	server := serverURLValue(*serverURL)
+	operatorToken := operatorTokenValue(*operatorTokenFlag)
+	current, _, err := getJSON[protocol.ServerSettings](context.Background(), server, "/api/settings", operatorToken)
+	if err != nil {
+		fmt.Fprintf(stderr, "settings set: %v\n", err)
+		return 1
+	}
+	request := protocol.UpdateServerSettingsRequest{
+		ExpectedSidecarVersion: strings.TrimSpace(current.ExpectedSidecarVersion),
+	}
+	if setFlags["expected-sidecar-version"] {
+		request.ExpectedSidecarVersion = strings.TrimSpace(*expected)
+	}
+	runtimeVersionsSet := setFlags["expected-hermes-version"] || setFlags["expected-openclaw-version"]
+	if runtimeVersionsSet {
+		request.ExpectedRuntimeVersions = cloneRuntimeVersionSettings(current.ExpectedRuntimeVersions)
+		if setFlags["expected-hermes-version"] {
+			setRuntimeVersionSetting(request.ExpectedRuntimeVersions, "hermes", *expectedHermes)
+		}
+		if setFlags["expected-openclaw-version"] {
+			setRuntimeVersionSetting(request.ExpectedRuntimeVersions, "openclaw", *expectedOpenClaw)
+		}
+	}
+	resp, body, err := putJSON[protocol.ServerSettings](context.Background(), server, "/api/settings", request, operatorToken)
 	if err != nil {
 		fmt.Fprintf(stderr, "settings set: %v\n", err)
 		return 1
@@ -2028,7 +2054,39 @@ func runSettingsSet(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 0
 	}
 	fmt.Fprintf(stdout, "Expected sidecar version: %s\n", valueOrDash(resp.ExpectedSidecarVersion))
+	fmt.Fprintf(stdout, "Expected Hermes version: %s\n", valueOrDash(resp.ExpectedRuntimeVersions["hermes"]))
+	fmt.Fprintf(stdout, "Expected OpenClaw version: %s\n", valueOrDash(resp.ExpectedRuntimeVersions["openclaw"]))
 	return 0
+}
+
+func visitedFlagNames(flags *flag.FlagSet) map[string]bool {
+	visited := map[string]bool{}
+	flags.Visit(func(f *flag.Flag) {
+		visited[f.Name] = true
+	})
+	return visited
+}
+
+func cloneRuntimeVersionSettings(settings map[string]string) map[string]string {
+	out := map[string]string{}
+	for runtimeType, version := range settings {
+		runtimeType = strings.TrimSpace(runtimeType)
+		version = strings.TrimSpace(version)
+		if runtimeType == "" || version == "" {
+			continue
+		}
+		out[runtimeType] = version
+	}
+	return out
+}
+
+func setRuntimeVersionSetting(settings map[string]string, runtimeType string, version string) {
+	version = strings.TrimSpace(version)
+	if version == "" {
+		delete(settings, runtimeType)
+		return
+	}
+	settings[runtimeType] = version
 }
 
 func alertEventsLabel(events []protocol.AlertEventType) string {
@@ -3289,7 +3347,7 @@ func printNodeInspect(w io.Writer, node cliNodeStatus) {
 			valueOrDash(runtime.Type),
 			valueOrDash(runtime.State),
 			runtimeHealthLabel(runtime.Health),
-			valueOrDash(runtime.Version),
+			runtimeVersionLabel(runtime),
 			valueOrDash(runtime.Provider),
 			valueOrDash(runtime.Model),
 			valueOrDash(runtime.ConfigHash),
@@ -3479,9 +3537,26 @@ func runtimeSummary(runtimes []protocol.RuntimeStatus) string {
 		if model := strings.TrimSpace(runtime.Model); model != "" {
 			name += ":" + model
 		}
+		if version := strings.TrimSpace(runtime.Version); version != "" {
+			name += "@" + version
+		}
+		if runtime.Outdated {
+			name += "(outdated)"
+		}
 		parts = append(parts, name)
 	}
 	return strings.Join(parts, ",")
+}
+
+func runtimeVersionLabel(runtime protocol.RuntimeStatus) string {
+	version := strings.TrimSpace(runtime.Version)
+	if version == "" {
+		version = "-"
+	}
+	if runtime.Outdated {
+		return version + " (outdated)"
+	}
+	return version
 }
 
 func valueOrDash(value string) string {

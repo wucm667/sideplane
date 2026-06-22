@@ -762,6 +762,11 @@ function RuntimeCard({ runtime, snapshot }: { runtime: RuntimeStatus; snapshot?:
           {runtime.type && <span className="text-xs text-[var(--sp-faint)]">{runtime.type}</span>}
           {runtime.state && <span className={`inline-flex rounded border px-2 py-0.5 text-[11px] font-semibold ${runtime.state === 'error' ? 'border-rose-500/30 bg-rose-500/10 text-rose-600' : 'border-[var(--sp-border)] bg-[var(--sp-surface-2)] text-[var(--sp-muted)]'}`}>{runtime.state}</span>}
           <RuntimeHealthBadge health={health} />
+          {runtime.outdated && (
+            <span className="inline-flex rounded border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[11px] font-semibold text-amber-600" title={t('node.runtime.versionOutdatedTitle')}>
+              {t('node.runtime.outdated')}
+            </span>
+          )}
         </div>
         <span className="font-mono text-xs text-[var(--sp-faint)]">{runtime.version || '-'}</span>
       </div>

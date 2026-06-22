@@ -356,8 +356,8 @@ function FleetMetricsPanel({ metrics }: { metrics: FleetOverviewMetrics }) {
           value={metrics.totalNodes}
         />
         <MetricCell
-          accentClass={metrics.driftedNodes > 0 || metrics.outdatedSidecars > 0 ? 'bg-amber-500' : 'bg-emerald-500'}
-          detail={t('fleet.metrics.configDriftDetail', { outdated: metrics.outdatedSidecars, runtimes: metrics.runtimeCount })}
+          accentClass={metrics.driftedNodes > 0 || metrics.outdatedSidecars > 0 || metrics.outdatedRuntimes > 0 ? 'bg-amber-500' : 'bg-emerald-500'}
+          detail={t('fleet.metrics.configDriftDetail', { sidecars: metrics.outdatedSidecars, runtimeOutdated: metrics.outdatedRuntimes, runtimes: metrics.runtimeCount })}
           label={t('fleet.metrics.configDrift')}
           value={metrics.driftedNodes}
         />
@@ -452,6 +452,7 @@ function FleetRow({ activeProbe, node, selected, onToggleSelect, onOpen }: { act
           <span key={runtimeKey(runtime, index)} className="inline-flex max-w-full items-center gap-1.5 rounded-md bg-[var(--sp-surface-3)] px-2 py-1 font-mono text-[11px] text-[var(--sp-muted)]">
             <span className="h-1.5 w-1.5 flex-none rounded-full bg-[var(--sp-accent)]" />
             <span className="truncate">{runtimeLabel(runtime)}</span>
+            {runtime.outdated && <span className="rounded bg-amber-500/10 px-1 py-0.5 text-[9px] font-semibold text-amber-600" title={t('fleet.runtimeOutdatedTitle')}>{t('fleet.row.outdated')}</span>}
           </span>
         )) : <span className="text-xs text-[var(--sp-faint)]">-</span>}
       </div>

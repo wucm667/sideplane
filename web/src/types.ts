@@ -32,12 +32,13 @@ export interface RuntimeHealth {
   state: RuntimeHealthState
   reason?: string
 }
-export type RuntimeStatus = GeneratedRuntimeStatus & { health?: RuntimeHealth }
+export type RuntimeStatus = GeneratedRuntimeStatus & { health?: RuntimeHealth; version?: string; outdated?: boolean }
 export type RuntimeConfigSnapshot = GeneratedRuntimeConfigSnapshot & { health?: RuntimeHealth }
-export type NodeStatus = NodeStatusWithDrift & { labels?: NodeLabels; maintenance?: boolean; sidecarOutdated?: boolean }
+export type NodeStatus = Omit<NodeStatusWithDrift, 'runtimes'> & { labels?: NodeLabels; maintenance?: boolean; sidecarOutdated?: boolean; runtimes?: RuntimeStatus[] }
 
 export interface ServerSettings {
   expectedSidecarVersion: string
+  expectedRuntimeVersions: Record<string, string>
 }
 
 export interface NodeLabelsRequest {

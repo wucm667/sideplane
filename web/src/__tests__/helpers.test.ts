@@ -168,7 +168,7 @@ describe('fleet helper summaries', () => {
   it('aggregates fleet overview metrics from loaded client data', () => {
     const nodes = [
       node({ nodeId: 'node-a', state: 'fresh', drift: true, runtimes: [runtime({ type: 'hermes' })] }),
-      node({ nodeId: 'node-b', state: 'stale', maintenance: true, runtimes: [runtime({ type: 'openclaw' }), runtime({ type: 'hermes' })] }),
+      node({ nodeId: 'node-b', state: 'stale', maintenance: true, runtimes: [runtime({ type: 'openclaw', outdated: true }), runtime({ type: 'hermes' })] }),
       node({ nodeId: 'node-c', state: 'offline' }),
     ]
 
@@ -191,6 +191,7 @@ describe('fleet helper summaries', () => {
       maintenanceNodes: 1,
       driftedNodes: 1,
       outdatedSidecars: 0,
+      outdatedRuntimes: 1,
       runtimeCount: 3,
       activeJobs: 2,
       activeRollouts: 3,

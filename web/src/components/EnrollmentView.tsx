@@ -384,6 +384,8 @@ export function EnrollmentView({ operatorToken }: { operatorToken: string }) {
 function ServerSettingsSection({ operatorToken }: { operatorToken: string }) {
   const { t } = useT()
   const [expectedVersion, setExpectedVersion] = useState('')
+  const [expectedHermesVersion, setExpectedHermesVersion] = useState('')
+  const [expectedOpenClawVersion, setExpectedOpenClawVersion] = useState('')
   const [saving, setSaving] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -402,6 +404,8 @@ function ServerSettingsSection({ operatorToken }: { operatorToken: string }) {
       if (!res.ok) throw new Error(await apiErrorMessage(res))
       const data = (await res.json()) as ServerSettings
       setExpectedVersion(data.expectedSidecarVersion ?? '')
+      setExpectedHermesVersion(data.expectedRuntimeVersions?.hermes ?? '')
+      setExpectedOpenClawVersion(data.expectedRuntimeVersions?.openclaw ?? '')
     } catch (e) {
       setError(e instanceof Error ? e.message : t('common.unknownError'))
     }
@@ -420,7 +424,13 @@ function ServerSettingsSection({ operatorToken }: { operatorToken: string }) {
       const res = await fetch(apiURL('/api/settings'), {
         method: 'PUT',
         headers: authHeaders(),
-        body: JSON.stringify({ expectedSidecarVersion: expectedVersion.trim() }),
+        body: JSON.stringify({
+          expectedSidecarVersion: expectedVersion.trim(),
+          expectedRuntimeVersions: {
+            hermes: expectedHermesVersion.trim(),
+            openclaw: expectedOpenClawVersion.trim(),
+          },
+        }),
       })
       if (!res.ok) {
         if (res.status === 401) throw new Error(t('common.operatorTokenRequiredInvalid'))
@@ -429,6 +439,8 @@ function ServerSettingsSection({ operatorToken }: { operatorToken: string }) {
       }
       const data = (await res.json()) as ServerSettings
       setExpectedVersion(data.expectedSidecarVersion ?? '')
+      setExpectedHermesVersion(data.expectedRuntimeVersions?.hermes ?? '')
+      setExpectedOpenClawVersion(data.expectedRuntimeVersions?.openclaw ?? '')
       setMessage(t('common.saved'))
     } catch (e) {
       setError(e instanceof Error ? e.message : t('common.unknownError'))
@@ -444,13 +456,27 @@ function ServerSettingsSection({ operatorToken }: { operatorToken: string }) {
       {!tokenReady && <div className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-700">{t('enrollment.server.requiresToken')}</div>}
       {error && <div role="alert" className="mt-3 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-600">{error}</div>}
       {message && <div role="status" className="mt-3 rounded-lg border border-emerald-500/25 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-700">{message}</div>}
-      <div className="mt-4 grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
+      <div className="mt-4 grid gap-2 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_auto]">
         <input
           className="h-10 rounded-lg border border-[var(--sp-border)] bg-[var(--sp-surface-2)] px-3 text-sm text-[var(--sp-text)] outline-none focus:border-[var(--sp-accent)]"
           value={expectedVersion}
           aria-label={t('enrollment.server.expectedSidecar')}
           placeholder={t('enrollment.server.expectedSidecarPlaceholder')}
           onChange={(event) => setExpectedVersion(event.target.value)}
+        />
+        <input
+          className="h-10 rounded-lg border border-[var(--sp-border)] bg-[var(--sp-surface-2)] px-3 text-sm text-[var(--sp-text)] outline-none focus:border-[var(--sp-accent)]"
+          value={expectedHermesVersion}
+          aria-label={t('enrollment.server.expectedHermes')}
+          placeholder={t('enrollment.server.expectedHermesPlaceholder')}
+          onChange={(event) => setExpectedHermesVersion(event.target.value)}
+        />
+        <input
+          className="h-10 rounded-lg border border-[var(--sp-border)] bg-[var(--sp-surface-2)] px-3 text-sm text-[var(--sp-text)] outline-none focus:border-[var(--sp-accent)]"
+          value={expectedOpenClawVersion}
+          aria-label={t('enrollment.server.expectedOpenClaw')}
+          placeholder={t('enrollment.server.expectedOpenClawPlaceholder')}
+          onChange={(event) => setExpectedOpenClawVersion(event.target.value)}
         />
         <button
           type="button"

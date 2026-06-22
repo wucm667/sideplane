@@ -77,6 +77,7 @@ export interface FleetOverviewMetrics {
   maintenanceNodes: number
   driftedNodes: number
   outdatedSidecars: number
+  outdatedRuntimes: number
   runtimeCount: number
   activeJobs: number
   activeRollouts: number
@@ -265,9 +266,10 @@ export function runtimeKey(runtime: RuntimeStatus, index: number): string {
 }
 
 export function runtimeLabel(runtime: RuntimeStatus): string {
-  if (runtime.provider && runtime.model) return `${runtime.provider}/${runtime.model}`
-  if (runtime.model) return runtime.model
-  return runtime.name || runtime.type || 'runtime'
+  const base = runtime.provider && runtime.model
+    ? `${runtime.provider}/${runtime.model}`
+    : runtime.model || runtime.name || runtime.type || 'runtime'
+  return runtime.version ? `${base}@${runtime.version}` : base
 }
 
 function parseDeepProbeResult(resultJson: string | undefined): DeepProbeResult | null {
@@ -343,6 +345,7 @@ export function fleetOverviewMetrics(nodes: NodeStatus[], jobsByNode: Record<str
     maintenanceNodes: nodes.filter((node) => node.maintenance).length,
     driftedNodes: nodes.filter((node) => node.drift).length,
     outdatedSidecars: nodes.filter((node) => node.sidecarOutdated).length,
+    outdatedRuntimes: nodes.reduce((total, node) => total + (node.runtimes ?? []).filter((runtime) => runtime.outdated).length, 0),
     runtimeCount: nodes.reduce((total, node) => total + (node.runtimes?.length ?? 0), 0),
     activeJobs: Object.values(jobsByNode).reduce((total, jobs) => total + jobs.filter(isActiveJob).length, 0),
     activeRollouts: rollouts.filter(isActiveRollout).length,

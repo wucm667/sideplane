@@ -26,7 +26,7 @@ func TestFleetStatusPrintsCompactTable(t *testing.T) {
 				Maintenance:     true,
 				LastHeartbeatAt: now.Add(-2 * time.Minute),
 				Runtimes: []protocol.RuntimeStatus{
-					{Name: "hermes", Model: "gpt-4o"},
+					{Name: "hermes", Model: "gpt-4o", Version: "v2026.5.1"},
 				},
 			},
 		},
@@ -36,7 +36,7 @@ func TestFleetStatusPrintsCompactTable(t *testing.T) {
 				State:           protocol.NodeStateStale,
 				LastHeartbeatAt: now.Add(-8 * time.Minute),
 				Runtimes: []protocol.RuntimeStatus{
-					{Name: "openclaw"},
+					{Name: "openclaw", Version: "v2026.4.1", Outdated: true},
 				},
 			},
 			Drift: true,
@@ -74,11 +74,11 @@ func TestFleetStatusPrintsCompactTable(t *testing.T) {
 		"HEARTBEAT",
 		"node-a",
 		"fresh",
-		"hermes:gpt-4o",
+		"hermes:gpt-4o@v2026.5.1",
 		"no",
 		"node-b",
 		"stale",
-		"openclaw",
+		"openclaw@v2026.4.1(outdated)",
 		"yes",
 	} {
 		if !strings.Contains(output, want) {
@@ -284,6 +284,7 @@ func TestNodeInspectPrintsNodeDetail(t *testing.T) {
 				ConfigHash: "sha256:def",
 				Health:     protocol.RuntimeHealth{State: protocol.RuntimeHealthDegraded, Reason: "service inactive"},
 				Warnings:   []string{"config path unreadable"},
+				Outdated:   true,
 			}},
 		},
 		Drift: true,
@@ -298,10 +299,94 @@ func TestNodeInspectPrintsNodeDetail(t *testing.T) {
 		t.Fatalf("run returned %d, stderr=%q", code, stderr.String())
 	}
 	output := stdout.String()
-	for _, want := range []string{"Node: node-a", "Hostname: host-a", "Maintenance: yes", "Drift: yes", "Labels: role=canary,zone=lab", "hermes", "openai", "gpt-4o", "degraded: service inactive", "config path unreadable"} {
+	for _, want := range []string{"Node: node-a", "Hostname: host-a", "Maintenance: yes", "Drift: yes", "Labels: role=canary,zone=lab", "hermes", "openai", "gpt-4o", "1.2.3 (outdated)", "degraded: service inactive", "config path unreadable"} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("output missing %q:\n%s", want, output)
 		}
+	}
+}
+
+func TestSettingsGetPrintsRuntimeVersions(t *testing.T) {
+	settings := protocol.ServerSettings{
+		ExpectedSidecarVersion: "v1.0.0",
+		ExpectedRuntimeVersions: map[string]string{
+			"hermes":   "v2026.5.1",
+			"openclaw": "v2026.4.1",
+		},
+	}
+	server := httptest.NewServer(jsonHandler(t, http.MethodGet, "/api/settings", settings))
+	defer server.Close()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"settings", "get", "--server", server.URL}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("run returned %d, stderr=%q", code, stderr.String())
+	}
+	output := stdout.String()
+	for _, want := range []string{
+		"Expected sidecar version: v1.0.0",
+		"Expected Hermes version: v2026.5.1",
+		"Expected OpenClaw version: v2026.4.1",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output missing %q:\n%s", want, output)
+		}
+	}
+}
+
+func TestSettingsSetUpdatesRuntimeVersions(t *testing.T) {
+	var got protocol.UpdateServerSettingsRequest
+	var requests []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests = append(requests, r.Method+" "+r.URL.Path)
+		if r.URL.Path != "/api/settings" {
+			t.Fatalf("path = %s, want /api/settings", r.URL.Path)
+		}
+		if gotAuth := r.Header.Get("Authorization"); gotAuth != "Bearer dev-token" {
+			t.Fatalf("Authorization = %q, want Bearer dev-token", gotAuth)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch r.Method {
+		case http.MethodGet:
+			_ = json.NewEncoder(w).Encode(protocol.ServerSettings{
+				ExpectedSidecarVersion: "v1.0.0",
+				ExpectedRuntimeVersions: map[string]string{
+					"openclaw": "v2026.4.1",
+				},
+			})
+		case http.MethodPut:
+			if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+				t.Fatalf("decode settings request: %v", err)
+			}
+			_ = json.NewEncoder(w).Encode(protocol.ServerSettings{
+				ExpectedSidecarVersion:  got.ExpectedSidecarVersion,
+				ExpectedRuntimeVersions: got.ExpectedRuntimeVersions,
+			})
+		default:
+			t.Fatalf("method = %s, want GET/PUT", r.Method)
+		}
+	}))
+	defer server.Close()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := run([]string{"settings", "set", "--server", server.URL, "--operator-token", "dev-token", "--expected-hermes-version", " v2026.5.1 "}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("run returned %d, stderr=%q", code, stderr.String())
+	}
+	if strings.Join(requests, "|") != "GET /api/settings|PUT /api/settings" {
+		t.Fatalf("requests = %#v, want GET then PUT", requests)
+	}
+	if got.ExpectedSidecarVersion != "v1.0.0" {
+		t.Fatalf("expectedSidecarVersion = %q, want preserved sidecar version", got.ExpectedSidecarVersion)
+	}
+	if got.ExpectedRuntimeVersions["hermes"] != "v2026.5.1" || got.ExpectedRuntimeVersions["openclaw"] != "v2026.4.1" {
+		t.Fatalf("expectedRuntimeVersions = %#v, want updated hermes and preserved openclaw", got.ExpectedRuntimeVersions)
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "Expected Hermes version: v2026.5.1") || !strings.Contains(output, "Expected OpenClaw version: v2026.4.1") {
+		t.Fatalf("stdout = %q, want runtime version summary", output)
 	}
 }
 
