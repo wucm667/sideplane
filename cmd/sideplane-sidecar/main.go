@@ -48,8 +48,10 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	hermesConfigPaths := flags.String("hermes-config-paths", "", "path-list of read-only Hermes config files to inspect; can also be set with SIDEPLANE_HERMES_CONFIG_PATHS")
 	openclawConfigPaths := flags.String("openclaw-config-paths", "", "path-list of read-only OpenClaw config files to inspect; can also be set with SIDEPLANE_OPENCLAW_CONFIG_PATHS")
 	hermesDockerContainer := flags.String("hermes-docker-container", "", "optional read-only Docker container name for Hermes status/log inspection; can also be set with SIDEPLANE_HERMES_DOCKER_CONTAINER")
+	hermesVersionCommand := flags.String("hermes-version-command", "", "optional single read-only command for non-container Hermes version discovery; can also be set with SIDEPLANE_HERMES_VERSION_COMMAND")
 	hermesServiceUnit := flags.String("hermes-service-unit", "", "optional systemd unit used as the Hermes restart target when no docker container is set; can also be set with SIDEPLANE_HERMES_SERVICE_UNIT")
 	openclawDockerContainer := flags.String("openclaw-docker-container", "", "optional Docker container name used as the OpenClaw restart target; can also be set with SIDEPLANE_OPENCLAW_DOCKER_CONTAINER")
+	openclawVersionCommand := flags.String("openclaw-version-command", "", "optional single read-only command for non-container OpenClaw version discovery; can also be set with SIDEPLANE_OPENCLAW_VERSION_COMMAND")
 	openclawServiceUnit := flags.String("openclaw-service-unit", "", "optional systemd unit used as the OpenClaw restart target when no docker container is set; can also be set with SIDEPLANE_OPENCLAW_SERVICE_UNIT")
 	serverPublicKey := flags.String("server-public-key", "", "base64 ed25519 server public key for signed config plans")
 	applyWorkDir := flags.String("apply-work-dir", "", "sidecar-controlled work directory for config apply dry runs")
@@ -75,8 +77,10 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		hermesConfigPaths:       hermesConfigPaths,
 		openclawConfigPaths:     openclawConfigPaths,
 		hermesDockerContainer:   hermesDockerContainer,
+		hermesVersionCommand:    hermesVersionCommand,
 		hermesServiceUnit:       hermesServiceUnit,
 		openclawDockerContainer: openclawDockerContainer,
+		openclawVersionCommand:  openclawVersionCommand,
 		openclawServiceUnit:     openclawServiceUnit,
 		serverPublicKey:         serverPublicKey,
 		applyWorkDir:            applyWorkDir,
@@ -108,6 +112,9 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	if value := strings.TrimSpace(*hermesDockerContainer); value != "" {
 		hermesOptions = append(hermesOptions, hermes.WithDockerContainer(value))
 	}
+	if value := strings.TrimSpace(*hermesVersionCommand); value != "" {
+		hermesOptions = append(hermesOptions, hermes.WithVersionCommand(value))
+	}
 	if value := strings.TrimSpace(*hermesServiceUnit); value != "" {
 		hermesOptions = append(hermesOptions, hermes.WithServiceUnit(value))
 	}
@@ -121,6 +128,9 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 	if value := strings.TrimSpace(*openclawDockerContainer); value != "" {
 		openclawOptions = append(openclawOptions, openclaw.WithDockerContainer(value))
+	}
+	if value := strings.TrimSpace(*openclawVersionCommand); value != "" {
+		openclawOptions = append(openclawOptions, openclaw.WithVersionCommand(value))
 	}
 	if value := strings.TrimSpace(*openclawServiceUnit); value != "" {
 		openclawOptions = append(openclawOptions, openclaw.WithServiceUnit(value))
@@ -203,8 +213,10 @@ type doctorReport struct {
 	ServiceRestartUseSudo   bool                 `json:"serviceRestartUseSudo"`
 	PublicKeyStatus         string               `json:"publicKeyStatus"`
 	HermesDockerContainer   string               `json:"hermesDockerContainer,omitempty"`
+	HermesVersionCommand    string               `json:"hermesVersionCommand,omitempty"`
 	HermesServiceUnit       string               `json:"hermesServiceUnit,omitempty"`
 	OpenClawDockerContainer string               `json:"openclawDockerContainer,omitempty"`
+	OpenClawVersionCommand  string               `json:"openclawVersionCommand,omitempty"`
 	OpenClawServiceUnit     string               `json:"openclawServiceUnit,omitempty"`
 }
 
@@ -220,8 +232,10 @@ func runDoctor(args []string, stdout io.Writer, stderr io.Writer) int {
 	hermesConfigPaths := flags.String("hermes-config-paths", "", "path-list of read-only Hermes config files to inspect; can also be set with SIDEPLANE_HERMES_CONFIG_PATHS")
 	openclawConfigPaths := flags.String("openclaw-config-paths", "", "path-list of read-only OpenClaw config files to inspect; can also be set with SIDEPLANE_OPENCLAW_CONFIG_PATHS")
 	hermesDockerContainer := flags.String("hermes-docker-container", "", "optional read-only Docker container name for Hermes status/log inspection; can also be set with SIDEPLANE_HERMES_DOCKER_CONTAINER")
+	hermesVersionCommand := flags.String("hermes-version-command", "", "optional single read-only command for non-container Hermes version discovery; can also be set with SIDEPLANE_HERMES_VERSION_COMMAND")
 	hermesServiceUnit := flags.String("hermes-service-unit", "", "optional systemd unit used as the Hermes restart target when no docker container is set; can also be set with SIDEPLANE_HERMES_SERVICE_UNIT")
 	openclawDockerContainer := flags.String("openclaw-docker-container", "", "optional Docker container name used as the OpenClaw restart target; can also be set with SIDEPLANE_OPENCLAW_DOCKER_CONTAINER")
+	openclawVersionCommand := flags.String("openclaw-version-command", "", "optional single read-only command for non-container OpenClaw version discovery; can also be set with SIDEPLANE_OPENCLAW_VERSION_COMMAND")
 	openclawServiceUnit := flags.String("openclaw-service-unit", "", "optional systemd unit used as the OpenClaw restart target when no docker container is set; can also be set with SIDEPLANE_OPENCLAW_SERVICE_UNIT")
 	serverPublicKey := flags.String("server-public-key", "", "base64 ed25519 server public key for signed config plans")
 	applyWorkDir := flags.String("apply-work-dir", "", "sidecar-controlled work directory for config apply dry runs")
@@ -246,8 +260,10 @@ func runDoctor(args []string, stdout io.Writer, stderr io.Writer) int {
 		hermesConfigPaths:       hermesConfigPaths,
 		openclawConfigPaths:     openclawConfigPaths,
 		hermesDockerContainer:   hermesDockerContainer,
+		hermesVersionCommand:    hermesVersionCommand,
 		hermesServiceUnit:       hermesServiceUnit,
 		openclawDockerContainer: openclawDockerContainer,
+		openclawVersionCommand:  openclawVersionCommand,
 		openclawServiceUnit:     openclawServiceUnit,
 		serverPublicKey:         serverPublicKey,
 		applyWorkDir:            applyWorkDir,
@@ -286,8 +302,10 @@ func runDoctor(args []string, stdout io.Writer, stderr io.Writer) int {
 		ServiceRestartUseSudo:   *serviceRestartUseSudo,
 		PublicKeyStatus:         publicKeyStatus(*serverPublicKey),
 		HermesDockerContainer:   strings.TrimSpace(*hermesDockerContainer),
+		HermesVersionCommand:    strings.TrimSpace(*hermesVersionCommand),
 		HermesServiceUnit:       strings.TrimSpace(*hermesServiceUnit),
 		OpenClawDockerContainer: strings.TrimSpace(*openclawDockerContainer),
+		OpenClawVersionCommand:  strings.TrimSpace(*openclawVersionCommand),
 		OpenClawServiceUnit:     strings.TrimSpace(*openclawServiceUnit),
 	}
 
@@ -325,8 +343,10 @@ func printDoctorReport(w io.Writer, report doctorReport) {
 	fmt.Fprintf(w, "Service restart sudo: %s\n", yesNo(report.ServiceRestartUseSudo))
 	fmt.Fprintf(w, "Public key: %s\n", report.PublicKeyStatus)
 	fmt.Fprintf(w, "Hermes docker container: %s\n", valueOrDash(report.HermesDockerContainer))
+	fmt.Fprintf(w, "Hermes version command: %s\n", valueOrDash(report.HermesVersionCommand))
 	fmt.Fprintf(w, "Hermes service unit: %s\n", valueOrDash(report.HermesServiceUnit))
 	fmt.Fprintf(w, "OpenClaw docker container: %s\n", valueOrDash(report.OpenClawDockerContainer))
+	fmt.Fprintf(w, "OpenClaw version command: %s\n", valueOrDash(report.OpenClawVersionCommand))
 	fmt.Fprintf(w, "OpenClaw service unit: %s\n", valueOrDash(report.OpenClawServiceUnit))
 	printPathStatuses(w, "Hermes config paths", report.HermesConfigPaths)
 	printPathStatuses(w, "OpenClaw config paths", report.OpenClawConfigPaths)
@@ -374,8 +394,10 @@ type sidecarFlagValues struct {
 	hermesConfigPaths       *string
 	openclawConfigPaths     *string
 	hermesDockerContainer   *string
+	hermesVersionCommand    *string
 	hermesServiceUnit       *string
 	openclawDockerContainer *string
+	openclawVersionCommand  *string
 	openclawServiceUnit     *string
 	serverPublicKey         *string
 	applyWorkDir            *string
@@ -397,8 +419,10 @@ func applySidecarEnvFallbacks(setFlags map[string]bool, values sidecarFlagValues
 	applyStringEnvFallback(setFlags, "hermes-config-paths", "SIDEPLANE_HERMES_CONFIG_PATHS", values.hermesConfigPaths)
 	applyStringEnvFallback(setFlags, "openclaw-config-paths", "SIDEPLANE_OPENCLAW_CONFIG_PATHS", values.openclawConfigPaths)
 	applyStringEnvFallback(setFlags, "hermes-docker-container", "SIDEPLANE_HERMES_DOCKER_CONTAINER", values.hermesDockerContainer)
+	applyStringEnvFallback(setFlags, "hermes-version-command", "SIDEPLANE_HERMES_VERSION_COMMAND", values.hermesVersionCommand)
 	applyStringEnvFallback(setFlags, "hermes-service-unit", "SIDEPLANE_HERMES_SERVICE_UNIT", values.hermesServiceUnit)
 	applyStringEnvFallback(setFlags, "openclaw-docker-container", "SIDEPLANE_OPENCLAW_DOCKER_CONTAINER", values.openclawDockerContainer)
+	applyStringEnvFallback(setFlags, "openclaw-version-command", "SIDEPLANE_OPENCLAW_VERSION_COMMAND", values.openclawVersionCommand)
 	applyStringEnvFallback(setFlags, "openclaw-service-unit", "SIDEPLANE_OPENCLAW_SERVICE_UNIT", values.openclawServiceUnit)
 	applyStringEnvFallback(setFlags, "server-public-key", "SIDEPLANE_SERVER_PUBLIC_KEY", values.serverPublicKey)
 	applyStringEnvFallback(setFlags, "apply-work-dir", "SIDEPLANE_APPLY_WORK_DIR", values.applyWorkDir)

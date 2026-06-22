@@ -30,6 +30,7 @@ type Adapter struct {
 	runCommand      func(context.Context, string, ...string) ([]byte, error)
 	configPaths     []string
 	container       string
+	versionCommand  string
 	serviceUnitName string
 	restartSudo     bool
 	allowLive       bool
@@ -50,6 +51,14 @@ func WithConfigPaths(paths ...string) Option {
 func WithDockerContainer(container string) Option {
 	return func(a *Adapter) {
 		a.container = strings.TrimSpace(container)
+	}
+}
+
+// WithVersionCommand configures the single read-only command used to report a
+// non-container Hermes version. It is opt-in and is executed without a shell.
+func WithVersionCommand(command string) Option {
+	return func(a *Adapter) {
+		a.versionCommand = strings.TrimSpace(command)
 	}
 }
 
@@ -116,6 +125,7 @@ func (a *Adapter) Status(ctx context.Context) (protocol.RuntimeStatus, error) {
 		Type:  AdapterType,
 		State: "present",
 	}
+	status.Version, status.Warnings = a.runtimeVersion(ctx)
 
 	snapshot, err := a.snapshot(ctx)
 	if err != nil {
@@ -129,6 +139,59 @@ func (a *Adapter) Status(ctx context.Context) (protocol.RuntimeStatus, error) {
 		status.ConfigHash = snapshot.ConfigHash
 	}
 	return status, nil
+}
+
+func (a *Adapter) runtimeVersion(ctx context.Context) (string, []string) {
+	if container := a.dockerContainer(); container != "" {
+		version, err := a.dockerImageVersion(ctx, container)
+		if err != nil {
+			return "", []string{"hermes version discovery failed: " + err.Error()}
+		}
+		return version, nil
+	}
+	command := a.configuredVersionCommand()
+	if command == "" {
+		return "", nil
+	}
+	version, err := a.runVersionCommand(ctx, command)
+	if err != nil {
+		return "", []string{"hermes version command failed: " + err.Error()}
+	}
+	return version, nil
+}
+
+func (a *Adapter) dockerImageVersion(ctx context.Context, container string) (string, error) {
+	out, err := a.runDocker(ctx, "inspect", "--format", "{{.Config.Image}}", container)
+	if err != nil {
+		return "", fmt.Errorf("inspect docker image: %w", err)
+	}
+	return adapters.ImageTagVersion(string(out)), nil
+}
+
+func (a *Adapter) configuredVersionCommand() string {
+	if command := strings.TrimSpace(a.versionCommand); command != "" {
+		return command
+	}
+	getenv := a.getenv
+	if getenv == nil {
+		getenv = os.Getenv
+	}
+	return strings.TrimSpace(getenv("SIDEPLANE_HERMES_VERSION_COMMAND"))
+}
+
+func (a *Adapter) runVersionCommand(ctx context.Context, command string) (string, error) {
+	name, args, err := adapters.ParseVersionCommand(command)
+	if err != nil {
+		return "", err
+	}
+	if name == "" {
+		return "", nil
+	}
+	out, err := a.runControl(ctx, name, args...)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 // ConfigSnapshots returns read-only Hermes config snapshots.

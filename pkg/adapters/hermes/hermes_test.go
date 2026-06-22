@@ -428,3 +428,105 @@ func TestAdapterConfiguredDockerContainerIsOptionalAndAllowlisted(t *testing.T) 
 		t.Fatalf("Detect = false, want true for configured container")
 	}
 }
+
+func TestAdapterStatusCapturesDockerImageVersionTag(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hermes.json")
+	if err := os.WriteFile(path, []byte(`{"model":{"provider":"openai","default":"gpt-5"}}`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	a := &Adapter{
+		lookup:      func(string) (string, error) { return "", errors.New("not found") },
+		configPaths: []string{path},
+		container:   "hermes-agent",
+		getenv:      func(string) string { return "" },
+		runCommand: func(_ context.Context, name string, args ...string) ([]byte, error) {
+			if name != "docker" || strings.Join(args, " ") != "inspect --format {{.Config.Image}} hermes-agent" {
+				return nil, fmt.Errorf("unexpected command %s %s", name, strings.Join(args, " "))
+			}
+			return []byte("nousresearch/hermes-agent:v2026.4.30\n"), nil
+		},
+	}
+
+	status, err := a.Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status error = %v, want nil", err)
+	}
+	if status.Version != "v2026.4.30" {
+		t.Fatalf("Version = %q, want docker tag", status.Version)
+	}
+}
+
+func TestAdapterStatusCapturesVersionCommandOutput(t *testing.T) {
+	a := &Adapter{
+		lookup:         func(string) (string, error) { return "/usr/bin/hermes", nil },
+		versionCommand: "hermes --version",
+		getenv:         func(string) string { return "" },
+		runCommand: func(_ context.Context, name string, args ...string) ([]byte, error) {
+			if name != "hermes" || strings.Join(args, " ") != "--version" {
+				return nil, fmt.Errorf("unexpected command %s %s", name, strings.Join(args, " "))
+			}
+			return []byte(" v2026.5.1 \n"), nil
+		},
+	}
+
+	status, err := a.Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status error = %v, want nil", err)
+	}
+	if status.Version != "v2026.5.1" {
+		t.Fatalf("Version = %q, want trimmed command output", status.Version)
+	}
+	if len(status.Warnings) != 0 {
+		t.Fatalf("Warnings = %#v, want none", status.Warnings)
+	}
+}
+
+func TestAdapterStatusVersionCommandFailureWarns(t *testing.T) {
+	a := &Adapter{
+		lookup:         func(string) (string, error) { return "/usr/bin/hermes", nil },
+		versionCommand: "hermes --version",
+		getenv:         func(string) string { return "" },
+		runCommand: func(context.Context, string, ...string) ([]byte, error) {
+			return nil, errors.New("exit status 1")
+		},
+	}
+
+	status, err := a.Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status error = %v, want nil", err)
+	}
+	if status.Version != "" {
+		t.Fatalf("Version = %q, want empty on failure", status.Version)
+	}
+	if !containsWarningFragment(status.Warnings, "hermes version command failed") {
+		t.Fatalf("Warnings = %#v, want version command failure warning", status.Warnings)
+	}
+}
+
+func TestAdapterStatusVersionCommandUnsetLeavesVersionEmpty(t *testing.T) {
+	a := &Adapter{
+		lookup:     func(string) (string, error) { return "/usr/bin/hermes", nil },
+		getenv:     func(string) string { return "" },
+		runCommand: func(context.Context, string, ...string) ([]byte, error) { return nil, errors.New("must not run") },
+	}
+
+	status, err := a.Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status error = %v, want nil", err)
+	}
+	if status.Version != "" {
+		t.Fatalf("Version = %q, want empty when command unset", status.Version)
+	}
+	if len(status.Warnings) != 0 {
+		t.Fatalf("Warnings = %#v, want none", status.Warnings)
+	}
+}
+
+func containsWarningFragment(warnings []string, want string) bool {
+	for _, warning := range warnings {
+		if strings.Contains(warning, want) {
+			return true
+		}
+	}
+	return false
+}

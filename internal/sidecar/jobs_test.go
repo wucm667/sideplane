@@ -319,7 +319,7 @@ func TestJobPollerCompletesDeepProbe(t *testing.T) {
 		NodeID:         "node-deep-probe",
 		NodeCredential: credential,
 		Collector: fakeRuntimeCollector{runtimes: []protocol.RuntimeStatus{
-			{Name: "default", Type: "hermes", State: "running", Provider: "openai", Model: "gpt-5"},
+			{Name: "default", Type: "hermes", Version: "v2026.5.1", State: "running", Provider: "openai", Model: "gpt-5"},
 		}},
 	})
 	if err != nil {
@@ -347,6 +347,9 @@ func TestJobPollerCompletesDeepProbe(t *testing.T) {
 	}
 	if len(result.Runtimes) != 1 || result.Runtimes[0].Type != "hermes" {
 		t.Fatalf("runtimes = %#v, want hermes runtime", result.Runtimes)
+	}
+	if result.Runtimes[0].Version != "v2026.5.1" {
+		t.Fatalf("runtime version = %q, want propagated version", result.Runtimes[0].Version)
 	}
 	if len(result.ConfigSnapshots) != 0 {
 		t.Fatalf("config snapshots = %#v, want none", result.ConfigSnapshots)

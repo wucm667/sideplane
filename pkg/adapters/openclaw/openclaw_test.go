@@ -319,6 +319,85 @@ func TestAdapterConfigPathFromEnvironment(t *testing.T) {
 	}
 }
 
+func TestAdapterStatusCapturesDockerImageVersionTag(t *testing.T) {
+	path := writeConfig(t, `{"provider":"openai","model":"gpt-4o"}`)
+	a := newTestAdapter(path)
+	a.container = "openclaw-agent"
+	a.runCommand = func(_ context.Context, name string, args ...string) ([]byte, error) {
+		if name != "docker" || strings.Join(args, " ") != "inspect --format {{.Config.Image}} openclaw-agent" {
+			return nil, errors.New("unexpected command " + name + " " + strings.Join(args, " "))
+		}
+		return []byte("ghcr.io/openclaw/openclaw:v2026.4.30\n"), nil
+	}
+
+	status, err := a.Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status error = %v, want nil", err)
+	}
+	if status.Version != "v2026.4.30" {
+		t.Fatalf("Version = %q, want docker tag", status.Version)
+	}
+}
+
+func TestAdapterStatusCapturesVersionCommandOutput(t *testing.T) {
+	a := newTestAdapter()
+	a.versionCommand = "openclaw --version"
+	a.runCommand = func(_ context.Context, name string, args ...string) ([]byte, error) {
+		if name != "openclaw" || strings.Join(args, " ") != "--version" {
+			return nil, errors.New("unexpected command " + name + " " + strings.Join(args, " "))
+		}
+		return []byte(" v2026.5.1 \n"), nil
+	}
+
+	status, err := a.Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status error = %v, want nil", err)
+	}
+	if status.Version != "v2026.5.1" {
+		t.Fatalf("Version = %q, want trimmed command output", status.Version)
+	}
+	if len(status.Warnings) != 0 {
+		t.Fatalf("Warnings = %#v, want none", status.Warnings)
+	}
+}
+
+func TestAdapterStatusVersionCommandFailureWarns(t *testing.T) {
+	a := newTestAdapter()
+	a.versionCommand = "openclaw --version"
+	a.runCommand = func(context.Context, string, ...string) ([]byte, error) {
+		return nil, errors.New("exit status 1")
+	}
+
+	status, err := a.Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status error = %v, want nil", err)
+	}
+	if status.Version != "" {
+		t.Fatalf("Version = %q, want empty on failure", status.Version)
+	}
+	if !containsWarningFragment(status.Warnings, "openclaw version command failed") {
+		t.Fatalf("Warnings = %#v, want version command failure warning", status.Warnings)
+	}
+}
+
+func TestAdapterStatusVersionCommandUnsetLeavesVersionEmpty(t *testing.T) {
+	a := newTestAdapter()
+	a.runCommand = func(context.Context, string, ...string) ([]byte, error) {
+		return nil, errors.New("must not run")
+	}
+
+	status, err := a.Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status error = %v, want nil", err)
+	}
+	if status.Version != "" {
+		t.Fatalf("Version = %q, want empty when command unset", status.Version)
+	}
+	if len(status.Warnings) != 0 {
+		t.Fatalf("Warnings = %#v, want none", status.Warnings)
+	}
+}
+
 func containsWarning(warnings []string, want string) bool {
 	for _, warning := range warnings {
 		if warning == want {
