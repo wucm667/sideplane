@@ -23,6 +23,9 @@ type RuntimeStatus struct {
 	Health     RuntimeHealth `json:"health,omitzero"`
 	LastError  string        `json:"lastError,omitempty"`
 	Warnings   []string      `json:"warnings,omitempty"`
+	// Outdated is true only when both actual and expected runtime versions are
+	// known and differ.
+	Outdated bool `json:"outdated,omitempty"`
 }
 
 // NodeStatus is the heartbeat-derived status the server exposes for a node.
@@ -53,11 +56,15 @@ type ServerSettings struct {
 	// ExpectedSidecarVersion, when set, flags nodes running a different sidecar
 	// version as outdated. Empty disables the check.
 	ExpectedSidecarVersion string `json:"expectedSidecarVersion"`
+	// ExpectedRuntimeVersions maps runtime type to the operator-configured
+	// expected runtime version. Empty or missing entries disable checks.
+	ExpectedRuntimeVersions map[string]string `json:"expectedRuntimeVersions"`
 }
 
 // UpdateServerSettingsRequest updates operator-tunable server settings.
 type UpdateServerSettingsRequest struct {
-	ExpectedSidecarVersion string `json:"expectedSidecarVersion"`
+	ExpectedSidecarVersion  string            `json:"expectedSidecarVersion"`
+	ExpectedRuntimeVersions map[string]string `json:"expectedRuntimeVersions,omitempty"`
 }
 
 // ListNodesResponse is a paginated fleet inventory response.

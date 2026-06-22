@@ -149,6 +149,7 @@ type RolloutTemplateStore interface {
 type SettingsStore interface {
 	GetServerSettings(ctx context.Context) (protocol.ServerSettings, error)
 	SetExpectedSidecarVersion(ctx context.Context, version string) error
+	SetExpectedRuntimeVersions(ctx context.Context, versions map[string]string) error
 }
 
 // AlertWebhookStore persists operator-configured outbound alert webhooks.

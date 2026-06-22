@@ -40,6 +40,8 @@ const (
 	maxAuditExportLimit = 500
 )
 
+var supportedExpectedRuntimeVersionTypes = []string{"hermes", "openclaw"}
+
 // NewHandler returns the Sideplane server HTTP handler.
 func NewHandler() http.Handler {
 	return NewHandlerWithStore(store.NewMemoryNodeStore())
@@ -332,6 +334,7 @@ type fleetMetricsSnapshot struct {
 	activeRollouts       int
 	driftedNodes         int
 	outdatedSidecars     int
+	outdatedRuntimes     map[string]int
 }
 
 func (h *handler) collectFleetMetrics(ctx context.Context) (fleetMetricsSnapshot, error) {
@@ -358,6 +361,7 @@ func (h *handler) collectFleetMetrics(ctx context.Context) (fleetMetricsSnapshot
 		},
 		runtimeHealthByState: map[labelPair]int{},
 		rolloutsByState:      newRolloutMetricStateCounts(),
+		outdatedRuntimes:     newRuntimeOutdatedMetricCounts(),
 	}
 	for _, node := range nodes {
 		snapshot.nodesByState[node.State]++
@@ -368,6 +372,9 @@ func (h *handler) collectFleetMetrics(ctx context.Context) (fleetMetricsSnapshot
 			}
 			state := runtimeHealthStateLabel(runtime.Health.State)
 			snapshot.runtimeHealthByState[labelPair{left: runtimeType, right: state}]++
+			if runtimeOutdated(runtime, settings.ExpectedRuntimeVersions) {
+				snapshot.outdatedRuntimes[runtimeType]++
+			}
 		}
 		drift, err := h.nodeHasConfigDrift(ctx, node.NodeID, desired)
 		if err != nil {
@@ -418,6 +425,42 @@ func sidecarOutdated(node protocol.NodeStatus, expectedVersion string) bool {
 	return strings.TrimSpace(node.SidecarVersion) != expectedVersion
 }
 
+func runtimeOutdated(runtime protocol.RuntimeStatus, expectedVersions map[string]string) bool {
+	runtimeType := strings.TrimSpace(runtime.Type)
+	if runtimeType == "" {
+		return false
+	}
+	actualVersion := strings.TrimSpace(runtime.Version)
+	if actualVersion == "" {
+		return false
+	}
+	expectedVersion := strings.TrimSpace(expectedVersions[runtimeType])
+	if expectedVersion == "" {
+		return false
+	}
+	return actualVersion != expectedVersion
+}
+
+func withRuntimeOutdatedFlags(runtimes []protocol.RuntimeStatus, expectedVersions map[string]string) []protocol.RuntimeStatus {
+	if len(runtimes) == 0 {
+		return nil
+	}
+	out := make([]protocol.RuntimeStatus, len(runtimes))
+	for i, runtime := range runtimes {
+		out[i] = runtime
+		out[i].Outdated = runtimeOutdated(runtime, expectedVersions)
+	}
+	return out
+}
+
+func newRuntimeOutdatedMetricCounts() map[string]int {
+	out := make(map[string]int, len(supportedExpectedRuntimeVersionTypes))
+	for _, runtimeType := range supportedExpectedRuntimeVersionTypes {
+		out[runtimeType] = 0
+	}
+	return out
+}
+
 func writeFleetMetrics(w http.ResponseWriter, snapshot fleetMetricsSnapshot) {
 	fmt.Fprintln(w, "# HELP sideplane_fleet_nodes Nodes by freshness state.")
 	fmt.Fprintln(w, "# TYPE sideplane_fleet_nodes gauge")
@@ -430,6 +473,11 @@ func writeFleetMetrics(w http.ResponseWriter, snapshot fleetMetricsSnapshot) {
 	fmt.Fprintln(w, "# HELP sideplane_fleet_sidecar_outdated Nodes running a sidecar version other than the expected version.")
 	fmt.Fprintln(w, "# TYPE sideplane_fleet_sidecar_outdated gauge")
 	fmt.Fprintf(w, "sideplane_fleet_sidecar_outdated %d\n", snapshot.outdatedSidecars)
+	fmt.Fprintln(w, "# HELP sideplane_fleet_runtime_outdated Runtimes running a version other than the expected runtime version.")
+	fmt.Fprintln(w, "# TYPE sideplane_fleet_runtime_outdated gauge")
+	for _, runtimeType := range supportedExpectedRuntimeVersionTypes {
+		fmt.Fprintf(w, "sideplane_fleet_runtime_outdated{runtime_type=%q} %d\n", runtimeType, snapshot.outdatedRuntimes[runtimeType])
+	}
 	fmt.Fprintln(w, "# HELP sideplane_runtime_health Runtime health states by runtime type.")
 	fmt.Fprintln(w, "# TYPE sideplane_runtime_health gauge")
 	if len(snapshot.runtimeHealthByState) == 0 {
@@ -662,7 +710,7 @@ func (h *handler) serverSettings(w http.ResponseWriter, r *http.Request) {
 			writeAPIError(w, http.StatusInternalServerError, "get server settings")
 			return
 		}
-		writeJSON(w, http.StatusOK, settings)
+		writeJSON(w, http.StatusOK, normalizeServerSettings(settings))
 	case http.MethodPut:
 		if !h.authorizeOperator(w, r) {
 			return
@@ -677,21 +725,86 @@ func (h *handler) serverSettings(w http.ResponseWriter, r *http.Request) {
 			writeAPIError(w, http.StatusBadRequest, "expectedSidecarVersion is too long")
 			return
 		}
+		settings, err := h.store.GetServerSettings(r.Context())
+		if err != nil {
+			writeAPIError(w, http.StatusInternalServerError, "get server settings")
+			return
+		}
+		settings.ExpectedSidecarVersion = version
+		runtimeVersionsUpdated := req.ExpectedRuntimeVersions != nil
+		if runtimeVersionsUpdated {
+			expectedRuntimeVersions, err := normalizeExpectedRuntimeVersions(req.ExpectedRuntimeVersions)
+			if err != nil {
+				writeAPIError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			settings.ExpectedRuntimeVersions = expectedRuntimeVersions
+		}
 		if err := h.store.SetExpectedSidecarVersion(r.Context(), version); err != nil {
 			writeAPIError(w, http.StatusInternalServerError, "update server settings")
 			return
 		}
+		if runtimeVersionsUpdated {
+			if err := h.store.SetExpectedRuntimeVersions(r.Context(), settings.ExpectedRuntimeVersions); err != nil {
+				writeAPIError(w, http.StatusInternalServerError, "update server settings")
+				return
+			}
+		}
 		h.audit(r.Context(), protocol.AuditEvent{
 			Actor:     audit.ActorOperator,
 			Action:    audit.ActionServerSettingsUpdate,
-			Detail:    fmt.Sprintf("expectedSidecarVersion=%q", version),
+			Detail:    serverSettingsAuditDetail(settings),
 			CreatedAt: time.Now().UTC(),
 		})
-		writeJSON(w, http.StatusOK, protocol.ServerSettings{ExpectedSidecarVersion: version})
+		writeJSON(w, http.StatusOK, normalizeServerSettings(settings))
 	default:
 		w.Header().Set("Allow", "GET, PUT")
 		writeAPIError(w, http.StatusMethodNotAllowed, http.StatusText(http.StatusMethodNotAllowed))
 	}
+}
+
+func normalizeServerSettings(settings protocol.ServerSettings) protocol.ServerSettings {
+	runtimeVersions, _ := normalizeExpectedRuntimeVersions(settings.ExpectedRuntimeVersions)
+	return protocol.ServerSettings{
+		ExpectedSidecarVersion:  strings.TrimSpace(settings.ExpectedSidecarVersion),
+		ExpectedRuntimeVersions: runtimeVersions,
+	}
+}
+
+func normalizeExpectedRuntimeVersions(input map[string]string) (map[string]string, error) {
+	out := map[string]string{}
+	allowed := map[string]struct{}{}
+	for _, runtimeType := range supportedExpectedRuntimeVersionTypes {
+		allowed[runtimeType] = struct{}{}
+	}
+	for runtimeType, version := range input {
+		runtimeType = strings.TrimSpace(runtimeType)
+		version = strings.TrimSpace(version)
+		if runtimeType == "" {
+			continue
+		}
+		if _, ok := allowed[runtimeType]; !ok {
+			return nil, fmt.Errorf("unsupported expected runtime version type %q", runtimeType)
+		}
+		if len(version) > 200 {
+			return nil, fmt.Errorf("expectedRuntimeVersions.%s is too long", runtimeType)
+		}
+		if version == "" {
+			continue
+		}
+		out[runtimeType] = version
+	}
+	return out, nil
+}
+
+func serverSettingsAuditDetail(settings protocol.ServerSettings) string {
+	parts := []string{fmt.Sprintf("expectedSidecarVersion=%q", strings.TrimSpace(settings.ExpectedSidecarVersion))}
+	for _, runtimeType := range supportedExpectedRuntimeVersionTypes {
+		if version := strings.TrimSpace(settings.ExpectedRuntimeVersions[runtimeType]); version != "" {
+			parts = append(parts, fmt.Sprintf("expectedRuntimeVersions.%s=%q", runtimeType, version))
+		}
+	}
+	return strings.Join(parts, " ")
 }
 
 func (h *handler) alertWebhooks(w http.ResponseWriter, r *http.Request) {
@@ -941,6 +1054,7 @@ func (h *handler) nodes(w http.ResponseWriter, r *http.Request) {
 			writeAPIError(w, http.StatusInternalServerError, "get actual config")
 			return
 		}
+		node.Runtimes = withRuntimeOutdatedFlags(node.Runtimes, settings.ExpectedRuntimeVersions)
 		response[i] = protocol.NodeStatusWithDrift{
 			NodeStatus:      node,
 			Drift:           drift,

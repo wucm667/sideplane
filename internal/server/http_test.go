@@ -1266,6 +1266,147 @@ func TestSidecarOutdatedFlagAndMetric(t *testing.T) {
 	}
 }
 
+func TestRuntimeOutdatedFlagAndMetric(t *testing.T) {
+	ctx := context.Background()
+	nodeStore := store.NewMemoryNodeStore()
+	now := time.Now().UTC()
+	heartbeats := map[string][]protocol.RuntimeStatus{
+		"node-hermes-old": {
+			{Name: "hermes", Type: "hermes", Version: "v1.0.0"},
+		},
+		"node-hermes-unknown": {
+			{Name: "hermes", Type: "hermes"},
+		},
+		"node-openclaw-match": {
+			{Name: "openclaw", Type: "openclaw", Version: "v3.0.0"},
+		},
+		"node-openclaw-old": {
+			{Name: "openclaw", Type: "openclaw", Version: "v4.0.0"},
+		},
+	}
+	for nodeID, runtimes := range heartbeats {
+		enrollTestNode(t, nodeStore, nodeID)
+		if _, err := nodeStore.RecordHeartbeat(ctx, protocol.HeartbeatRequest{NodeID: nodeID, Runtimes: runtimes}, now); err != nil {
+			t.Fatalf("heartbeat %s: %v", nodeID, err)
+		}
+	}
+	handler, err := NewHandlerWithConfig(HandlerConfig{
+		Store:         nodeStore,
+		Freshness:     DefaultFreshnessPolicy(),
+		OperatorToken: "dev-token",
+	})
+	if err != nil {
+		t.Fatalf("build handler: %v", err)
+	}
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	nodes := doJSONRequest[protocol.ListNodesResponse](t, server.Client(), http.MethodGet, server.URL+"/api/nodes", "dev-token", nil)
+	for _, node := range nodes.Nodes {
+		for _, runtime := range node.Runtimes {
+			if runtime.Outdated {
+				t.Fatalf("runtime unexpectedly outdated before expected versions: node=%s runtime=%+v", node.NodeID, runtime)
+			}
+		}
+	}
+
+	updated := doJSONRequest[protocol.ServerSettings](t, server.Client(), http.MethodPut, server.URL+"/api/settings", "dev-token", protocol.UpdateServerSettingsRequest{
+		ExpectedSidecarVersion: "",
+		ExpectedRuntimeVersions: map[string]string{
+			"hermes":   "v2.0.0",
+			"openclaw": "v3.0.0",
+		},
+	})
+	if updated.ExpectedRuntimeVersions["hermes"] != "v2.0.0" || updated.ExpectedRuntimeVersions["openclaw"] != "v3.0.0" {
+		t.Fatalf("updated settings = %+v, want expected runtime versions", updated)
+	}
+
+	nodes = doJSONRequest[protocol.ListNodesResponse](t, server.Client(), http.MethodGet, server.URL+"/api/nodes", "dev-token", nil)
+	runtimesByNode := map[string]protocol.RuntimeStatus{}
+	for _, node := range nodes.Nodes {
+		if len(node.Runtimes) != 1 {
+			t.Fatalf("node %s runtimes = %#v, want one runtime", node.NodeID, node.Runtimes)
+		}
+		runtimesByNode[node.NodeID] = node.Runtimes[0]
+	}
+	if !runtimesByNode["node-hermes-old"].Outdated {
+		t.Fatalf("node-hermes-old runtime = %+v, want outdated", runtimesByNode["node-hermes-old"])
+	}
+	if runtimesByNode["node-hermes-unknown"].Outdated {
+		t.Fatalf("node-hermes-unknown runtime = %+v, want not outdated without actual version", runtimesByNode["node-hermes-unknown"])
+	}
+	if runtimesByNode["node-openclaw-match"].Outdated {
+		t.Fatalf("node-openclaw-match runtime = %+v, want not outdated when matching", runtimesByNode["node-openclaw-match"])
+	}
+	if !runtimesByNode["node-openclaw-old"].Outdated {
+		t.Fatalf("node-openclaw-old runtime = %+v, want outdated", runtimesByNode["node-openclaw-old"])
+	}
+
+	metricsRes, err := server.Client().Get(server.URL + "/metrics")
+	if err != nil {
+		t.Fatalf("get metrics: %v", err)
+	}
+	metricsBody, _ := io.ReadAll(metricsRes.Body)
+	metricsRes.Body.Close()
+	body := string(metricsBody)
+	for _, want := range []string{
+		`sideplane_fleet_runtime_outdated{runtime_type="hermes"} 1`,
+		`sideplane_fleet_runtime_outdated{runtime_type="openclaw"} 1`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("metrics missing %q; body=%s", want, body)
+		}
+	}
+
+	updated = doJSONRequest[protocol.ServerSettings](t, server.Client(), http.MethodPut, server.URL+"/api/settings", "dev-token", protocol.UpdateServerSettingsRequest{
+		ExpectedSidecarVersion: "",
+		ExpectedRuntimeVersions: map[string]string{
+			"hermes": "v1.0.0",
+		},
+	})
+	if _, ok := updated.ExpectedRuntimeVersions["openclaw"]; ok {
+		t.Fatalf("updated settings = %+v, want openclaw cleared", updated)
+	}
+	nodes = doJSONRequest[protocol.ListNodesResponse](t, server.Client(), http.MethodGet, server.URL+"/api/nodes", "dev-token", nil)
+	for _, node := range nodes.Nodes {
+		for _, runtime := range node.Runtimes {
+			if runtime.Outdated {
+				t.Fatalf("runtime unexpectedly outdated after matching/missing expected version: node=%s runtime=%+v", node.NodeID, runtime)
+			}
+		}
+	}
+}
+
+func TestRuntimeExpectedVersionSettingsRejectUnsupportedRuntimeType(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	handler, err := NewHandlerWithConfig(HandlerConfig{
+		Store:         nodeStore,
+		Freshness:     DefaultFreshnessPolicy(),
+		OperatorToken: "dev-token",
+	})
+	if err != nil {
+		t.Fatalf("build handler: %v", err)
+	}
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	var payload bytes.Buffer
+	_ = json.NewEncoder(&payload).Encode(protocol.UpdateServerSettingsRequest{
+		ExpectedRuntimeVersions: map[string]string{"custom": "v1.0.0"},
+	})
+	req, _ := http.NewRequest(http.MethodPut, server.URL+"/api/settings", &payload)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer dev-token")
+	res, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatalf("put settings: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", res.StatusCode)
+	}
+}
+
 func TestServerSettingsUpdateRequiresOperatorAuth(t *testing.T) {
 	nodeStore := store.NewMemoryNodeStore()
 	handler, err := NewHandlerWithConfig(HandlerConfig{
@@ -5284,6 +5425,10 @@ func (s staticNodeStore) GetServerSettings(context.Context) (protocol.ServerSett
 }
 
 func (s staticNodeStore) SetExpectedSidecarVersion(context.Context, string) error {
+	return nil
+}
+
+func (s staticNodeStore) SetExpectedRuntimeVersions(context.Context, map[string]string) error {
 	return nil
 }
 

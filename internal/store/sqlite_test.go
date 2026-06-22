@@ -572,9 +572,15 @@ func TestSQLiteNodeStoreServerSettingsPersistAcrossReopen(t *testing.T) {
 	if err := first.SetExpectedSidecarVersion(ctx, "v2.0.0"); err != nil {
 		t.Fatalf("set expected version: %v", err)
 	}
+	if err := first.SetExpectedRuntimeVersions(ctx, map[string]string{"hermes": "v2026.5.1"}); err != nil {
+		t.Fatalf("set expected runtime versions: %v", err)
+	}
 	// Upsert path: a second write replaces the single row.
 	if err := first.SetExpectedSidecarVersion(ctx, "v2.1.0"); err != nil {
 		t.Fatalf("update expected version: %v", err)
+	}
+	if err := first.SetExpectedRuntimeVersions(ctx, map[string]string{"hermes": "v2026.5.2", "openclaw": "v2026.5.3"}); err != nil {
+		t.Fatalf("update expected runtime versions: %v", err)
 	}
 	if err := first.Close(); err != nil {
 		t.Fatalf("close store: %v", err)
@@ -591,6 +597,9 @@ func TestSQLiteNodeStoreServerSettingsPersistAcrossReopen(t *testing.T) {
 	}
 	if settings.ExpectedSidecarVersion != "v2.1.0" {
 		t.Fatalf("expected version = %q, want persisted v2.1.0", settings.ExpectedSidecarVersion)
+	}
+	if settings.ExpectedRuntimeVersions["hermes"] != "v2026.5.2" || settings.ExpectedRuntimeVersions["openclaw"] != "v2026.5.3" {
+		t.Fatalf("expected runtime versions = %#v, want persisted map", settings.ExpectedRuntimeVersions)
 	}
 }
 

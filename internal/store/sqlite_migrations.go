@@ -299,6 +299,13 @@ ON heartbeats(node_id, observed_at DESC)`,
 			`ALTER TABLE alert_webhooks ADD COLUMN kind TEXT NOT NULL DEFAULT 'generic'`,
 		},
 	},
+	{
+		version: 19,
+		name:    "add expected runtime versions",
+		statements: []string{
+			`ALTER TABLE server_settings ADD COLUMN expected_runtime_versions_json TEXT NOT NULL DEFAULT '{}'`,
+		},
+	},
 }
 
 // LatestSQLiteSchemaVersion returns the newest migration version compiled into

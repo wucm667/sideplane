@@ -1321,14 +1321,22 @@ func (s *SQLiteNodeStore) GetServerSettings(ctx context.Context) (protocol.Serve
 		return protocol.ServerSettings{}, errors.New("sqlite node store is closed")
 	}
 	var version string
-	err := s.db.QueryRowContext(ctx, `SELECT expected_sidecar_version FROM server_settings WHERE id = 1`).Scan(&version)
+	var runtimeVersionsJSON string
+	err := s.db.QueryRowContext(ctx, `SELECT expected_sidecar_version, expected_runtime_versions_json FROM server_settings WHERE id = 1`).Scan(&version, &runtimeVersionsJSON)
 	if errors.Is(err, sql.ErrNoRows) {
-		return protocol.ServerSettings{}, nil
+		return protocol.ServerSettings{ExpectedRuntimeVersions: map[string]string{}}, nil
 	}
 	if err != nil {
 		return protocol.ServerSettings{}, fmt.Errorf("query server settings: %w", err)
 	}
-	return protocol.ServerSettings{ExpectedSidecarVersion: version}, nil
+	runtimeVersions, err := decodeExpectedRuntimeVersions(runtimeVersionsJSON)
+	if err != nil {
+		return protocol.ServerSettings{}, err
+	}
+	return protocol.ServerSettings{
+		ExpectedSidecarVersion:  version,
+		ExpectedRuntimeVersions: runtimeVersions,
+	}, nil
 }
 
 // SetExpectedSidecarVersion records the operator-configured expected sidecar version.
@@ -1344,6 +1352,26 @@ ON CONFLICT(id) DO UPDATE SET expected_sidecar_version = excluded.expected_sidec
 `, version)
 	if err != nil {
 		return fmt.Errorf("set expected sidecar version: %w", err)
+	}
+	return nil
+}
+
+// SetExpectedRuntimeVersions records operator-configured expected runtime versions.
+func (s *SQLiteNodeStore) SetExpectedRuntimeVersions(ctx context.Context, versions map[string]string) error {
+	if s == nil || s.db == nil {
+		return errors.New("sqlite node store is closed")
+	}
+	encoded, err := encodeExpectedRuntimeVersions(versions)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `
+INSERT INTO server_settings (id, expected_runtime_versions_json)
+VALUES (1, ?)
+ON CONFLICT(id) DO UPDATE SET expected_runtime_versions_json = excluded.expected_runtime_versions_json
+`, encoded)
+	if err != nil {
+		return fmt.Errorf("set expected runtime versions: %w", err)
 	}
 	return nil
 }

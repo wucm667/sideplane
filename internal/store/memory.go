@@ -59,6 +59,9 @@ func NewMemoryNodeStore() *MemoryNodeStore {
 		jobs:             make(map[string]protocol.Job),
 		rollouts:         make(map[string]protocol.Rollout),
 		auditEvents:      []protocol.AuditEvent{},
+		settings: protocol.ServerSettings{
+			ExpectedRuntimeVersions: map[string]string{},
+		},
 	}
 }
 
@@ -677,7 +680,7 @@ func (s *MemoryNodeStore) DeleteRolloutTemplate(_ context.Context, id string) er
 func (s *MemoryNodeStore) GetServerSettings(context.Context) (protocol.ServerSettings, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.settings, nil
+	return cloneServerSettings(s.settings), nil
 }
 
 // SetExpectedSidecarVersion records the operator-configured expected sidecar version.
@@ -685,6 +688,17 @@ func (s *MemoryNodeStore) SetExpectedSidecarVersion(_ context.Context, version s
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.settings.ExpectedSidecarVersion = strings.TrimSpace(version)
+	if s.settings.ExpectedRuntimeVersions == nil {
+		s.settings.ExpectedRuntimeVersions = map[string]string{}
+	}
+	return nil
+}
+
+// SetExpectedRuntimeVersions records operator-configured expected runtime versions.
+func (s *MemoryNodeStore) SetExpectedRuntimeVersions(_ context.Context, versions map[string]string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.settings.ExpectedRuntimeVersions = cloneExpectedRuntimeVersions(versions)
 	return nil
 }
 

@@ -524,9 +524,15 @@ func TestMemoryNodeStoreServerSettingsExpectedSidecarVersion(t *testing.T) {
 	if settings.ExpectedSidecarVersion != "" {
 		t.Fatalf("default expected version = %q, want empty", settings.ExpectedSidecarVersion)
 	}
+	if len(settings.ExpectedRuntimeVersions) != 0 {
+		t.Fatalf("default expected runtime versions = %#v, want empty", settings.ExpectedRuntimeVersions)
+	}
 
 	if err := store.SetExpectedSidecarVersion(ctx, "  v1.2.3  "); err != nil {
 		t.Fatalf("set expected version: %v", err)
+	}
+	if err := store.SetExpectedRuntimeVersions(ctx, map[string]string{" hermes ": " v2026.5.1 ", "openclaw": ""}); err != nil {
+		t.Fatalf("set expected runtime versions: %v", err)
 	}
 	settings, err = store.GetServerSettings(ctx)
 	if err != nil {
@@ -535,13 +541,27 @@ func TestMemoryNodeStoreServerSettingsExpectedSidecarVersion(t *testing.T) {
 	if settings.ExpectedSidecarVersion != "v1.2.3" {
 		t.Fatalf("expected version = %q, want trimmed v1.2.3", settings.ExpectedSidecarVersion)
 	}
+	if settings.ExpectedRuntimeVersions["hermes"] != "v2026.5.1" || len(settings.ExpectedRuntimeVersions) != 1 {
+		t.Fatalf("expected runtime versions = %#v, want trimmed hermes only", settings.ExpectedRuntimeVersions)
+	}
+	settings.ExpectedRuntimeVersions["hermes"] = "mutated"
+	settings, _ = store.GetServerSettings(ctx)
+	if settings.ExpectedRuntimeVersions["hermes"] != "v2026.5.1" {
+		t.Fatalf("expected runtime versions mutated through returned map: %#v", settings.ExpectedRuntimeVersions)
+	}
 
 	if err := store.SetExpectedSidecarVersion(ctx, ""); err != nil {
 		t.Fatalf("clear expected version: %v", err)
 	}
+	if err := store.SetExpectedRuntimeVersions(ctx, map[string]string{}); err != nil {
+		t.Fatalf("clear expected runtime versions: %v", err)
+	}
 	settings, _ = store.GetServerSettings(ctx)
 	if settings.ExpectedSidecarVersion != "" {
 		t.Fatalf("expected version after clear = %q, want empty", settings.ExpectedSidecarVersion)
+	}
+	if len(settings.ExpectedRuntimeVersions) != 0 {
+		t.Fatalf("expected runtime versions after clear = %#v, want empty", settings.ExpectedRuntimeVersions)
 	}
 }
 
