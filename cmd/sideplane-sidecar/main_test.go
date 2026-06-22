@@ -84,11 +84,13 @@ func TestSidecarEnvFallbacksResolveWhenFlagsEmpty(t *testing.T) {
 	t.Setenv("SIDEPLANE_OPENCLAW_SERVICE_UNIT", "openclaw-env.service")
 	t.Setenv("SIDEPLANE_SERVER_PUBLIC_KEY", "env-public-key")
 	t.Setenv("SIDEPLANE_APPLY_WORK_DIR", "/var/lib/sideplane/apply")
+	t.Setenv("SIDEPLANE_SERVICE_RESTART_USE_SUDO", "true")
 
 	var serverURL, nodeID, state string
 	heartbeatInterval := 30 * time.Second
 	jobPollInterval := 30 * time.Second
 	var hermesConfigPaths, openclawConfigPaths, hermesDockerContainer, hermesServiceUnit, openclawDockerContainer, openclawServiceUnit, serverPublicKey, applyWorkDir string
+	serviceRestartUseSudo := false
 
 	if err := applySidecarEnvFallbacks(map[string]bool{}, sidecarFlagValues{
 		serverURL:               &serverURL,
@@ -104,6 +106,7 @@ func TestSidecarEnvFallbacksResolveWhenFlagsEmpty(t *testing.T) {
 		openclawServiceUnit:     &openclawServiceUnit,
 		serverPublicKey:         &serverPublicKey,
 		applyWorkDir:            &applyWorkDir,
+		serviceRestartUseSudo:   &serviceRestartUseSudo,
 	}); err != nil {
 		t.Fatalf("apply env fallbacks: %v", err)
 	}
@@ -141,6 +144,21 @@ func TestSidecarEnvFallbacksResolveWhenFlagsEmpty(t *testing.T) {
 	}
 	if serverPublicKey != "env-public-key" || applyWorkDir != "/var/lib/sideplane/apply" {
 		t.Fatalf("apply settings = %q/%q, want env values", serverPublicKey, applyWorkDir)
+	}
+	if !serviceRestartUseSudo {
+		t.Fatal("serviceRestartUseSudo = false, want env true")
+	}
+}
+
+func TestSidecarEnvFallbacksRejectInvalidRestartSudoBool(t *testing.T) {
+	t.Setenv("SIDEPLANE_SERVICE_RESTART_USE_SUDO", "sometimes")
+	serviceRestartUseSudo := false
+
+	err := applySidecarEnvFallbacks(map[string]bool{}, sidecarFlagValues{
+		serviceRestartUseSudo: &serviceRestartUseSudo,
+	})
+	if err == nil || !strings.Contains(err.Error(), "SIDEPLANE_SERVICE_RESTART_USE_SUDO") {
+		t.Fatalf("error = %v, want env name in parse error", err)
 	}
 }
 
@@ -195,12 +213,13 @@ func TestDoctorReportsStateAndReadableConfigWithoutCredential(t *testing.T) {
 		"--apply-work-dir", filepath.Join(dir, "apply"),
 		"--server-public-key", publicKey,
 		"--allow-live-apply",
+		"--service-restart-use-sudo",
 	}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("run returned %d, stderr=%q", code, stderr.String())
 	}
 	output := stdout.String()
-	for _, want := range []string{"Server URL: http://state-server:8080", "State found: yes", "Node ID: state-node", "Live apply: yes", "Public key: valid", configPath + " readable"} {
+	for _, want := range []string{"Server URL: http://state-server:8080", "State found: yes", "Node ID: state-node", "Live apply: yes", "Service restart sudo: yes", "Public key: valid", configPath + " readable"} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("doctor output missing %q:\n%s", want, output)
 		}

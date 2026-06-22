@@ -226,6 +226,25 @@ external networks, or restart anything. Health is shown on the node runtime card
 and in `sideplane node inspect`, and degraded runtimes are counted by a metric
 gauge.
 
+## Systemd Restart Privileges
+
+Live apply and live restart of a systemd system unit require the sidecar to have
+permission to restart that unit. For a non-root sidecar, start it with
+`--service-restart-use-sudo` (or `SIDEPLANE_SERVICE_RESTART_USE_SUDO=true`) and
+grant a narrowly scoped `NOPASSWD` sudoers rule for the exact managed unit:
+
+```sudoers
+sideplane ALL=(root) NOPASSWD: /bin/systemctl restart hermes-gateway.service
+```
+
+This changes only the allowlisted restart command from
+`systemctl restart <unit>` to `sudo -n systemctl restart <unit>`. Read-only
+health checks still run `systemctl is-active <unit>` without sudo, Docker
+restarts are unchanged, and Sideplane still does not expose arbitrary command
+execution. Prefer a unit-specific sudoers rule over running the entire sidecar
+as root. Running the sidecar as root remains an option when that operational
+tradeoff is acceptable.
+
 ## TLS And Reverse Proxy
 
 The server speaks plain HTTP by default. To terminate TLS in-process, set both

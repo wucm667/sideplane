@@ -75,6 +75,19 @@ func TestRestartSystemdUnit(t *testing.T) {
 	}
 }
 
+func TestRestartSystemdUnitWithSudo(t *testing.T) {
+	runner := &recordingRunner{}
+	adapter := NewAdapter(WithServiceUnit("openclaw.service"), WithAllowLiveApply(true), WithRestartSudo(true))
+	adapter.runCommand = runner.run
+
+	if err := adapter.Restart(context.Background()); err != nil {
+		t.Fatalf("Restart: %v", err)
+	}
+	if got := runner.joined(); len(got) != 1 || got[0] != "sudo -n systemctl restart openclaw.service" {
+		t.Fatalf("calls = %v, want [sudo -n systemctl restart openclaw.service]", got)
+	}
+}
+
 func TestRestartPrefersDockerContainerOverSystemdUnit(t *testing.T) {
 	runner := &recordingRunner{}
 	adapter := NewAdapter(WithDockerContainer("openclaw"), WithServiceUnit("openclaw.service"), WithAllowLiveApply(true))
@@ -107,11 +120,14 @@ func TestHealthCheckSystemdActive(t *testing.T) {
 		}
 		return nil, errors.New("unexpected call")
 	}}
-	adapter := NewAdapter(WithServiceUnit("openclaw.service"), WithAllowLiveApply(true))
+	adapter := NewAdapter(WithServiceUnit("openclaw.service"), WithAllowLiveApply(true), WithRestartSudo(true))
 	adapter.runCommand = runner.run
 
 	if err := adapter.HealthCheck(context.Background()); err != nil {
 		t.Fatalf("HealthCheck: %v", err)
+	}
+	if got := runner.joined(); len(got) != 1 || got[0] != "systemctl is-active openclaw.service" {
+		t.Fatalf("calls = %v, want read-only systemctl is-active without sudo", got)
 	}
 }
 

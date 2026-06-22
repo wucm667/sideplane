@@ -101,6 +101,19 @@ func TestRestartSystemdUnit(t *testing.T) {
 	}
 }
 
+func TestRestartSystemdUnitWithSudo(t *testing.T) {
+	runner := &recordingRunner{}
+	a := NewAdapter(WithServiceUnit("hermes.service"), WithAllowLiveApply(true), WithRestartSudo(true))
+	a.runCommand = runner.run
+
+	if err := a.Restart(context.Background()); err != nil {
+		t.Fatalf("Restart: %v", err)
+	}
+	if got := runner.joined(); len(got) != 1 || got[0] != "sudo -n systemctl restart hermes.service" {
+		t.Errorf("calls = %v, want [sudo -n systemctl restart hermes.service]", got)
+	}
+}
+
 func TestRestartNoTarget(t *testing.T) {
 	a := NewAdapter(WithAllowLiveApply(true))
 	a.runCommand = (&recordingRunner{}).run
@@ -152,11 +165,14 @@ func TestHealthCheckSystemdActive(t *testing.T) {
 		}
 		return nil, errors.New("unexpected call")
 	}}
-	a := NewAdapter(WithServiceUnit("hermes.service"), WithAllowLiveApply(true))
+	a := NewAdapter(WithServiceUnit("hermes.service"), WithAllowLiveApply(true), WithRestartSudo(true))
 	a.runCommand = runner.run
 
 	if err := a.HealthCheck(context.Background()); err != nil {
 		t.Fatalf("HealthCheck: %v", err)
+	}
+	if got := runner.joined(); len(got) != 1 || got[0] != "systemctl is-active hermes.service" {
+		t.Fatalf("calls = %v, want read-only systemctl is-active without sudo", got)
 	}
 }
 

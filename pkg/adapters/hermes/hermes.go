@@ -31,6 +31,7 @@ type Adapter struct {
 	configPaths     []string
 	container       string
 	serviceUnitName string
+	restartSudo     bool
 	allowLive       bool
 	getenv          func(string) string
 }

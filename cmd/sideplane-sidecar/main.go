@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -53,6 +54,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	serverPublicKey := flags.String("server-public-key", "", "base64 ed25519 server public key for signed config plans")
 	applyWorkDir := flags.String("apply-work-dir", "", "sidecar-controlled work directory for config apply dry runs")
 	allowLiveApply := flags.Bool("allow-live-apply", false, "DANGEROUS: allow live config replace and restart; off by default (dry-run only)")
+	serviceRestartUseSudo := flags.Bool("service-restart-use-sudo", false, "run allowlisted systemd restarts through sudo -n; can also be set with SIDEPLANE_SERVICE_RESTART_USE_SUDO")
 	showVersion := flags.Bool("version", false, "print version and exit")
 	if err := flags.Parse(args); err != nil {
 		return 2
@@ -78,6 +80,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		openclawServiceUnit:     openclawServiceUnit,
 		serverPublicKey:         serverPublicKey,
 		applyWorkDir:            applyWorkDir,
+		serviceRestartUseSudo:   serviceRestartUseSudo,
 	}); err != nil {
 		fmt.Fprintf(stderr, "invalid environment configuration: %v\n", err)
 		return 1
@@ -109,6 +112,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		hermesOptions = append(hermesOptions, hermes.WithServiceUnit(value))
 	}
 	hermesOptions = append(hermesOptions, hermes.WithAllowLiveApply(*allowLiveApply))
+	hermesOptions = append(hermesOptions, hermes.WithRestartSudo(*serviceRestartUseSudo))
 	hermesAdapter := hermes.NewAdapter(hermesOptions...)
 
 	openclawOptions := []openclaw.Option{}
@@ -122,6 +126,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		openclawOptions = append(openclawOptions, openclaw.WithServiceUnit(value))
 	}
 	openclawOptions = append(openclawOptions, openclaw.WithAllowLiveApply(*allowLiveApply))
+	openclawOptions = append(openclawOptions, openclaw.WithRestartSudo(*serviceRestartUseSudo))
 	openclawAdapter := openclaw.NewAdapter(openclawOptions...)
 	reg := registry.New(hermesAdapter, openclawAdapter)
 
@@ -195,6 +200,7 @@ type doctorReport struct {
 	OpenClawConfigPaths     []sidecar.PathStatus `json:"openclawConfigPaths"`
 	ApplyWorkDir            string               `json:"applyWorkDir"`
 	LiveApplyEnabled        bool                 `json:"liveApplyEnabled"`
+	ServiceRestartUseSudo   bool                 `json:"serviceRestartUseSudo"`
 	PublicKeyStatus         string               `json:"publicKeyStatus"`
 	HermesDockerContainer   string               `json:"hermesDockerContainer,omitempty"`
 	HermesServiceUnit       string               `json:"hermesServiceUnit,omitempty"`
@@ -220,6 +226,7 @@ func runDoctor(args []string, stdout io.Writer, stderr io.Writer) int {
 	serverPublicKey := flags.String("server-public-key", "", "base64 ed25519 server public key for signed config plans")
 	applyWorkDir := flags.String("apply-work-dir", "", "sidecar-controlled work directory for config apply dry runs")
 	allowLiveApply := flags.Bool("allow-live-apply", false, "report live config apply as enabled")
+	serviceRestartUseSudo := flags.Bool("service-restart-use-sudo", false, "report systemd restart sudo mode as enabled; can also be set with SIDEPLANE_SERVICE_RESTART_USE_SUDO")
 	jsonOutput := flags.Bool("json", false, "print JSON output")
 	if err := flags.Parse(args); err != nil {
 		return 2
@@ -244,6 +251,7 @@ func runDoctor(args []string, stdout io.Writer, stderr io.Writer) int {
 		openclawServiceUnit:     openclawServiceUnit,
 		serverPublicKey:         serverPublicKey,
 		applyWorkDir:            applyWorkDir,
+		serviceRestartUseSudo:   serviceRestartUseSudo,
 	}); err != nil {
 		fmt.Fprintf(stderr, "invalid environment configuration: %v\n", err)
 		return 1
@@ -275,6 +283,7 @@ func runDoctor(args []string, stdout io.Writer, stderr io.Writer) int {
 		OpenClawConfigPaths:     sidecar.CheckReadablePaths(splitPathList(*openclawConfigPaths)),
 		ApplyWorkDir:            workDir,
 		LiveApplyEnabled:        *allowLiveApply,
+		ServiceRestartUseSudo:   *serviceRestartUseSudo,
 		PublicKeyStatus:         publicKeyStatus(*serverPublicKey),
 		HermesDockerContainer:   strings.TrimSpace(*hermesDockerContainer),
 		HermesServiceUnit:       strings.TrimSpace(*hermesServiceUnit),
@@ -313,6 +322,7 @@ func printDoctorReport(w io.Writer, report doctorReport) {
 	fmt.Fprintf(w, "Node ID: %s\n", valueOrDash(report.NodeID))
 	fmt.Fprintf(w, "Apply work dir: %s\n", report.ApplyWorkDir)
 	fmt.Fprintf(w, "Live apply: %s\n", yesNo(report.LiveApplyEnabled))
+	fmt.Fprintf(w, "Service restart sudo: %s\n", yesNo(report.ServiceRestartUseSudo))
 	fmt.Fprintf(w, "Public key: %s\n", report.PublicKeyStatus)
 	fmt.Fprintf(w, "Hermes docker container: %s\n", valueOrDash(report.HermesDockerContainer))
 	fmt.Fprintf(w, "Hermes service unit: %s\n", valueOrDash(report.HermesServiceUnit))
@@ -369,6 +379,7 @@ type sidecarFlagValues struct {
 	openclawServiceUnit     *string
 	serverPublicKey         *string
 	applyWorkDir            *string
+	serviceRestartUseSudo   *bool
 }
 
 func visitedFlags(flags *flag.FlagSet) map[string]bool {
@@ -391,6 +402,9 @@ func applySidecarEnvFallbacks(setFlags map[string]bool, values sidecarFlagValues
 	applyStringEnvFallback(setFlags, "openclaw-service-unit", "SIDEPLANE_OPENCLAW_SERVICE_UNIT", values.openclawServiceUnit)
 	applyStringEnvFallback(setFlags, "server-public-key", "SIDEPLANE_SERVER_PUBLIC_KEY", values.serverPublicKey)
 	applyStringEnvFallback(setFlags, "apply-work-dir", "SIDEPLANE_APPLY_WORK_DIR", values.applyWorkDir)
+	if err := applyBoolEnvFallback(setFlags, "service-restart-use-sudo", "SIDEPLANE_SERVICE_RESTART_USE_SUDO", values.serviceRestartUseSudo); err != nil {
+		return err
+	}
 	if err := applyDurationEnvFallback(setFlags, "heartbeat-interval", "SIDEPLANE_HEARTBEAT_INTERVAL", values.heartbeatInterval); err != nil {
 		return err
 	}
@@ -418,6 +432,22 @@ func applyDurationEnvFallback(setFlags map[string]bool, flagName string, envName
 		return nil
 	}
 	parsed, err := time.ParseDuration(envValue)
+	if err != nil {
+		return fmt.Errorf("%s: %w", envName, err)
+	}
+	*value = parsed
+	return nil
+}
+
+func applyBoolEnvFallback(setFlags map[string]bool, flagName string, envName string, value *bool) error {
+	if value == nil || setFlags[flagName] {
+		return nil
+	}
+	envValue := strings.TrimSpace(os.Getenv(envName))
+	if envValue == "" {
+		return nil
+	}
+	parsed, err := strconv.ParseBool(envValue)
 	if err != nil {
 		return fmt.Errorf("%s: %w", envName, err)
 	}

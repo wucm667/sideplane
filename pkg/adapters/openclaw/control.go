@@ -28,6 +28,14 @@ func WithServiceUnit(unit string) Option {
 	}
 }
 
+// WithRestartSudo prefixes systemd restart with sudo -n when enabled.
+// It applies only to the allowlisted systemctl restart path.
+func WithRestartSudo(useSudo bool) Option {
+	return func(a *Adapter) {
+		a.restartSudo = useSudo
+	}
+}
+
 // Restart restarts the managed OpenClaw runtime using an allowlisted operation:
 // a Docker container restart when a container is configured, otherwise a
 // systemd unit restart. It never offers general command execution.
@@ -42,7 +50,7 @@ func (a *Adapter) Restart(ctx context.Context) error {
 		return nil
 	}
 	if unit := a.serviceUnit(); unit != "" {
-		if _, err := a.runControl(ctx, "systemctl", "restart", unit); err != nil {
+		if _, err := a.runSystemdRestart(ctx, unit); err != nil {
 			return fmt.Errorf("restart openclaw service %s: %w", unit, err)
 		}
 		return nil
@@ -142,6 +150,13 @@ func (a *Adapter) runControl(ctx context.Context, name string, args ...string) (
 		runner = runCommand
 	}
 	return runner(ctx, name, args...)
+}
+
+func (a *Adapter) runSystemdRestart(ctx context.Context, unit string) ([]byte, error) {
+	if a.restartSudo {
+		return a.runControl(ctx, "sudo", "-n", "systemctl", "restart", unit)
+	}
+	return a.runControl(ctx, "systemctl", "restart", unit)
 }
 
 func runCommand(ctx context.Context, name string, args ...string) ([]byte, error) {
