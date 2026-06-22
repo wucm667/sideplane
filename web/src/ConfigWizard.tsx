@@ -262,7 +262,7 @@ export default function ConfigWizard({
 
   const terminal = applyStatus === 'completed' || applyStatus === 'failed'
   const rollback = rollbackStep(applyResult)
-  const terminalCopy = terminal ? applyTerminalMessage(applyStatus, applyResult, t) : ''
+  const terminalCopy = terminal ? applyTerminalMessage(applyStatus, applyResult, error, t) : ''
 
   return (
     <div className="fixed inset-0 z-50 flex justify-end bg-black/40" role="dialog" aria-modal="true" aria-labelledby="config-wizard-title" onKeyDown={onDialogKeyDown}>
@@ -356,7 +356,7 @@ export default function ConfigWizard({
               </div>
               <div className="grid gap-1.5">
                 {PIPELINE_STEPS.map((entry) => (
-                  <PipelineRow key={entry.name} label={t(entry.labelKey)} status={stepStatus(applyResult, entry.name)} />
+                  <PipelineRow key={entry.name} label={t(entry.labelKey)} status={stepStatus(applyResult, entry.name, error)} />
                 ))}
                 {rollback && <PipelineRow label={t('wizard.step.rollback')} status={rollback.status} />}
               </div>
@@ -441,8 +441,13 @@ function desiredHistoryLabel(desired: DesiredConfig, t: TFunction): string {
   return t('wizard.history.defaultEmpty')
 }
 
-function stepStatus(result: ConfigApplyResult | null, name: string): string {
+const LIVE_APPLY_POLICY_REJECTION = 'live config apply is disabled by sidecar policy'
+
+export function stepStatus(result: ConfigApplyResult | null, name: string, failureError: string | null = ''): string {
   const step = result?.steps.find((entry) => entry.name === name)
+  if (step?.status === 'failed' && name === 'validated' && isPolicyRejectedLiveApply(result, failureError)) {
+    return 'pending'
+  }
   return step?.status ?? 'pending'
 }
 
@@ -459,21 +464,50 @@ function rollbackOutcome(result: ConfigApplyResult | null): 'completed' | 'faile
   return 'unknown'
 }
 
-function applyTerminalMessage(status: Job['status'] | null, result: ConfigApplyResult | null, t: TFunction): string {
+export function applyTerminalMessage(status: Job['status'] | null, result: ConfigApplyResult | null, failureError: string | null, t: TFunction): string {
   if (status === 'completed') {
     return result?.dryRun ? t('wizard.result.dryRunCompleted') : t('wizard.result.liveCompleted')
   }
   if (status !== 'failed') return ''
+  const failureMessage = preExecutionFailureMessage(result, failureError)
   switch (rollbackOutcome(result)) {
     case 'completed':
       return t('wizard.result.failedRollbackCompleted')
     case 'failed':
       return t('wizard.result.failedRollbackFailed')
     case 'not_recorded':
+      if (failureMessage) return failureMessage
       return t('wizard.result.failedNoRollback')
     case 'unknown':
+      if (failureMessage) return failureMessage
       return t('wizard.result.failedRollbackUnknown')
   }
+}
+
+function preExecutionFailureMessage(result: ConfigApplyResult | null, failureError: string | null): string {
+  const message = stringsFirst(failureError, firstFailedStep(result)?.detail)
+  if (!message) return ''
+  if (!result || (result.steps ?? []).length === 0) return message
+  if (isPolicyRejectedLiveApply(result, message)) return message
+  if (!firstFailedStep(result)) return message
+  return ''
+}
+
+function firstFailedStep(result: ConfigApplyResult | null): ConfigApplyStep | undefined {
+  return result?.steps.find((entry) => entry.status === 'failed')
+}
+
+function isPolicyRejectedLiveApply(result: ConfigApplyResult | null, failureError: string | null = ''): boolean {
+  const text = [failureError, ...(result?.steps ?? []).map((entry) => entry.detail ?? '')].join('\n').toLowerCase()
+  return text.includes(LIVE_APPLY_POLICY_REJECTION)
+}
+
+function stringsFirst(...values: Array<string | null | undefined>): string {
+  for (const value of values) {
+    const trimmed = value?.trim()
+    if (trimmed) return trimmed
+  }
+  return ''
 }
 
 function StepIndicator({ current }: { current: WizardStep }) {
