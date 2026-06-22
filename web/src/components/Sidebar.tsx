@@ -100,7 +100,10 @@ export function Sidebar({
             onClick={onThemeToggle}
           >
             <span>{theme === 'dark' ? t('sidebar.darkMode') : t('sidebar.lightMode')}</span>
-            <span className="font-mono text-[var(--sp-faint)]">{theme === 'dark' ? t('sidebar.on') : t('sidebar.off')}</span>
+            <span aria-hidden="true" className="relative h-4 w-4 overflow-hidden rounded-full border border-[var(--sp-faint)]">
+              <span className="absolute inset-0.5 rounded-full bg-[var(--sp-faint)]" />
+              {theme === 'dark' && <span className="absolute -right-0.5 -top-0.5 h-3.5 w-3.5 rounded-full bg-[var(--sp-surface-2)]" />}
+            </span>
           </button>
           <button
             type="button"
