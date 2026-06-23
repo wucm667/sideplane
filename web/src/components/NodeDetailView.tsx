@@ -770,7 +770,8 @@ function RuntimeCard({ runtime, snapshot }: { runtime: RuntimeStatus; snapshot?:
         </div>
         <span className="font-mono text-xs text-[var(--sp-faint)]">{runtime.version || '-'}</span>
       </div>
-      <div className="grid gap-4 px-4 py-4 sm:grid-cols-3">
+      <div className="grid gap-4 px-4 py-4 sm:grid-cols-4">
+        <RuntimeField label={t('node.runtime.deployment')} value={runtime.deploymentMode || '-'} />
         <RuntimeField label={t('node.runtime.provider')} value={snapshot?.provider || runtime.provider || '-'} />
         <RuntimeField label={t('node.runtime.model')} value={snapshot?.model || runtime.model || '-'} />
         <RuntimeField label={t('node.runtime.configHash')} value={compactHash(snapshot?.configHash || runtime.configHash)} title={snapshot?.configHash || runtime.configHash} />

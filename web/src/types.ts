@@ -32,7 +32,7 @@ export interface RuntimeHealth {
   state: RuntimeHealthState
   reason?: string
 }
-export type RuntimeStatus = GeneratedRuntimeStatus & { health?: RuntimeHealth; version?: string; outdated?: boolean }
+export type RuntimeStatus = GeneratedRuntimeStatus & { health?: RuntimeHealth; version?: string; outdated?: boolean; deploymentMode?: string }
 export type RuntimeConfigSnapshot = GeneratedRuntimeConfigSnapshot & { health?: RuntimeHealth }
 export type NodeStatus = Omit<NodeStatusWithDrift, 'runtimes'> & { labels?: NodeLabels; maintenance?: boolean; sidecarOutdated?: boolean; runtimes?: RuntimeStatus[] }
 

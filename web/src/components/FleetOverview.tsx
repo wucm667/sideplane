@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { apiErrorMessage, apiURL, compactHash, fleetOverviewMetrics, formatDate, hasActiveDeepProbe, runtimeKey, runtimeLabel, stateBadgeClasses } from '../helpers.ts'
+import { apiErrorMessage, apiURL, compactHash, fleetOverviewMetrics, formatDate, hasActiveDeepProbe, runtimeDeploymentLabel, runtimeKey, runtimeModelLabel, runtimeVersionLabel, stateBadgeClasses } from '../helpers.ts'
 import type { FleetOverviewMetrics } from '../helpers.ts'
 import { formatRelativeTimeLabel, useT, type TFunction } from '../i18n.ts'
 import type { BulkJobResponse, BulkNodeLabelsResponse, Job, NodeStatus, Rollout } from '../types.ts'
@@ -292,8 +292,10 @@ function nodeSearchText(node: NodeStatus): string {
       runtime.name,
       runtime.type,
       runtime.state,
+      runtime.deploymentMode,
       runtime.provider,
       runtime.model,
+      runtime.version,
     ])
     .filter(Boolean)
     .join(' ')
@@ -448,13 +450,19 @@ function FleetRow({ activeProbe, node, selected, onToggleSelect, onOpen }: { act
       </div>
 
       <div className="flex flex-wrap gap-1.5">
-        {(node.runtimes ?? []).length > 0 ? node.runtimes?.map((runtime, index) => (
-          <span key={runtimeKey(runtime, index)} className="inline-flex max-w-full items-center gap-1.5 rounded-md bg-[var(--sp-surface-3)] px-2 py-1 font-mono text-[11px] text-[var(--sp-muted)]">
-            <span className="h-1.5 w-1.5 flex-none rounded-full bg-[var(--sp-accent)]" />
-            <span className="truncate">{runtimeLabel(runtime)}</span>
-            {runtime.outdated && <span className="rounded bg-amber-500/10 px-1 py-0.5 text-[9px] font-semibold text-amber-600" title={t('fleet.runtimeOutdatedTitle')}>{t('fleet.row.outdated')}</span>}
-          </span>
-        )) : <span className="text-xs text-[var(--sp-faint)]">-</span>}
+        {(node.runtimes ?? []).length > 0 ? node.runtimes?.map((runtime, index) => {
+          const deployment = runtimeDeploymentLabel(runtime)
+          const version = runtimeVersionLabel(runtime)
+          return (
+            <span key={runtimeKey(runtime, index)} className="inline-flex max-w-full items-center gap-1.5 rounded-md bg-[var(--sp-surface-3)] px-2 py-1 font-mono text-[11px] text-[var(--sp-muted)]">
+              <span className="h-1.5 w-1.5 flex-none rounded-full bg-[var(--sp-accent)]" />
+              {deployment && <span className="flex-none rounded bg-[var(--sp-surface-2)] px-1 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-[var(--sp-faint)]" title={t('fleet.runtime.deployment')}>{deployment}</span>}
+              <span className="truncate" title={t('fleet.runtime.model')}>{runtimeModelLabel(runtime)}</span>
+              {version && <span className="flex-none text-[var(--sp-faint)]" title={t('fleet.runtime.version')}>{version}</span>}
+              {runtime.outdated && <span className="rounded bg-amber-500/10 px-1 py-0.5 text-[9px] font-semibold text-amber-600" title={t('fleet.runtimeOutdatedTitle')}>{t('fleet.row.outdated')}</span>}
+            </span>
+          )
+        }) : <span className="text-xs text-[var(--sp-faint)]">-</span>}
       </div>
 
       <div>

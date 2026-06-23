@@ -11,6 +11,9 @@ import {
   latestConfigSnapshots,
   normalizeNodeListResponse,
   rolloutBadgeClasses,
+  runtimeDeploymentLabel,
+  runtimeModelLabel,
+  runtimeVersionLabel,
   sideplaneBasePath,
   sideplaneServerURL,
   snapshotForRuntime,
@@ -104,6 +107,27 @@ describe('latestConfigSnapshots', () => {
 
   it('tolerates malformed deep probe result JSON', () => {
     expect(latestConfigSnapshots([job({ id: 'job-bad', type: 'deep_probe', status: 'completed', resultJson: '{' })])).toEqual([])
+  })
+})
+
+describe('runtime field helpers', () => {
+  it('formats provider/model and falls back without version or deployment', () => {
+    expect(runtimeModelLabel({ name: 'hermes', provider: 'openai', model: 'gpt-5', version: 'v1', deploymentMode: 'container' })).toBe('openai/gpt-5')
+    expect(runtimeModelLabel({ name: 'hermes', model: 'gpt-5' })).toBe('gpt-5')
+    expect(runtimeModelLabel({ name: 'hermes' })).toBe('hermes')
+    expect(runtimeModelLabel({ name: '', type: 'openclaw' })).toBe('openclaw')
+    expect(runtimeModelLabel({ name: '' })).toBe('runtime')
+  })
+
+  it('returns deployment mode or empty when unknown', () => {
+    expect(runtimeDeploymentLabel({ name: 'hermes', deploymentMode: 'systemd' })).toBe('systemd')
+    expect(runtimeDeploymentLabel({ name: 'hermes', deploymentMode: '  container ' })).toBe('container')
+    expect(runtimeDeploymentLabel({ name: 'hermes' })).toBe('')
+  })
+
+  it('returns version or empty when unknown', () => {
+    expect(runtimeVersionLabel({ name: 'hermes', version: ' v2026.5.1 ' })).toBe('v2026.5.1')
+    expect(runtimeVersionLabel({ name: 'hermes' })).toBe('')
   })
 })
 

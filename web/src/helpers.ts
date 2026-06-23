@@ -265,11 +265,25 @@ export function runtimeKey(runtime: RuntimeStatus, index: number): string {
   return `${runtime.name || runtime.type || 'runtime'}-${index}`
 }
 
-export function runtimeLabel(runtime: RuntimeStatus): string {
-  const base = runtime.provider && runtime.model
+// runtimeModelLabel returns the provider/model in use for a runtime, falling
+// back to the runtime name or type when no model is known. It never includes
+// the version or deployment mode — those are shown as separate fields.
+export function runtimeModelLabel(runtime: RuntimeStatus): string {
+  return runtime.provider && runtime.model
     ? `${runtime.provider}/${runtime.model}`
     : runtime.model || runtime.name || runtime.type || 'runtime'
-  return runtime.version ? `${base}@${runtime.version}` : base
+}
+
+// runtimeDeploymentLabel returns how the runtime is deployed/managed
+// (container / systemd / local), or an empty string when unknown.
+export function runtimeDeploymentLabel(runtime: RuntimeStatus): string {
+  return runtime.deploymentMode?.trim() ?? ''
+}
+
+// runtimeVersionLabel returns the runtime software version, or an empty string
+// when unknown.
+export function runtimeVersionLabel(runtime: RuntimeStatus): string {
+  return runtime.version?.trim() ?? ''
 }
 
 function parseDeepProbeResult(resultJson: string | undefined): DeepProbeResult | null {
