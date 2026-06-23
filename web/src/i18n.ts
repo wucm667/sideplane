@@ -197,6 +197,7 @@ export const translations: Record<Lang, Record<string, string>> = {
     'fleet.table.node': 'Node',
     'fleet.table.runtimes': 'Runtimes',
     'fleet.table.state': 'State',
+    'fleet.table.version': 'Version',
     'fleet.title': 'Fleet',
 
     'node.applyDetail.apply': '{mode} apply',
@@ -640,6 +641,7 @@ export const translations: Record<Lang, Record<string, string>> = {
     'fleet.table.node': '节点',
     'fleet.table.runtimes': '运行时',
     'fleet.table.state': '状态',
+    'fleet.table.version': '版本',
     'fleet.title': '集群',
 
     'node.applyDetail.apply': '{mode} 应用',

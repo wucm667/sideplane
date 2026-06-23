@@ -280,6 +280,24 @@ export function runtimeDeploymentLabel(runtime: RuntimeStatus): string {
   return runtime.deploymentMode?.trim() ?? ''
 }
 
+// runtimeDeploymentDisplay maps Sideplane deployment modes to compact operator
+// enum tokens for the fleet table.
+export function runtimeDeploymentDisplay(runtime: RuntimeStatus): string {
+  const deployment = runtimeDeploymentLabel(runtime)
+  if (!deployment) return ''
+
+  switch (deployment.toLowerCase()) {
+    case 'container':
+      return 'DOCKER'
+    case 'systemd':
+      return 'SYSTEM'
+    case 'local':
+      return 'LOCAL'
+    default:
+      return deployment.toUpperCase()
+  }
+}
+
 // runtimeVersionLabel returns the runtime software version, or an empty string
 // when unknown.
 export function runtimeVersionLabel(runtime: RuntimeStatus): string {

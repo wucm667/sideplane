@@ -11,6 +11,7 @@ import {
   latestConfigSnapshots,
   normalizeNodeListResponse,
   rolloutBadgeClasses,
+  runtimeDeploymentDisplay,
   runtimeDeploymentLabel,
   runtimeModelLabel,
   runtimeVersionLabel,
@@ -123,6 +124,14 @@ describe('runtime field helpers', () => {
     expect(runtimeDeploymentLabel({ name: 'hermes', deploymentMode: 'systemd' })).toBe('systemd')
     expect(runtimeDeploymentLabel({ name: 'hermes', deploymentMode: 'container' })).toBe('container')
     expect(runtimeDeploymentLabel({ name: 'hermes' })).toBe('')
+  })
+
+  it('maps deployment modes to fleet table enum tokens', () => {
+    expect(runtimeDeploymentDisplay({ name: 'hermes', deploymentMode: 'container' })).toBe('DOCKER')
+    expect(runtimeDeploymentDisplay({ name: 'hermes', deploymentMode: 'systemd' })).toBe('SYSTEM')
+    expect(runtimeDeploymentDisplay({ name: 'hermes', deploymentMode: 'local' })).toBe('LOCAL')
+    expect(runtimeDeploymentDisplay({ name: 'hermes', deploymentMode: 'supervisor' } as unknown as RuntimeStatus)).toBe('SUPERVISOR')
+    expect(runtimeDeploymentDisplay({ name: 'hermes' })).toBe('')
   })
 
   it('returns version or empty when unknown', () => {
