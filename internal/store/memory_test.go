@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -1124,8 +1125,73 @@ func TestMemoryDesiredConfigPersistsCopy(t *testing.T) {
 	}
 }
 
+func TestMemoryDesiredConfigProviderCatalogRoundTripsPlaintextAPIKey(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryNodeStore()
+	if err := store.SetDesiredConfig(ctx, desiredConfigWithProviderCatalogForStoreTest(), time.Now().UTC()); err != nil {
+		t.Fatalf("set desired config: %v", err)
+	}
+
+	got, err := store.GetDesiredConfig(ctx)
+	if err != nil {
+		t.Fatalf("get desired config: %v", err)
+	}
+	assertDesiredConfigProviderCatalogRoundTrip(t, got)
+}
+
 func TestMemoryDesiredConfigHistoryAndRevert(t *testing.T) {
 	assertDesiredConfigHistoryAndRevert(t, NewMemoryNodeStore())
+}
+
+func desiredConfigWithProviderCatalogForStoreTest() protocol.DesiredConfig {
+	return protocol.DesiredConfig{
+		GlobalProviders: []protocol.ProviderDefinition{
+			{
+				Name:    "openai",
+				BaseURL: "https://api.openai.example/v1",
+				Models:  []string{"gpt-5", "gpt-5-mini"},
+				APIKey:  "sk-global-plaintext",
+			},
+		},
+		NodeProviders: map[string][]protocol.ProviderDefinition{
+			"node-a": {
+				{
+					Name:    "local",
+					BaseURL: "http://127.0.0.1:11434",
+					Models:  []string{"qwen3"},
+					APIKey:  "node-plaintext-key",
+				},
+			},
+		},
+	}
+}
+
+func assertDesiredConfigProviderCatalogRoundTrip(t *testing.T, got protocol.DesiredConfig) {
+	t.Helper()
+
+	wantGlobal := []protocol.ProviderDefinition{
+		{
+			Name:    "openai",
+			BaseURL: "https://api.openai.example/v1",
+			Models:  []string{"gpt-5", "gpt-5-mini"},
+			APIKey:  "sk-global-plaintext",
+		},
+	}
+	if !reflect.DeepEqual(got.GlobalProviders, wantGlobal) {
+		t.Fatalf("global providers = %#v, want %#v", got.GlobalProviders, wantGlobal)
+	}
+
+	wantNode := []protocol.ProviderDefinition{
+		{
+			Name:    "local",
+			BaseURL: "http://127.0.0.1:11434",
+			Models:  []string{"qwen3"},
+			APIKey:  "node-plaintext-key",
+		},
+	}
+	if !reflect.DeepEqual(got.NodeProviders["node-a"], wantNode) {
+		t.Fatalf("node providers = %#v, want %#v", got.NodeProviders["node-a"], wantNode)
+	}
 }
 
 func assertDesiredConfigHistoryAndRevert(t *testing.T, nodeStore Store) {

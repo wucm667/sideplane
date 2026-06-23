@@ -37,12 +37,27 @@ type ProviderModelConfig struct {
 	Model    string `json:"model,omitempty"`
 }
 
+// ProviderDefinition is a managed provider entry in the desired catalog.
+// APIKey is stored/transmitted in PLAINTEXT by design (operator-owned secret
+// security); read paths must redact it before returning desired config.
+type ProviderDefinition struct {
+	Name    string   `json:"name"`
+	BaseURL string   `json:"baseURL,omitempty"`
+	Models  []string `json:"models,omitempty"`
+	APIKey  string   `json:"apiKey,omitempty"`
+}
+
 // DesiredConfig layers desired provider/model settings.
 type DesiredConfig struct {
 	Global                      ProviderModelConfig            `json:"global,omitempty"`
 	NodeOverrides               map[string]ProviderModelConfig `json:"nodeOverrides,omitempty"`
 	RuntimeProfileOverrides     map[string]ProviderModelConfig `json:"runtimeProfileOverrides,omitempty"`
 	NodeRuntimeProfileOverrides map[string]ProviderModelConfig `json:"nodeRuntimeProfileOverrides,omitempty"`
+
+	GlobalProviders             []ProviderDefinition            `json:"globalProviders,omitempty"`
+	NodeProviders               map[string][]ProviderDefinition `json:"nodeProviders,omitempty"`
+	RuntimeProfileProviders     map[string][]ProviderDefinition `json:"runtimeProfileProviders,omitempty"`
+	NodeRuntimeProfileProviders map[string][]ProviderDefinition `json:"nodeRuntimeProfileProviders,omitempty"`
 }
 
 // DesiredConfigHistoryEntry is an immutable desired-config version.

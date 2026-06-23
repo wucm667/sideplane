@@ -2,12 +2,16 @@ package config
 
 import (
 	"fmt"
+	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/wucm667/sideplane/pkg/protocol"
 )
 
 const maxProviderModelValueLength = 128
+const maxProviderBaseURLLength = 2048
+const maxProviderAPIKeyLength = 4096
 
 // ValidateProviderModelSelection validates a complete provider/model pair for
 // rendering into runtime configuration.
@@ -42,6 +46,24 @@ func ValidateDesiredConfigValues(desired protocol.DesiredConfig) error {
 			return err
 		}
 	}
+	if err := validateProviderDefinitions("globalProviders", desired.GlobalProviders); err != nil {
+		return err
+	}
+	for _, key := range sortedProviderDefinitionMapKeys(desired.NodeProviders) {
+		if err := validateProviderDefinitions("nodeProviders["+key+"]", desired.NodeProviders[key]); err != nil {
+			return err
+		}
+	}
+	for _, key := range sortedProviderDefinitionMapKeys(desired.RuntimeProfileProviders) {
+		if err := validateProviderDefinitions("runtimeProfileProviders["+key+"]", desired.RuntimeProfileProviders[key]); err != nil {
+			return err
+		}
+	}
+	for _, key := range sortedProviderDefinitionMapKeys(desired.NodeRuntimeProfileProviders) {
+		if err := validateProviderDefinitions("nodeRuntimeProfileProviders["+key+"]", desired.NodeRuntimeProfileProviders[key]); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -53,6 +75,82 @@ func validateOptionalProviderModel(path string, value protocol.ProviderModelConf
 		return err
 	}
 	return nil
+}
+
+func validateProviderDefinitions(path string, providers []protocol.ProviderDefinition) error {
+	names := map[string]struct{}{}
+	for i, provider := range providers {
+		providerPath := fmt.Sprintf("%s[%d]", path, i)
+		if err := validateProviderModelValue(providerPath+".name", provider.Name, true); err != nil {
+			return err
+		}
+		normalizedName := strings.ToLower(strings.TrimSpace(provider.Name))
+		if _, ok := names[normalizedName]; ok {
+			return fmt.Errorf("%s.name duplicates provider %q in this layer", providerPath, strings.TrimSpace(provider.Name))
+		}
+		names[normalizedName] = struct{}{}
+
+		for modelIndex, model := range provider.Models {
+			if err := validateProviderModelValue(fmt.Sprintf("%s.models[%d]", providerPath, modelIndex), model, true); err != nil {
+				return err
+			}
+		}
+		if err := validateProviderBaseURL(providerPath+".baseURL", provider.BaseURL); err != nil {
+			return err
+		}
+		if err := validateProviderAPIKey(providerPath+".apiKey", provider.APIKey); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateProviderBaseURL(field string, raw string) error {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return nil
+	}
+	if len(value) > maxProviderBaseURLLength {
+		return fmt.Errorf("%s is too long", field)
+	}
+	parsed, err := url.Parse(value)
+	if err != nil {
+		return fmt.Errorf("%s must be a valid http or https URL", field)
+	}
+	if !strings.EqualFold(parsed.Scheme, "http") && !strings.EqualFold(parsed.Scheme, "https") {
+		return fmt.Errorf("%s must use http or https", field)
+	}
+	if parsed.Host == "" {
+		return fmt.Errorf("%s must include a host", field)
+	}
+	return nil
+}
+
+func validateProviderAPIKey(field string, value string) error {
+	if value == "" {
+		return nil
+	}
+	if len(value) > maxProviderAPIKeyLength {
+		return fmt.Errorf("%s is too long", field)
+	}
+	for _, r := range value {
+		if r < 0x20 || r == 0x7f {
+			return fmt.Errorf("%s contains unsupported control character %q", field, r)
+		}
+	}
+	return nil
+}
+
+func sortedProviderDefinitionMapKeys(values map[string][]protocol.ProviderDefinition) []string {
+	if values == nil {
+		return nil
+	}
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+	return keys
 }
 
 func validateProviderModelValue(field string, raw string, required bool) error {

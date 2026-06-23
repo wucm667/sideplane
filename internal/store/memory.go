@@ -1278,7 +1278,10 @@ func (s *MemoryNodeStore) RevertDesiredConfig(_ context.Context, historyID strin
 }
 
 func cloneDesiredConfig(desired protocol.DesiredConfig) protocol.DesiredConfig {
-	clone := protocol.DesiredConfig{Global: desired.Global}
+	clone := protocol.DesiredConfig{
+		Global:          desired.Global,
+		GlobalProviders: cloneProviderDefinitions(desired.GlobalProviders),
+	}
 	if desired.NodeOverrides != nil {
 		clone.NodeOverrides = make(map[string]protocol.ProviderModelConfig, len(desired.NodeOverrides))
 		for key, value := range desired.NodeOverrides {
@@ -1295,6 +1298,37 @@ func cloneDesiredConfig(desired protocol.DesiredConfig) protocol.DesiredConfig {
 		clone.NodeRuntimeProfileOverrides = make(map[string]protocol.ProviderModelConfig, len(desired.NodeRuntimeProfileOverrides))
 		for key, value := range desired.NodeRuntimeProfileOverrides {
 			clone.NodeRuntimeProfileOverrides[key] = value
+		}
+	}
+	if desired.NodeProviders != nil {
+		clone.NodeProviders = cloneProviderDefinitionMap(desired.NodeProviders)
+	}
+	if desired.RuntimeProfileProviders != nil {
+		clone.RuntimeProfileProviders = cloneProviderDefinitionMap(desired.RuntimeProfileProviders)
+	}
+	if desired.NodeRuntimeProfileProviders != nil {
+		clone.NodeRuntimeProfileProviders = cloneProviderDefinitionMap(desired.NodeRuntimeProfileProviders)
+	}
+	return clone
+}
+
+func cloneProviderDefinitionMap(values map[string][]protocol.ProviderDefinition) map[string][]protocol.ProviderDefinition {
+	clone := make(map[string][]protocol.ProviderDefinition, len(values))
+	for key, providers := range values {
+		clone[key] = cloneProviderDefinitions(providers)
+	}
+	return clone
+}
+
+func cloneProviderDefinitions(providers []protocol.ProviderDefinition) []protocol.ProviderDefinition {
+	if providers == nil {
+		return nil
+	}
+	clone := make([]protocol.ProviderDefinition, len(providers))
+	for i, provider := range providers {
+		clone[i] = provider
+		if provider.Models != nil {
+			clone[i].Models = append([]string(nil), provider.Models...)
 		}
 	}
 	return clone

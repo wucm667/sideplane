@@ -1,6 +1,7 @@
 package config
 
 import (
+	"slices"
 	"strings"
 
 	"github.com/wucm667/sideplane/pkg/protocol"
@@ -81,6 +82,40 @@ func EffectiveProviderModelConfig(desired protocol.DesiredConfig, target Effecti
 	return effective
 }
 
+// EffectiveProviderCatalog applies provider-catalog precedence:
+// global defaults -> node catalog -> runtime/profile catalog ->
+// node/runtime/profile catalog.
+func EffectiveProviderCatalog(desired protocol.DesiredConfig, target EffectiveConfigTarget) []protocol.ProviderDefinition {
+	merged := []protocol.ProviderDefinition{}
+	positions := map[string]int{}
+
+	mergeProviderDefinitions(&merged, positions, desired.GlobalProviders)
+
+	if desired.NodeProviders != nil {
+		mergeProviderDefinitions(&merged, positions, desired.NodeProviders[strings.TrimSpace(target.NodeID)])
+	}
+
+	if desired.RuntimeProfileProviders != nil {
+		key := RuntimeProfileKey(target.RuntimeType, target.Profile)
+		mergeProviderDefinitions(&merged, positions, desired.RuntimeProfileProviders[key])
+	}
+
+	if desired.NodeRuntimeProfileProviders != nil {
+		key := NodeRuntimeProfileKey(target.NodeID, target.RuntimeType, target.Profile)
+		mergeProviderDefinitions(&merged, positions, desired.NodeRuntimeProfileProviders[key])
+	}
+
+	slices.SortFunc(merged, func(a, b protocol.ProviderDefinition) int {
+		aName := strings.ToLower(a.Name)
+		bName := strings.ToLower(b.Name)
+		if cmp := strings.Compare(aName, bName); cmp != 0 {
+			return cmp
+		}
+		return strings.Compare(a.Name, b.Name)
+	})
+	return merged
+}
+
 func mergeProviderModel(base protocol.ProviderModelConfig, override protocol.ProviderModelConfig) protocol.ProviderModelConfig {
 	if strings.TrimSpace(override.Provider) != "" {
 		base.Provider = strings.TrimSpace(override.Provider)
@@ -91,8 +126,39 @@ func mergeProviderModel(base protocol.ProviderModelConfig, override protocol.Pro
 	return base
 }
 
+func mergeProviderDefinitions(merged *[]protocol.ProviderDefinition, positions map[string]int, providers []protocol.ProviderDefinition) {
+	for _, provider := range providers {
+		normalized := normalizeProviderDefinition(provider)
+		key := strings.ToLower(normalized.Name)
+		if index, ok := positions[key]; ok {
+			(*merged)[index] = normalized
+			continue
+		}
+		positions[key] = len(*merged)
+		*merged = append(*merged, normalized)
+	}
+}
+
+func normalizeProviderDefinition(provider protocol.ProviderDefinition) protocol.ProviderDefinition {
+	normalized := protocol.ProviderDefinition{
+		Name:    strings.TrimSpace(provider.Name),
+		BaseURL: strings.TrimSpace(provider.BaseURL),
+		APIKey:  provider.APIKey,
+	}
+	if provider.Models != nil {
+		normalized.Models = make([]string, len(provider.Models))
+		for i, model := range provider.Models {
+			normalized.Models[i] = strings.TrimSpace(model)
+		}
+	}
+	return normalized
+}
+
 func cloneDesiredConfig(desired protocol.DesiredConfig) protocol.DesiredConfig {
-	clone := protocol.DesiredConfig{Global: desired.Global}
+	clone := protocol.DesiredConfig{
+		Global:          desired.Global,
+		GlobalProviders: cloneProviderDefinitions(desired.GlobalProviders),
+	}
 	if desired.NodeOverrides != nil {
 		clone.NodeOverrides = make(map[string]protocol.ProviderModelConfig, len(desired.NodeOverrides))
 		for key, value := range desired.NodeOverrides {
@@ -109,6 +175,37 @@ func cloneDesiredConfig(desired protocol.DesiredConfig) protocol.DesiredConfig {
 		clone.NodeRuntimeProfileOverrides = make(map[string]protocol.ProviderModelConfig, len(desired.NodeRuntimeProfileOverrides))
 		for key, value := range desired.NodeRuntimeProfileOverrides {
 			clone.NodeRuntimeProfileOverrides[key] = value
+		}
+	}
+	if desired.NodeProviders != nil {
+		clone.NodeProviders = cloneProviderDefinitionMap(desired.NodeProviders)
+	}
+	if desired.RuntimeProfileProviders != nil {
+		clone.RuntimeProfileProviders = cloneProviderDefinitionMap(desired.RuntimeProfileProviders)
+	}
+	if desired.NodeRuntimeProfileProviders != nil {
+		clone.NodeRuntimeProfileProviders = cloneProviderDefinitionMap(desired.NodeRuntimeProfileProviders)
+	}
+	return clone
+}
+
+func cloneProviderDefinitionMap(values map[string][]protocol.ProviderDefinition) map[string][]protocol.ProviderDefinition {
+	clone := make(map[string][]protocol.ProviderDefinition, len(values))
+	for key, providers := range values {
+		clone[key] = cloneProviderDefinitions(providers)
+	}
+	return clone
+}
+
+func cloneProviderDefinitions(providers []protocol.ProviderDefinition) []protocol.ProviderDefinition {
+	if providers == nil {
+		return nil
+	}
+	clone := make([]protocol.ProviderDefinition, len(providers))
+	for i, provider := range providers {
+		clone[i] = provider
+		if provider.Models != nil {
+			clone[i].Models = append([]string(nil), provider.Models...)
 		}
 	}
 	return clone

@@ -2,8 +2,11 @@ package config
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/wucm667/sideplane/pkg/protocol"
 )
 
 func TestRedactStringRedactsMixedCaseNestedJSONSecrets(t *testing.T) {
@@ -57,5 +60,66 @@ func TestRedactStringRedactsSecretAssignments(t *testing.T) {
 	}
 	if !strings.Contains(redacted, "status=ok") {
 		t.Fatalf("redacted string = %q, want harmless status preserved", redacted)
+	}
+}
+
+func TestRedactProviderDefinitionBlanksAPIKeyOnly(t *testing.T) {
+	provider := protocol.ProviderDefinition{
+		Name:    "openai",
+		BaseURL: "https://api.example.com/v1",
+		Models:  []string{"gpt-5"},
+		APIKey:  "plain-key",
+	}
+
+	redacted := RedactProviderDefinition(provider)
+	if redacted.APIKey != "" {
+		t.Fatalf("redacted apiKey = %q, want blank", redacted.APIKey)
+	}
+	redacted.APIKey = provider.APIKey
+	if !reflect.DeepEqual(redacted, provider) {
+		t.Fatalf("redacted provider changed non-key fields: %#v, want %#v", redacted, provider)
+	}
+
+	empty := RedactProviderDefinition(protocol.ProviderDefinition{Name: "local"})
+	if empty.APIKey != "" || empty.Name != "local" {
+		t.Fatalf("empty key provider redaction = %#v, want name preserved and apiKey blank", empty)
+	}
+}
+
+func TestRedactDesiredConfigRedactsProviderCatalogWithoutMutatingInput(t *testing.T) {
+	desired := protocol.DesiredConfig{
+		GlobalProviders: []protocol.ProviderDefinition{{Name: "global", Models: []string{"gpt-5"}, APIKey: "global-key"}},
+		NodeProviders: map[string][]protocol.ProviderDefinition{
+			"node-a": {{Name: "node", Models: []string{"node-model"}, APIKey: "node-key"}},
+		},
+		RuntimeProfileProviders: map[string][]protocol.ProviderDefinition{
+			RuntimeProfileKey("hermes", "default"): {{Name: "runtime", Models: []string{"runtime-model"}, APIKey: "runtime-key"}},
+		},
+		NodeRuntimeProfileProviders: map[string][]protocol.ProviderDefinition{
+			NodeRuntimeProfileKey("node-a", "hermes", "default"): {{Name: "node-runtime", Models: []string{"node-runtime-model"}, APIKey: "node-runtime-key"}},
+		},
+	}
+
+	redacted := RedactDesiredConfig(desired)
+	for label, provider := range map[string]protocol.ProviderDefinition{
+		"global":      redacted.GlobalProviders[0],
+		"node":        redacted.NodeProviders["node-a"][0],
+		"runtime":     redacted.RuntimeProfileProviders[RuntimeProfileKey("hermes", "default")][0],
+		"nodeRuntime": redacted.NodeRuntimeProfileProviders[NodeRuntimeProfileKey("node-a", "hermes", "default")][0],
+	} {
+		if provider.APIKey != "" {
+			t.Fatalf("%s apiKey = %q, want blank", label, provider.APIKey)
+		}
+	}
+	if redacted.GlobalProviders[0].Models[0] != "gpt-5" {
+		t.Fatalf("redacted provider models = %#v, want preserved", redacted.GlobalProviders[0].Models)
+	}
+
+	redacted.GlobalProviders[0].Models[0] = "mutated"
+	if desired.GlobalProviders[0].APIKey != "global-key" || desired.NodeProviders["node-a"][0].APIKey != "node-key" {
+		t.Fatalf("redaction mutated input apiKeys: %#v", desired)
+	}
+	if desired.GlobalProviders[0].Models[0] != "gpt-5" {
+		t.Fatalf("redaction result shared model slice with input: %#v", desired.GlobalProviders[0].Models)
 	}
 }

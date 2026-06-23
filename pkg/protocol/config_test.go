@@ -129,6 +129,18 @@ func TestDesiredConfigJSONShape(t *testing.T) {
 		NodeRuntimeProfileOverrides: map[string]ProviderModelConfig{
 			"node-a/hermes/default": {Model: "claude-sonnet-4"},
 		},
+		GlobalProviders: []ProviderDefinition{
+			{Name: "openai", BaseURL: "https://api.example.com/v1", Models: []string{"gpt-5"}, APIKey: "plain-key"},
+		},
+		NodeProviders: map[string][]ProviderDefinition{
+			"node-a": {{Name: "local", Models: []string{"qwen3"}}},
+		},
+		RuntimeProfileProviders: map[string][]ProviderDefinition{
+			"hermes/default": {{Name: "anthropic", Models: []string{"claude-sonnet-4"}}},
+		},
+		NodeRuntimeProfileProviders: map[string][]ProviderDefinition{
+			"node-a/hermes/default": {{Name: "node-local", Models: []string{"llama3"}}},
+		},
 	}
 
 	payload, err := json.Marshal(desired)
@@ -140,7 +152,7 @@ func TestDesiredConfigJSONShape(t *testing.T) {
 	if err := json.Unmarshal(payload, &got); err != nil {
 		t.Fatalf("unmarshal desired config: %v", err)
 	}
-	for _, key := range []string{"global", "nodeOverrides", "runtimeProfileOverrides", "nodeRuntimeProfileOverrides"} {
+	for _, key := range []string{"global", "nodeOverrides", "runtimeProfileOverrides", "nodeRuntimeProfileOverrides", "globalProviders", "nodeProviders", "runtimeProfileProviders", "nodeRuntimeProfileProviders"} {
 		if _, ok := got[key]; !ok {
 			t.Fatalf("desired config JSON omits %q: %s", key, payload)
 		}

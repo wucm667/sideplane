@@ -1765,6 +1765,43 @@ func TestSQLiteDesiredConfigPersistsAcrossReopen(t *testing.T) {
 	}
 }
 
+func TestSQLiteDesiredConfigProviderCatalogRoundTripsPlaintextAPIKey(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "sideplane.db")
+	first, err := OpenSQLiteNodeStore(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite store: %v", err)
+	}
+	desired := desiredConfigWithProviderCatalogForStoreTest()
+	if err := first.SetDesiredConfig(ctx, desired, time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("set desired config: %v", err)
+	}
+
+	var rawConfig string
+	if err := first.db.QueryRowContext(ctx, `SELECT config_json FROM desired_config WHERE id = 1`).Scan(&rawConfig); err != nil {
+		t.Fatalf("query raw desired config: %v", err)
+	}
+	for _, plaintext := range []string{"sk-global-plaintext", "node-plaintext-key"} {
+		if !strings.Contains(rawConfig, plaintext) {
+			t.Fatalf("raw desired config JSON does not contain plaintext apiKey %q: %s", plaintext, rawConfig)
+		}
+	}
+	if err := first.Close(); err != nil {
+		t.Fatalf("close first store: %v", err)
+	}
+
+	second, err := OpenSQLiteNodeStore(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("reopen sqlite store: %v", err)
+	}
+	defer second.Close()
+	got, err := second.GetDesiredConfig(ctx)
+	if err != nil {
+		t.Fatalf("get desired config: %v", err)
+	}
+	assertDesiredConfigProviderCatalogRoundTrip(t, got)
+}
+
 func TestSQLiteDesiredConfigHistoryAndRevert(t *testing.T) {
 	ctx := context.Background()
 	store, err := OpenSQLiteNodeStore(ctx, filepath.Join(t.TempDir(), "sideplane.db"))

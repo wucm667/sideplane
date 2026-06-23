@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"regexp"
 	"strings"
+
+	"github.com/wucm667/sideplane/pkg/protocol"
 )
 
 const RedactedValue = "[REDACTED]"
@@ -31,6 +33,39 @@ func RedactSecrets(value any) any {
 		return out
 	default:
 		return value
+	}
+}
+
+// RedactProviderDefinition returns a copy with plaintext provider API key material blanked.
+func RedactProviderDefinition(provider protocol.ProviderDefinition) protocol.ProviderDefinition {
+	if provider.APIKey != "" {
+		provider.APIKey = ""
+	}
+	return provider
+}
+
+// RedactDesiredConfig returns a deep copy with every provider catalog API key blanked.
+func RedactDesiredConfig(desired protocol.DesiredConfig) protocol.DesiredConfig {
+	redacted := cloneDesiredConfig(desired)
+	redactProviderDefinitions(redacted.GlobalProviders)
+	for key, providers := range redacted.NodeProviders {
+		redactProviderDefinitions(providers)
+		redacted.NodeProviders[key] = providers
+	}
+	for key, providers := range redacted.RuntimeProfileProviders {
+		redactProviderDefinitions(providers)
+		redacted.RuntimeProfileProviders[key] = providers
+	}
+	for key, providers := range redacted.NodeRuntimeProfileProviders {
+		redactProviderDefinitions(providers)
+		redacted.NodeRuntimeProfileProviders[key] = providers
+	}
+	return redacted
+}
+
+func redactProviderDefinitions(providers []protocol.ProviderDefinition) {
+	for i := range providers {
+		providers[i] = RedactProviderDefinition(providers[i])
 	}
 }
 
