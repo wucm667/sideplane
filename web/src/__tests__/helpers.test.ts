@@ -121,7 +121,7 @@ describe('runtime field helpers', () => {
 
   it('returns deployment mode or empty when unknown', () => {
     expect(runtimeDeploymentLabel({ name: 'hermes', deploymentMode: 'systemd' })).toBe('systemd')
-    expect(runtimeDeploymentLabel({ name: 'hermes', deploymentMode: '  container ' })).toBe('container')
+    expect(runtimeDeploymentLabel({ name: 'hermes', deploymentMode: 'container' })).toBe('container')
     expect(runtimeDeploymentLabel({ name: 'hermes' })).toBe('')
   })
 

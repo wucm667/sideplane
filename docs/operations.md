@@ -171,6 +171,20 @@ Sideplane does not query upstream releases, registries, or "latest version"
 endpoints. It also does not execute runtime upgrades or expose a remote shell;
 upgrade execution remains outside this feature.
 
+## Runtime Deployment Mode
+
+Each runtime reports a `deploymentMode` derived by its adapter from existing
+configuration, with no new commands run:
+
+- `container` — a Docker container target is configured for the runtime.
+- `systemd` — no container, but a systemd service unit is configured.
+- `local` — neither (a plain local process / config file only).
+
+The value is empty when the adapter cannot determine it. The fleet view shows
+deployment, version, and model as separate fields, and the node detail card
+includes a Deployment field. Deployment mode is visibility-only; it does not
+change apply, restart, or rollback behavior.
+
 ## Sidecar Delivery Resilience
 
 The sidecar retries the latest failed heartbeat on the next heartbeat cycle. If

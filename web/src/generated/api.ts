@@ -76,6 +76,7 @@ export interface RuntimeStatus {
   name: string;
   type?: string;
   version?: string;
+  deploymentMode?: "container" | "systemd" | "local";
   state?: string;
   provider?: string;
   model?: string;

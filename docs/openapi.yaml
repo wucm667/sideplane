@@ -1444,6 +1444,10 @@ components:
           type: string
         version:
           type: string
+        deploymentMode:
+          type: string
+          enum: [container, systemd, local]
+          description: How the adapter manages the runtime, derived from existing configuration. Empty when the deployment mode is unknown.
         state:
           type: string
         provider:

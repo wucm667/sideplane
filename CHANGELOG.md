@@ -14,6 +14,7 @@ This project follows the spirit of Keep a Changelog and will use semantic versio
 ### Sidecar
 
 - Added runtime version capture from Docker image tags or opt-in single allowlisted read-only version commands.
+- Added adapter-derived runtime `deploymentMode` (`container` / `systemd` / `local`) reported in heartbeats and deep-probe snapshots, surfaced as separate deployment / version / model fields in the web UI.
 
 ## [0.1.0] - 2026-06-21
 

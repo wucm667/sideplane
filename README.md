@@ -19,7 +19,7 @@ Production operators should still treat it as pre-1.0 infrastructure. Run it on 
 - Sidecar enrollment token flow with one-time tokens exchanged for long-lived node credentials.
 - Sidecar delivery resilience for short server outages: latest-wins heartbeat retry and bounded in-memory job-result retry.
 - Named, revocable operator tokens for API and Web sessions.
-- Hermes and OpenClaw adapters for read-only runtime discovery, runtime version visibility, config hash reporting, and provider/model snapshots.
+- Hermes and OpenClaw adapters for read-only runtime discovery, runtime version visibility, deployment-mode reporting (`container` / `systemd` / `local`), config hash reporting, and provider/model snapshots.
 - Desired configuration layering with effective config preview and read-only actual-vs-desired diffs.
 - Desired config history with explicit revert.
 - Signed config apply plans, dry-run by default, with live apply gated behind explicit sidecar opt-in and rollback handling.
