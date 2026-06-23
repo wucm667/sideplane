@@ -161,7 +161,7 @@ export function FleetOverview({
   }
 
   return (
-    <div className="mx-auto max-w-6xl px-4 py-6 sm:px-6 lg:px-9 lg:py-8">
+    <div className="mx-auto max-w-[100rem] px-4 py-6 sm:px-6 lg:px-9 lg:py-8">
       <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">{t('fleet.title')}</h1>
