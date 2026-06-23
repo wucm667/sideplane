@@ -9,6 +9,7 @@ import {
   groupRows,
   jobBadgeClasses,
   latestConfigSnapshots,
+  mergeFleetNodes,
   normalizeNodeListResponse,
   rolloutBadgeClasses,
   runtimeDeploymentDisplay,
@@ -231,6 +232,178 @@ describe('fleet helper summaries', () => {
       runningRollouts: 1,
       pausedRollouts: 1,
     })
+  })
+})
+
+describe('mergeFleetNodes', () => {
+  it('keeps previous sticky fields when incoming values are blank', () => {
+    const previous = [
+      node({
+        nodeId: 'node-a',
+        hostname: 'host-a',
+        sidecarVersion: 'v1.2.3',
+        runtimes: [
+          runtime({
+            name: 'Hermes Agent',
+            type: 'hermes',
+            version: '2026.6.1',
+            deploymentMode: 'container',
+            provider: 'openai',
+            model: 'gpt-5',
+            configHash: 'sha256:abc',
+          }),
+        ],
+      }),
+    ]
+    const incoming = [
+      node({
+        nodeId: 'node-a',
+        hostname: ' ',
+        sidecarVersion: '',
+        state: 'stale',
+        lastHeartbeatAt: '2026-06-19T12:00:05Z',
+        drift: true,
+        maintenance: true,
+        labels: { role: 'lab' },
+        lastError: 'heartbeat delayed',
+        sidecarOutdated: true,
+        runtimes: [
+          runtime({
+            name: '',
+            type: 'hermes',
+            version: '',
+            deploymentMode: undefined,
+            provider: ' ',
+            model: '',
+            configHash: '  ',
+            state: 'unknown',
+            health: { state: 'degraded', reason: 'probe failed' },
+            outdated: true,
+            lastError: 'probe failed',
+            warnings: ['missing docker socket'],
+          }),
+        ],
+      }),
+    ]
+
+    const [merged] = mergeFleetNodes(previous, incoming)
+    expect(merged.hostname).toBe('host-a')
+    expect(merged.sidecarVersion).toBe('v1.2.3')
+    expect(merged.state).toBe('stale')
+    expect(merged.lastHeartbeatAt).toBe('2026-06-19T12:00:05Z')
+    expect(merged.drift).toBe(true)
+    expect(merged.maintenance).toBe(true)
+    expect(merged.labels).toEqual({ role: 'lab' })
+    expect(merged.lastError).toBe('heartbeat delayed')
+    expect(merged.sidecarOutdated).toBe(true)
+    expect(merged.runtimes?.[0]).toMatchObject({
+      version: '2026.6.1',
+      deploymentMode: 'container',
+      provider: 'openai',
+      model: 'gpt-5',
+      configHash: 'sha256:abc',
+      state: 'unknown',
+      health: { state: 'degraded', reason: 'probe failed' },
+      outdated: true,
+      lastError: 'probe failed',
+      warnings: ['missing docker socket'],
+    })
+  })
+
+  it('uses incoming non-empty sticky field values', () => {
+    const previous = [
+      node({
+        nodeId: 'node-a',
+        hostname: 'host-a',
+        sidecarVersion: 'v1',
+        runtimes: [
+          runtime({
+            name: 'hermes',
+            version: '1.0.0',
+            deploymentMode: 'container',
+            provider: 'openai',
+            model: 'gpt-4o',
+            configHash: 'sha256:old',
+          }),
+        ],
+      }),
+    ]
+    const incoming = [
+      node({
+        nodeId: 'node-a',
+        hostname: 'host-b',
+        sidecarVersion: 'v2',
+        runtimes: [
+          runtime({
+            name: 'hermes',
+            version: '2.0.0',
+            deploymentMode: 'systemd',
+            provider: 'anthropic',
+            model: 'claude-sonnet-4',
+            configHash: 'sha256:new',
+          }),
+        ],
+      }),
+    ]
+
+    const [merged] = mergeFleetNodes(previous, incoming)
+    expect(merged.hostname).toBe('host-b')
+    expect(merged.sidecarVersion).toBe('v2')
+    expect(merged.runtimes?.[0]).toMatchObject({
+      version: '2.0.0',
+      deploymentMode: 'systemd',
+      provider: 'anthropic',
+      model: 'claude-sonnet-4',
+      configHash: 'sha256:new',
+    })
+  })
+
+  it('adds new nodes and drops nodes missing from incoming', () => {
+    const previous = [
+      node({ nodeId: 'node-a' }),
+      node({ nodeId: 'node-b' }),
+    ]
+    const incoming = [
+      node({ nodeId: 'node-b' }),
+      node({ nodeId: 'node-c' }),
+    ]
+
+    const merged = mergeFleetNodes(previous, incoming)
+    expect(merged.map((item) => item.nodeId)).toEqual(['node-b', 'node-c'])
+    expect(merged[1]).toBe(incoming[1])
+  })
+
+  it('returns the previous object reference for an unchanged node', () => {
+    const previousRuntime = runtime({
+      name: 'hermes',
+      version: '1.0.0',
+      deploymentMode: 'container',
+      provider: 'openai',
+      model: 'gpt-4o',
+      configHash: 'sha256:abc',
+      health: { state: 'healthy' },
+      warnings: ['ok'],
+    })
+    const previousNode = node({
+      nodeId: 'node-a',
+      labels: { role: 'canary' },
+      runtimes: [previousRuntime],
+    })
+    const incomingRuntime: RuntimeStatus = {
+      ...previousRuntime,
+      health: { state: 'healthy' },
+      warnings: [...(previousRuntime.warnings ?? [])],
+    }
+    const incomingNode: NodeStatus = {
+      ...previousNode,
+      labels: { ...(previousNode.labels ?? {}) },
+      runtimes: [incomingRuntime],
+    }
+
+    const [merged] = mergeFleetNodes([previousNode], [incomingNode])
+    expect(merged).toBe(previousNode)
+    expect(merged.runtimes).toBe(previousNode.runtimes)
+    expect(merged.runtimes?.[0]).toBe(previousRuntime)
   })
 })
 

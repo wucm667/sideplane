@@ -397,6 +397,162 @@ export function snapshotForRuntime(runtime: RuntimeStatus, snapshots: RuntimeCon
   })
 }
 
+export function mergeFleetNodes(previous: NodeStatus[] | null, incoming: NodeStatus[]): NodeStatus[] {
+  if (!previous?.length) return incoming
+
+  const previousByNodeId = new Map(previous.map((node) => [node.nodeId, node]))
+  return incoming.map((incomingNode) => {
+    const previousNode = previousByNodeId.get(incomingNode.nodeId)
+    if (!previousNode) return incomingNode
+    return mergeFleetNode(previousNode, incomingNode)
+  })
+}
+
+function mergeFleetNode(previous: NodeStatus, incoming: NodeStatus): NodeStatus {
+  let merged = incoming
+
+  const hostname = stickyString(incoming.hostname, previous.hostname)
+  if (hostname !== incoming.hostname) {
+    merged = { ...merged, hostname }
+  }
+
+  const sidecarVersion = stickyString(incoming.sidecarVersion, previous.sidecarVersion)
+  if (sidecarVersion !== incoming.sidecarVersion) {
+    merged = { ...merged, sidecarVersion }
+  }
+
+  const runtimes = mergeRuntimeStatuses(previous.runtimes, incoming.runtimes)
+  if (runtimes !== incoming.runtimes) {
+    merged = { ...merged, runtimes }
+  }
+
+  return nodeStatusesEqual(merged, previous) ? previous : merged
+}
+
+function mergeRuntimeStatuses(previous: RuntimeStatus[] | undefined, incoming: RuntimeStatus[] | undefined): RuntimeStatus[] | undefined {
+  if (!previous?.length || !incoming) return incoming
+
+  const previousByName = new Map<string, RuntimeStatus>()
+  const previousByType = new Map<string, RuntimeStatus>()
+  for (const runtime of previous) {
+    const name = runtime.name.trim()
+    if (name && !previousByName.has(name)) previousByName.set(name, runtime)
+    const type = runtime.type?.trim()
+    if (type && !previousByType.has(type)) previousByType.set(type, runtime)
+  }
+
+  const merged = incoming.map((runtime) => {
+    const previousRuntime = findPreviousRuntime(runtime, previousByName, previousByType)
+    if (!previousRuntime) return runtime
+    return mergeRuntimeStatus(previousRuntime, runtime)
+  })
+
+  return runtimeArraysEqual(merged, previous) ? previous : merged
+}
+
+function findPreviousRuntime(runtime: RuntimeStatus, previousByName: Map<string, RuntimeStatus>, previousByType: Map<string, RuntimeStatus>): RuntimeStatus | undefined {
+  const name = runtime.name.trim()
+  if (name) {
+    const match = previousByName.get(name)
+    if (match) return match
+  }
+
+  const type = runtime.type?.trim()
+  return type ? previousByType.get(type) : undefined
+}
+
+function mergeRuntimeStatus(previous: RuntimeStatus, incoming: RuntimeStatus): RuntimeStatus {
+  let merged = incoming
+
+  const version = stickyString(incoming.version, previous.version)
+  if (version !== incoming.version) {
+    merged = { ...merged, version }
+  }
+
+  const deploymentMode = stickyString(incoming.deploymentMode, previous.deploymentMode)
+  if (deploymentMode !== incoming.deploymentMode) {
+    merged = { ...merged, deploymentMode }
+  }
+
+  const provider = stickyString(incoming.provider, previous.provider)
+  if (provider !== incoming.provider) {
+    merged = { ...merged, provider }
+  }
+
+  const model = stickyString(incoming.model, previous.model)
+  if (model !== incoming.model) {
+    merged = { ...merged, model }
+  }
+
+  const configHash = stickyString(incoming.configHash, previous.configHash)
+  if (configHash !== incoming.configHash) {
+    merged = { ...merged, configHash }
+  }
+
+  return runtimeStatusesEqual(merged, previous) ? previous : merged
+}
+
+function stickyString<T extends string | undefined>(incoming: T, previous: T): T {
+  return isBlank(incoming) && !isBlank(previous) ? previous : incoming
+}
+
+function isBlank(value: string | undefined): boolean {
+  return !value?.trim()
+}
+
+function nodeStatusesEqual(a: NodeStatus, b: NodeStatus): boolean {
+  return a.nodeId === b.nodeId
+    && a.hostname === b.hostname
+    && a.state === b.state
+    && a.sidecarVersion === b.sidecarVersion
+    && a.lastHeartbeatAt === b.lastHeartbeatAt
+    && a.configHash === b.configHash
+    && a.drift === b.drift
+    && a.maintenance === b.maintenance
+    && a.lastError === b.lastError
+    && a.sidecarOutdated === b.sidecarOutdated
+    && valuesEqual(a.labels, b.labels)
+    && runtimeArraysEqual(a.runtimes, b.runtimes)
+}
+
+function runtimeArraysEqual(a: RuntimeStatus[] | undefined, b: RuntimeStatus[] | undefined): boolean {
+  if (a === b) return true
+  if (!a || !b || a.length !== b.length) return false
+  return a.every((runtime, index) => runtimeStatusesEqual(runtime, b[index]))
+}
+
+function runtimeStatusesEqual(a: RuntimeStatus, b: RuntimeStatus): boolean {
+  return a.name === b.name
+    && a.type === b.type
+    && a.version === b.version
+    && a.deploymentMode === b.deploymentMode
+    && a.state === b.state
+    && a.provider === b.provider
+    && a.model === b.model
+    && a.configHash === b.configHash
+    && a.lastError === b.lastError
+    && a.outdated === b.outdated
+    && valuesEqual(a.health, b.health)
+    && valuesEqual(a.warnings, b.warnings)
+}
+
+function valuesEqual(a: unknown, b: unknown): boolean {
+  if (Object.is(a, b)) return true
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false
+    return a.every((value, index) => valuesEqual(value, b[index]))
+  }
+  if (!a || !b || typeof a !== 'object' || typeof b !== 'object') return false
+
+  const aRecord = a as Record<string, unknown>
+  const bRecord = b as Record<string, unknown>
+  const keys = new Set([...Object.keys(aRecord), ...Object.keys(bRecord)])
+  for (const key of keys) {
+    if (!valuesEqual(aRecord[key], bRecord[key])) return false
+  }
+  return true
+}
+
 export function normalizeNodeListResponse(payload: NodeStatus[] | ListNodesResponse): NodeStatus[] {
   return Array.isArray(payload) ? payload : payload.nodes
 }
@@ -563,7 +719,7 @@ export function useFleetPageController() {
     const payload = (await res.json()) as NodeStatus[] | ListNodesResponse
     const data = normalizeNodeListResponse(payload)
     if (!mountedRef.current) return null
-    setNodes(data)
+    setNodes((current) => mergeFleetNodes(current, data))
     setError(null)
     return data
   }, [operatorToken, selector])
