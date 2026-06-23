@@ -182,6 +182,7 @@ INSERT INTO node_runtimes (
 	name,
 	type,
 	version,
+	deployment_mode,
 	state,
 	provider,
 	model,
@@ -189,8 +190,8 @@ INSERT INTO node_runtimes (
 	last_error,
 	warnings_json,
 	updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-`, node.NodeID, i, runtime.Name, runtime.Type, runtime.Version, runtime.State, runtime.Provider, runtime.Model, runtime.ConfigHash, runtime.LastError, warningsJSON, now)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`, node.NodeID, i, runtime.Name, runtime.Type, runtime.Version, runtime.DeploymentMode, runtime.State, runtime.Provider, runtime.Model, runtime.ConfigHash, runtime.LastError, warningsJSON, now)
 		if err != nil {
 			return protocol.NodeStatus{}, fmt.Errorf("insert runtime %d: %w", i, err)
 		}
@@ -246,7 +247,7 @@ ORDER BY node_id
 	}
 
 	runtimeRows, err := s.db.QueryContext(ctx, `
-SELECT node_id, name, type, version, state, provider, model, config_hash, last_error, warnings_json
+SELECT node_id, name, type, version, deployment_mode, state, provider, model, config_hash, last_error, warnings_json
 FROM node_runtimes
 ORDER BY node_id, runtime_index
 `)
@@ -322,7 +323,7 @@ WITH page AS (
 	ORDER BY node_id
 	LIMIT ? OFFSET ?
 )
-SELECT nr.node_id, nr.name, nr.type, nr.version, nr.state, nr.provider, nr.model, nr.config_hash, nr.last_error, nr.warnings_json
+SELECT nr.node_id, nr.name, nr.type, nr.version, nr.deployment_mode, nr.state, nr.provider, nr.model, nr.config_hash, nr.last_error, nr.warnings_json
 FROM node_runtimes nr
 JOIN page ON page.node_id = nr.node_id
 ORDER BY nr.node_id, nr.runtime_index
@@ -395,6 +396,7 @@ func scanSQLiteNodeRuntimes(rows *sql.Rows, nodes []protocol.NodeStatus, indexBy
 			&runtime.Name,
 			&runtime.Type,
 			&runtime.Version,
+			&runtime.DeploymentMode,
 			&runtime.State,
 			&runtime.Provider,
 			&runtime.Model,

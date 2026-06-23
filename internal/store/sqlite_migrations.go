@@ -306,6 +306,13 @@ ON heartbeats(node_id, observed_at DESC)`,
 			`ALTER TABLE server_settings ADD COLUMN expected_runtime_versions_json TEXT NOT NULL DEFAULT '{}'`,
 		},
 	},
+	{
+		version: 20,
+		name:    "add runtime deployment mode",
+		statements: []string{
+			`ALTER TABLE node_runtimes ADD COLUMN deployment_mode TEXT NOT NULL DEFAULT ''`,
+		},
+	},
 }
 
 // LatestSQLiteSchemaVersion returns the newest migration version compiled into
