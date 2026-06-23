@@ -271,6 +271,9 @@ func (a *Adapter) snapshot(ctx context.Context) (*protocol.RuntimeConfigSnapshot
 		ConfigHash:  "sha256:" + hex.EncodeToString(sum[:]),
 		Warnings:    warnings,
 	})
+	if providers := EnumerateProviders(contents); len(providers) > 0 {
+		snapshot.Providers = providers
+	}
 	fileSnapshot = &snapshot
 	if fileSnapshot.Provider != "" && fileSnapshot.Model != "" {
 		return fileSnapshot, nil

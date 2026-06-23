@@ -4,16 +4,28 @@ import "time"
 
 // RuntimeConfigSnapshot is a read-only allowlisted view of a runtime config.
 type RuntimeConfigSnapshot struct {
-	RuntimeName string        `json:"runtimeName"`
-	RuntimeType string        `json:"runtimeType"`
-	ConfigPath  string        `json:"configPath,omitempty"`
-	Source      string        `json:"source,omitempty"`
-	Profile     string        `json:"profile,omitempty"`
-	Provider    string        `json:"provider,omitempty"`
-	Model       string        `json:"model,omitempty"`
-	ConfigHash  string        `json:"configHash,omitempty"`
-	Health      RuntimeHealth `json:"health,omitzero"`
-	Warnings    []string      `json:"warnings,omitempty"`
+	RuntimeName string                 `json:"runtimeName"`
+	RuntimeType string                 `json:"runtimeType"`
+	ConfigPath  string                 `json:"configPath,omitempty"`
+	Source      string                 `json:"source,omitempty"`
+	Profile     string                 `json:"profile,omitempty"`
+	Provider    string                 `json:"provider,omitempty"`
+	Model       string                 `json:"model,omitempty"`
+	Providers   []ProviderCatalogEntry `json:"providers,omitempty"`
+	ConfigHash  string                 `json:"configHash,omitempty"`
+	Health      RuntimeHealth          `json:"health,omitzero"`
+	Warnings    []string               `json:"warnings,omitempty"`
+}
+
+// ProviderCatalogEntry is a read-only, allowlisted view of one provider found in
+// a runtime config. It NEVER carries a literal secret: only the env var name
+// referenced by an ${ENV} api_key is surfaced in APIKeyEnv.
+type ProviderCatalogEntry struct {
+	Name      string   `json:"name"`
+	BaseURL   string   `json:"baseURL,omitempty"`
+	Models    []string `json:"models,omitempty"`
+	APIKeyEnv string   `json:"apiKeyEnv,omitempty"`
+	Active    bool     `json:"active,omitempty"`
 }
 
 // RuntimeHealthState is the read-only liveness state reported by an adapter.
