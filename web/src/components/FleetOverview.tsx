@@ -252,10 +252,11 @@ export function FleetOverview({
           <label className="flex w-6 items-center justify-center">
             <input type="checkbox" aria-label={t('fleet.selectAll')} checked={allVisibleSelected} onChange={toggleSelectAllVisible} />
           </label>
-          <div className="grid flex-1 grid-cols-[2fr_1fr_1.4fr_1fr_1fr_2.5rem] gap-4 text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--sp-faint)]">
+          <div className="grid flex-1 grid-cols-[2fr_1fr_1.4fr_1.2fr_1fr_1fr_2.5rem] gap-4 text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--sp-faint)]">
             <SortHeader active={sort.key === 'node'} direction={sort.direction} label={t('fleet.table.node')} onClick={() => toggleSort('node')} />
             <SortHeader active={sort.key === 'state'} direction={sort.direction} label={t('fleet.table.state')} onClick={() => toggleSort('state')} />
             <div>{t('fleet.table.runtimes')}</div>
+            <div>{t('fleet.table.model')}</div>
             <div>{t('fleet.table.config')}</div>
             <SortHeader active={sort.key === 'heartbeat'} direction={sort.direction} label={t('fleet.table.heartbeat')} onClick={() => toggleSort('heartbeat')} />
             <div />
@@ -407,6 +408,7 @@ function FleetRow({ activeProbe, node, selected, onToggleSelect, onOpen }: { act
   const { t } = useT()
   const configLabel = node.lastError ? t('fleet.config.error') : node.configHash ? t('fleet.config.observed') : t('fleet.config.unknown')
   const configColor = node.lastError ? 'text-rose-600' : node.configHash ? 'text-emerald-600' : 'text-[var(--sp-muted)]'
+  const runtimes = node.runtimes ?? []
 
   return (
     <div className="flex items-start border-b border-[var(--sp-border)] last:border-b-0 hover:bg-[var(--sp-surface-2)]">
@@ -420,7 +422,7 @@ function FleetRow({ activeProbe, node, selected, onToggleSelect, onOpen }: { act
       </label>
       <button
         type="button"
-        className="grid min-w-0 flex-1 gap-3 py-4 pr-5 text-left lg:grid-cols-[2fr_1fr_1.4fr_1fr_1fr_2.5rem] lg:items-center lg:gap-4"
+        className="grid min-w-0 flex-1 gap-3 py-4 pr-5 text-left lg:grid-cols-[2fr_1fr_1.4fr_1.2fr_1fr_1fr_2.5rem] lg:items-center lg:gap-4"
         onClick={onOpen}
       >
       <div className="min-w-0">
@@ -449,20 +451,27 @@ function FleetRow({ activeProbe, node, selected, onToggleSelect, onOpen }: { act
         </span>
       </div>
 
-      <div className="flex flex-wrap gap-1.5">
-        {(node.runtimes ?? []).length > 0 ? node.runtimes?.map((runtime, index) => {
+      <div className="flex flex-wrap gap-1.5 lg:flex-col lg:items-start">
+        {runtimes.length > 0 ? runtimes.map((runtime, index) => {
           const deployment = runtimeDeploymentLabel(runtime)
           const version = runtimeVersionLabel(runtime)
           return (
             <span key={runtimeKey(runtime, index)} className="inline-flex max-w-full items-center gap-1.5 rounded-md bg-[var(--sp-surface-3)] px-2 py-1 font-mono text-[11px] text-[var(--sp-muted)]">
               <span className="h-1.5 w-1.5 flex-none rounded-full bg-[var(--sp-accent)]" />
               {deployment && <span className="flex-none rounded bg-[var(--sp-surface-2)] px-1 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-[var(--sp-faint)]" title={t('fleet.runtime.deployment')}>{deployment}</span>}
-              <span className="truncate" title={t('fleet.runtime.model')}>{runtimeModelLabel(runtime)}</span>
               {version && <span className="flex-none text-[var(--sp-faint)]" title={t('fleet.runtime.version')}>{version}</span>}
               {runtime.outdated && <span className="rounded bg-amber-500/10 px-1 py-0.5 text-[9px] font-semibold text-amber-600" title={t('fleet.runtimeOutdatedTitle')}>{t('fleet.row.outdated')}</span>}
             </span>
           )
         }) : <span className="text-xs text-[var(--sp-faint)]">-</span>}
+      </div>
+
+      <div className="flex flex-wrap gap-1.5 lg:flex-col lg:items-start">
+        {runtimes.length > 0 ? runtimes.map((runtime, index) => (
+          <span key={runtimeKey(runtime, index)} className="inline-flex max-w-full rounded-md bg-[var(--sp-surface-2)] px-2 py-1 font-mono text-[11px] text-[var(--sp-muted)]" title={t('fleet.runtime.model')}>
+            <span className="truncate">{runtimeModelLabel(runtime)}</span>
+          </span>
+        )) : <span className="text-xs text-[var(--sp-faint)]">-</span>}
       </div>
 
       <div>
