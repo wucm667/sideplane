@@ -1679,31 +1679,66 @@ func (h *handler) applyFreshness(nodes []protocol.NodeStatus) {
 	}
 }
 
+// nodeHasConfigDrift reports whether any of the node's runtimes is running a
+// provider/model that differs from its effective desired config. Drift is
+// evaluated PER RUNTIME (using each snapshot's runtime type and profile) so that
+// runtime/profile-scoped desired overrides are honored — comparing the node's
+// actual hermes config against the unscoped global desired would otherwise
+// report false drift whenever a per-runtime override differs from the global.
+// Only runtimes whose actual AND desired provider+model are both known count.
 func (h *handler) nodeHasConfigDrift(ctx context.Context, nodeID string, desired protocol.DesiredConfig) (bool, error) {
-	effective := spconfig.EffectiveProviderModelConfig(desired, spconfig.EffectiveConfigTarget{NodeID: nodeID})
-	if !hasKnownProviderModel(effective) {
-		return false, nil
-	}
-
-	actual, err := h.latestActualSnapshot(ctx, nodeID, "", "")
+	snapshots, err := h.latestActualSnapshots(ctx, nodeID)
 	if err != nil {
 		return false, err
 	}
-	if actual == nil || !hasKnownProviderModel(protocol.ProviderModelConfig{
-		Provider: actual.Provider,
-		Model:    actual.Model,
-	}) {
-		return false, nil
-	}
-
-	for _, entry := range spconfig.DiffProviderModelConfig(actual, effective) {
-		if entry.Change == protocol.ConfigDiffChangeUpdate &&
-			strings.TrimSpace(entry.Actual) != "" &&
-			strings.TrimSpace(entry.Desired) != "" {
-			return true, nil
+	for i := range snapshots {
+		actual := snapshots[i]
+		if !hasKnownProviderModel(protocol.ProviderModelConfig{Provider: actual.Provider, Model: actual.Model}) {
+			continue
+		}
+		profile := strings.TrimSpace(actual.Profile)
+		if profile == "" {
+			profile = "default"
+		}
+		effective := spconfig.EffectiveProviderModelConfig(desired, spconfig.EffectiveConfigTarget{
+			NodeID:      nodeID,
+			RuntimeType: strings.TrimSpace(actual.RuntimeType),
+			Profile:     profile,
+		})
+		if !hasKnownProviderModel(effective) {
+			continue
+		}
+		for _, entry := range spconfig.DiffProviderModelConfig(&actual, effective) {
+			if entry.Change == protocol.ConfigDiffChangeUpdate &&
+				strings.TrimSpace(entry.Actual) != "" &&
+				strings.TrimSpace(entry.Desired) != "" {
+				return true, nil
+			}
 		}
 	}
 	return false, nil
+}
+
+// latestActualSnapshots returns all runtime config snapshots from the node's
+// most recent completed deep probe that produced any snapshots.
+func (h *handler) latestActualSnapshots(ctx context.Context, nodeID string) ([]protocol.RuntimeConfigSnapshot, error) {
+	jobs, err := h.store.ListNodeJobs(ctx, nodeID)
+	if err != nil {
+		return nil, err
+	}
+	for _, job := range jobs {
+		if job.Type != protocol.JobTypeDeepProbe || job.Status != protocol.JobStatusCompleted || strings.TrimSpace(job.ResultJSON) == "" {
+			continue
+		}
+		var result protocol.DeepProbeResult
+		if err := json.Unmarshal([]byte(job.ResultJSON), &result); err != nil {
+			continue
+		}
+		if len(result.ConfigSnapshots) > 0 {
+			return result.ConfigSnapshots, nil
+		}
+	}
+	return nil, nil
 }
 
 func hasKnownProviderModel(value protocol.ProviderModelConfig) bool {

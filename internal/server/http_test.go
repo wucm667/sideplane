@@ -4892,17 +4892,24 @@ func TestNodesApplyFreshnessPolicy(t *testing.T) {
 
 func TestNodesReportConfigDrift(t *testing.T) {
 	nodeStore := store.NewMemoryNodeStore()
-	for _, nodeID := range []string{"node-drift", "node-match", "node-nosnapshot", "node-unknown"} {
+	for _, nodeID := range []string{"node-drift", "node-match", "node-nosnapshot", "node-unknown", "node-override"} {
 		enrollTestNode(t, nodeStore, nodeID)
 	}
 	if err := nodeStore.SetDesiredConfig(context.Background(), protocol.DesiredConfig{
 		Global: protocol.ProviderModelConfig{Provider: "openai", Model: "gpt-4o"},
+		// node-override pins its hermes/default runtime to a value that differs
+		// from the global desired but matches the node's actual config. It must
+		// NOT report drift: per-runtime overrides take precedence over global.
+		NodeRuntimeProfileOverrides: map[string]protocol.ProviderModelConfig{
+			spconfig.NodeRuntimeProfileKey("node-override", "hermes", "default"): {Provider: "anthropic", Model: "claude-3-7-sonnet"},
+		},
 	}, time.Now().UTC()); err != nil {
 		t.Fatalf("set desired config: %v", err)
 	}
 	seedRuntimeConfigSnapshot(t, nodeStore, "node-drift", "anthropic", "claude-3-7-sonnet")
 	seedRuntimeConfigSnapshot(t, nodeStore, "node-match", "openai", "gpt-4o")
 	seedRuntimeConfigSnapshot(t, nodeStore, "node-unknown", "", "")
+	seedRuntimeConfigSnapshot(t, nodeStore, "node-override", "anthropic", "claude-3-7-sonnet")
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/nodes", nil)
@@ -4921,6 +4928,7 @@ func TestNodesReportConfigDrift(t *testing.T) {
 		"node-match":      false,
 		"node-nosnapshot": false,
 		"node-unknown":    false,
+		"node-override":   false,
 	}
 	for nodeID, wantDrift := range want {
 		if got[nodeID] != wantDrift {
