@@ -29,7 +29,7 @@ export function Sidebar({
   const { t } = useT()
 
   return (
-    <aside className="border-b border-[var(--sp-border)] bg-[var(--sp-surface)] md:flex md:h-screen md:w-60 md:flex-none md:flex-col md:border-b-0 md:border-r">
+    <aside className="border-b border-[var(--sp-border)] bg-[var(--sp-surface)] md:flex md:h-screen md:w-60 md:flex-none md:flex-col md:overflow-y-auto md:border-b-0 md:border-r">
       <div className="flex items-center gap-3 border-b border-[var(--sp-border)] px-5 py-4">
         <div className="relative h-7 w-7 rounded-lg bg-[var(--sp-accent)] shadow-sm">
           <div className="absolute inset-x-[7px] inset-y-[6px] rounded-sm border-2 border-white/90" />

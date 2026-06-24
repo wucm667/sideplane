@@ -164,7 +164,7 @@ function FleetPageContent({ controller }: { controller: ReturnType<typeof useFle
 
   return (
     <div data-sideplane-theme={theme} className="min-h-screen bg-[var(--sp-bg)] text-[var(--sp-text)]">
-      <div className="flex min-h-screen flex-col md:flex-row">
+      <div className="flex min-h-screen flex-col md:h-screen md:flex-row md:overflow-hidden">
         <Sidebar
           currentView={view}
           groups={groups}
