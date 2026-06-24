@@ -496,6 +496,7 @@ export interface ProviderDefinition {
   baseURL?: string;
   models?: string[];
   apiKeyEnv?: string;
+  apiKeyManaged?: boolean;
 }
 
 export interface ProviderScope {
@@ -507,6 +508,7 @@ export interface ProviderScope {
 export interface UpsertProviderRequest {
   scope?: ProviderScope;
   provider: ProviderDefinition;
+  apiKey?: string;
 }
 
 export interface ProviderCatalogEntry {

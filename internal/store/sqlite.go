@@ -2244,6 +2244,90 @@ WHERE id = ?
 	return entry, nil
 }
 
+// SetProviderSecret stores opaque encrypted provider secret bytes by env var name.
+func (s *SQLiteNodeStore) SetProviderSecret(ctx context.Context, envName string, ciphertext []byte, now time.Time) error {
+	if s == nil || s.db == nil {
+		return errors.New("sqlite node store is closed")
+	}
+	envName = strings.TrimSpace(envName)
+	if envName == "" {
+		return errors.New("provider secret env name is required")
+	}
+	_, err := s.db.ExecContext(ctx, `
+INSERT INTO provider_secrets (env_name, ciphertext, updated_at)
+VALUES (?, ?, ?)
+ON CONFLICT(env_name) DO UPDATE SET
+	ciphertext = excluded.ciphertext,
+	updated_at = excluded.updated_at
+`, envName, append([]byte(nil), ciphertext...), formatDBTime(now.UTC()))
+	if err != nil {
+		return fmt.Errorf("upsert provider secret: %w", err)
+	}
+	return nil
+}
+
+// GetProviderSecret returns opaque encrypted provider secret bytes by env var name.
+func (s *SQLiteNodeStore) GetProviderSecret(ctx context.Context, envName string) ([]byte, bool, error) {
+	if s == nil || s.db == nil {
+		return nil, false, errors.New("sqlite node store is closed")
+	}
+	envName = strings.TrimSpace(envName)
+	if envName == "" {
+		return nil, false, nil
+	}
+	var ciphertext []byte
+	err := s.db.QueryRowContext(ctx, `
+SELECT ciphertext
+FROM provider_secrets
+WHERE env_name = ?
+`, envName).Scan(&ciphertext)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("query provider secret: %w", err)
+	}
+	return append([]byte(nil), ciphertext...), true, nil
+}
+
+// DeleteProviderSecret removes opaque encrypted provider secret bytes by env var name.
+func (s *SQLiteNodeStore) DeleteProviderSecret(ctx context.Context, envName string) error {
+	if s == nil || s.db == nil {
+		return errors.New("sqlite node store is closed")
+	}
+	envName = strings.TrimSpace(envName)
+	if envName == "" {
+		return nil
+	}
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM provider_secrets WHERE env_name = ?`, envName); err != nil {
+		return fmt.Errorf("delete provider secret: %w", err)
+	}
+	return nil
+}
+
+// HasProviderSecret reports whether encrypted provider secret bytes exist.
+func (s *SQLiteNodeStore) HasProviderSecret(ctx context.Context, envName string) (bool, error) {
+	if s == nil || s.db == nil {
+		return false, errors.New("sqlite node store is closed")
+	}
+	envName = strings.TrimSpace(envName)
+	if envName == "" {
+		return false, nil
+	}
+	var exists int
+	if err := s.db.QueryRowContext(ctx, `
+SELECT 1
+FROM provider_secrets
+WHERE env_name = ?
+LIMIT 1
+`, envName).Scan(&exists); errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	} else if err != nil {
+		return false, fmt.Errorf("query provider secret existence: %w", err)
+	}
+	return exists == 1, nil
+}
+
 func insertDesiredConfigTx(ctx context.Context, tx *sql.Tx, entry protocol.DesiredConfigHistoryEntry) error {
 	payload, err := json.Marshal(entry.Config)
 	if err != nil {

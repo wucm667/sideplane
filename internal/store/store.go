@@ -458,6 +458,15 @@ type DesiredConfigStore interface {
 	RevertDesiredConfig(ctx context.Context, historyID string) (protocol.DesiredConfigHistoryEntry, error)
 }
 
+// ProviderSecretStore persists encrypted provider API keys keyed by env var name.
+// Ciphertext is opaque to the store; encryption and decryption happen in the server.
+type ProviderSecretStore interface {
+	SetProviderSecret(ctx context.Context, envName string, ciphertext []byte, now time.Time) error
+	GetProviderSecret(ctx context.Context, envName string) ([]byte, bool, error)
+	DeleteProviderSecret(ctx context.Context, envName string) error
+	HasProviderSecret(ctx context.Context, envName string) (bool, error)
+}
+
 // DesiredConfigHistoryFilter constrains desired-config history listing.
 type DesiredConfigHistoryFilter struct {
 	Limit  int
@@ -499,6 +508,7 @@ type Store interface {
 	RolloutStore
 	AuditStore
 	DesiredConfigStore
+	ProviderSecretStore
 	HealthStore
 	AlertWebhookStore
 	SettingsStore

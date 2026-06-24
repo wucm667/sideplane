@@ -53,10 +53,11 @@ type ProviderModelConfig struct {
 // APIKeyEnv is the environment variable name the runtime should reference for
 // the provider key. It is not secret material.
 type ProviderDefinition struct {
-	Name      string   `json:"name"`
-	BaseURL   string   `json:"baseURL,omitempty"`
-	Models    []string `json:"models,omitempty"`
-	APIKeyEnv string   `json:"apiKeyEnv,omitempty"`
+	Name          string   `json:"name"`
+	BaseURL       string   `json:"baseURL,omitempty"`
+	Models        []string `json:"models,omitempty"`
+	APIKeyEnv     string   `json:"apiKeyEnv,omitempty"`
+	APIKeyManaged bool     `json:"apiKeyManaged,omitempty"`
 }
 
 // ProviderScope selects the desired provider catalog layer to read or mutate.
@@ -71,6 +72,7 @@ type ProviderScope struct {
 type UpsertProviderRequest struct {
 	Scope    ProviderScope      `json:"scope,omitzero"`
 	Provider ProviderDefinition `json:"provider"`
+	APIKey   string             `json:"apiKey,omitempty"`
 }
 
 // ProviderCatalogResponse is the operator read view for desired provider

@@ -80,6 +80,7 @@ type HandlerConfig struct {
 	SigningKeyPath                  string
 	SigningKeyPair                  spcrypto.KeyPair
 	DisableSigningKey               bool
+	SecretKey                       []byte
 	RateLimits                      RateLimitConfig
 	Events                          *EventHub
 	Metrics                         *Metrics
@@ -131,6 +132,7 @@ func NewHandlerWithConfig(cfg HandlerConfig) (http.Handler, error) {
 		freshness:           freshness,
 		operatorAuth:        auth.NewOperatorTokenWithVerifier(cfg.OperatorToken, cfg.AllowUnauthenticatedOperatorAPI, cfg.Store),
 		signingKey:          keyPair,
+		secretKey:           append([]byte(nil), cfg.SecretKey...),
 		events:              cfg.Events,
 		eventTickets:        newEventTicketStore(),
 		enrollmentLimiter:   newFixedWindowRateLimiter(rateLimits.enrollmentLimit, rateLimits.window, rateLimits.now),
@@ -196,6 +198,7 @@ type handler struct {
 	freshness           FreshnessPolicy
 	operatorAuth        auth.OperatorToken
 	signingKey          spcrypto.KeyPair
+	secretKey           []byte
 	events              *EventHub
 	eventTickets        *eventTicketStore
 	enrollmentLimiter   *fixedWindowRateLimiter
@@ -3101,6 +3104,16 @@ func (h *handler) configProviders(w http.ResponseWriter, r *http.Request) {
 			writeAPIError(w, http.StatusBadRequest, "invalid provider: "+err.Error())
 			return
 		}
+		apiKey := strings.TrimSpace(req.APIKey)
+		envName := strings.TrimSpace(req.Provider.APIKeyEnv)
+		if apiKey != "" && envName == "" {
+			writeAPIError(w, http.StatusBadRequest, "apiKeyEnv is required when apiKey is provided")
+			return
+		}
+		if apiKey != "" && len(h.secretKey) == 0 {
+			writeAPIError(w, http.StatusConflict, "server secret key not configured (set --secret-key)")
+			return
+		}
 		scope := providerScopeFromProtocol(req.Scope)
 		desired, err := h.store.GetDesiredConfig(r.Context())
 		if err != nil {
@@ -3113,14 +3126,26 @@ func (h *handler) configProviders(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		now := time.Now().UTC()
+		if apiKey != "" {
+			ciphertext, err := spcrypto.Encrypt(h.secretKey, []byte(apiKey))
+			if err != nil {
+				writeAPIError(w, http.StatusInternalServerError, "encrypt provider secret")
+				return
+			}
+			if err := h.store.SetProviderSecret(r.Context(), envName, ciphertext, now); err != nil {
+				writeAPIError(w, http.StatusInternalServerError, "store provider secret")
+				return
+			}
+		}
 		if err := h.store.SetDesiredConfig(r.Context(), updated, now); err != nil {
 			writeAPIError(w, http.StatusInternalServerError, "set desired config")
 			return
 		}
+		managed, _ := h.providerSecretManaged(r.Context(), envName)
 		h.audit(r.Context(), protocol.AuditEvent{
 			Actor:     audit.ActorOperator,
 			Action:    audit.ActionDesiredConfigUpdate,
-			Detail:    fmt.Sprintf("provider=%s scope=%s desiredHash=%s", strings.TrimSpace(req.Provider.Name), formatProviderScope(scope), hashDesiredConfig(updated)),
+			Detail:    fmt.Sprintf("provider=%s env=%s managed=%t scope=%s desiredHash=%s", strings.TrimSpace(req.Provider.Name), envName, managed, formatProviderScope(scope), hashDesiredConfig(updated)),
 			CreatedAt: now,
 		})
 		h.writeProviderCatalogResponse(w, r, updated, scope)
@@ -3139,6 +3164,7 @@ func (h *handler) configProviders(w http.ResponseWriter, r *http.Request) {
 			writeAPIError(w, http.StatusInternalServerError, "get desired config")
 			return
 		}
+		removedProvider, _ := providerDefinitionInScope(desired, scope, name)
 		updated, removed := spconfig.RemoveProviderDefinition(desired, scope, name)
 		if !removed {
 			writeAPIError(w, http.StatusNotFound, "provider not found")
@@ -3153,10 +3179,12 @@ func (h *handler) configProviders(w http.ResponseWriter, r *http.Request) {
 			writeAPIError(w, http.StatusInternalServerError, "set desired config")
 			return
 		}
+		envName := strings.TrimSpace(removedProvider.APIKeyEnv)
+		managed, _ := h.providerSecretManaged(r.Context(), envName)
 		h.audit(r.Context(), protocol.AuditEvent{
 			Actor:     audit.ActorOperator,
 			Action:    audit.ActionDesiredConfigUpdate,
-			Detail:    fmt.Sprintf("provider=%s scope=%s desiredHash=%s", name, formatProviderScope(scope), hashDesiredConfig(updated)),
+			Detail:    fmt.Sprintf("provider=%s env=%s managed=%t scope=%s desiredHash=%s secretRetained=true", name, envName, managed, formatProviderScope(scope), hashDesiredConfig(updated)),
 			CreatedAt: now,
 		})
 		h.writeProviderCatalogResponse(w, r, updated, scope)
@@ -3324,16 +3352,36 @@ func (h *handler) writeProviderCatalogResponse(w http.ResponseWriter, r *http.Re
 
 func (h *handler) providerCatalogResponse(ctx context.Context, desired protocol.DesiredConfig, scope spconfig.ProviderScope) (protocol.ProviderCatalogResponse, error) {
 	scope = normalizeHTTPProviderScope(scope)
+	global, err := h.providerDefinitionsWithSecretState(ctx, desired.GlobalProviders)
+	if err != nil {
+		return protocol.ProviderCatalogResponse{}, err
+	}
+	nodeProviders, err := h.providerDefinitionMapWithSecretState(ctx, desired.NodeProviders)
+	if err != nil {
+		return protocol.ProviderCatalogResponse{}, err
+	}
+	runtimeProfileProviders, err := h.providerDefinitionMapWithSecretState(ctx, desired.RuntimeProfileProviders)
+	if err != nil {
+		return protocol.ProviderCatalogResponse{}, err
+	}
+	nodeRuntimeProfileProviders, err := h.providerDefinitionMapWithSecretState(ctx, desired.NodeRuntimeProfileProviders)
+	if err != nil {
+		return protocol.ProviderCatalogResponse{}, err
+	}
+	effective, err := h.providerDefinitionsWithSecretState(ctx, spconfig.EffectiveProviderCatalog(desired, spconfig.EffectiveConfigTarget{
+		NodeID:      scope.NodeID,
+		RuntimeType: scope.RuntimeType,
+		Profile:     scope.Profile,
+	}))
+	if err != nil {
+		return protocol.ProviderCatalogResponse{}, err
+	}
 	response := protocol.ProviderCatalogResponse{
-		Global:             desired.GlobalProviders,
-		NodeProviders:      desired.NodeProviders,
-		RuntimeProfile:     desired.RuntimeProfileProviders,
-		NodeRuntimeProfile: desired.NodeRuntimeProfileProviders,
-		Effective: spconfig.EffectiveProviderCatalog(desired, spconfig.EffectiveConfigTarget{
-			NodeID:      scope.NodeID,
-			RuntimeType: scope.RuntimeType,
-			Profile:     scope.Profile,
-		}),
+		Global:             global,
+		NodeProviders:      nodeProviders,
+		RuntimeProfile:     runtimeProfileProviders,
+		NodeRuntimeProfile: nodeRuntimeProfileProviders,
+		Effective:          effective,
 	}
 	if scope.NodeID == "" {
 		return response, nil
@@ -3350,6 +3398,73 @@ func (h *handler) providerCatalogResponse(ctx context.Context, desired protocol.
 		break
 	}
 	return response, nil
+}
+
+func (h *handler) providerDefinitionMapWithSecretState(ctx context.Context, values map[string][]protocol.ProviderDefinition) (map[string][]protocol.ProviderDefinition, error) {
+	if values == nil {
+		return nil, nil
+	}
+	annotated := make(map[string][]protocol.ProviderDefinition, len(values))
+	for key, providers := range values {
+		next, err := h.providerDefinitionsWithSecretState(ctx, providers)
+		if err != nil {
+			return nil, err
+		}
+		annotated[key] = next
+	}
+	return annotated, nil
+}
+
+func (h *handler) providerDefinitionsWithSecretState(ctx context.Context, providers []protocol.ProviderDefinition) ([]protocol.ProviderDefinition, error) {
+	if providers == nil {
+		return nil, nil
+	}
+	annotated := make([]protocol.ProviderDefinition, len(providers))
+	for i, provider := range providers {
+		annotated[i] = provider
+		if provider.Models != nil {
+			annotated[i].Models = append([]string(nil), provider.Models...)
+		}
+		managed, err := h.providerSecretManaged(ctx, provider.APIKeyEnv)
+		if err != nil {
+			return nil, err
+		}
+		annotated[i].APIKeyManaged = managed
+	}
+	return annotated, nil
+}
+
+func (h *handler) providerSecretManaged(ctx context.Context, envName string) (bool, error) {
+	envName = strings.TrimSpace(envName)
+	if envName == "" {
+		return false, nil
+	}
+	return h.store.HasProviderSecret(ctx, envName)
+}
+
+func providerDefinitionInScope(desired protocol.DesiredConfig, scope spconfig.ProviderScope, name string) (protocol.ProviderDefinition, bool) {
+	scope = normalizeHTTPProviderScope(scope)
+	name = strings.ToLower(strings.TrimSpace(name))
+	if name == "" {
+		return protocol.ProviderDefinition{}, false
+	}
+	var providers []protocol.ProviderDefinition
+	switch {
+	case scope.NodeID == "" && scope.RuntimeType == "":
+		providers = desired.GlobalProviders
+	case scope.RuntimeType == "":
+		providers = desired.NodeProviders[scope.NodeID]
+	case scope.NodeID == "":
+		providers = desired.RuntimeProfileProviders[spconfig.RuntimeProfileKey(scope.RuntimeType, scope.Profile)]
+	default:
+		providers = desired.NodeRuntimeProfileProviders[spconfig.NodeRuntimeProfileKey(scope.NodeID, scope.RuntimeType, scope.Profile)]
+	}
+	for _, provider := range providers {
+		if strings.ToLower(strings.TrimSpace(provider.Name)) == name {
+			return provider, true
+		}
+	}
+	return protocol.ProviderDefinition{}, false
 }
 
 func validateProviderDefinitionForUpsert(provider protocol.ProviderDefinition) error {

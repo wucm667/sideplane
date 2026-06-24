@@ -27,6 +27,7 @@ type MemoryNodeStore struct {
 	auditEvents      []protocol.AuditEvent
 	desiredConfig    protocol.DesiredConfig
 	desiredHistory   []protocol.DesiredConfigHistoryEntry
+	providerSecrets  map[string]memoryProviderSecret
 	alertWebhooks    map[string]memoryAlertWebhook
 	settings         protocol.ServerSettings
 	rolloutTemplates map[string]protocol.RolloutTemplate
@@ -47,6 +48,11 @@ type memoryOperatorToken struct {
 	TokenHash string
 }
 
+type memoryProviderSecret struct {
+	Ciphertext []byte
+	UpdatedAt  time.Time
+}
+
 // NewMemoryNodeStore returns an empty in-memory node store.
 func NewMemoryNodeStore() *MemoryNodeStore {
 	return &MemoryNodeStore{
@@ -59,6 +65,7 @@ func NewMemoryNodeStore() *MemoryNodeStore {
 		jobs:             make(map[string]protocol.Job),
 		rollouts:         make(map[string]protocol.Rollout),
 		auditEvents:      []protocol.AuditEvent{},
+		providerSecrets:  make(map[string]memoryProviderSecret),
 		settings: protocol.ServerSettings{
 			ExpectedRuntimeVersions: map[string]string{},
 		},
@@ -1275,6 +1282,63 @@ func (s *MemoryNodeStore) RevertDesiredConfig(_ context.Context, historyID strin
 		return cloneDesiredConfigHistoryEntry(reverted), nil
 	}
 	return protocol.DesiredConfigHistoryEntry{}, ErrDesiredConfigHistoryNotFound
+}
+
+// SetProviderSecret stores opaque encrypted provider secret bytes by env var name.
+func (s *MemoryNodeStore) SetProviderSecret(_ context.Context, envName string, ciphertext []byte, now time.Time) error {
+	envName = strings.TrimSpace(envName)
+	if envName == "" {
+		return errors.New("provider secret env name is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.providerSecrets == nil {
+		s.providerSecrets = make(map[string]memoryProviderSecret)
+	}
+	s.providerSecrets[envName] = memoryProviderSecret{
+		Ciphertext: append([]byte(nil), ciphertext...),
+		UpdatedAt:  now.UTC(),
+	}
+	return nil
+}
+
+// GetProviderSecret returns opaque encrypted provider secret bytes by env var name.
+func (s *MemoryNodeStore) GetProviderSecret(_ context.Context, envName string) ([]byte, bool, error) {
+	envName = strings.TrimSpace(envName)
+	if envName == "" {
+		return nil, false, nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	secret, ok := s.providerSecrets[envName]
+	if !ok {
+		return nil, false, nil
+	}
+	return append([]byte(nil), secret.Ciphertext...), true, nil
+}
+
+// DeleteProviderSecret removes opaque encrypted provider secret bytes by env var name.
+func (s *MemoryNodeStore) DeleteProviderSecret(_ context.Context, envName string) error {
+	envName = strings.TrimSpace(envName)
+	if envName == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.providerSecrets, envName)
+	return nil
+}
+
+// HasProviderSecret reports whether encrypted provider secret bytes exist.
+func (s *MemoryNodeStore) HasProviderSecret(_ context.Context, envName string) (bool, error) {
+	envName = strings.TrimSpace(envName)
+	if envName == "" {
+		return false, nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	_, ok := s.providerSecrets[envName]
+	return ok, nil
 }
 
 func cloneDesiredConfig(desired protocol.DesiredConfig) protocol.DesiredConfig {

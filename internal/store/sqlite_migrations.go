@@ -313,6 +313,18 @@ ON heartbeats(node_id, observed_at DESC)`,
 			`ALTER TABLE node_runtimes ADD COLUMN deployment_mode TEXT NOT NULL DEFAULT ''`,
 		},
 	},
+	{
+		version: 21,
+		name:    "create provider secrets table",
+		statements: []string{
+			`
+	CREATE TABLE IF NOT EXISTS provider_secrets (
+		env_name TEXT PRIMARY KEY,
+		ciphertext BLOB NOT NULL,
+		updated_at TEXT NOT NULL
+	)`,
+		},
+	},
 }
 
 // LatestSQLiteSchemaVersion returns the newest migration version compiled into

@@ -98,6 +98,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	operatorTokenFlag := flags.String("operator-token", "", "bearer token required for mutating operator API requests; can also be set with SIDEPLANE_OPERATOR_TOKEN")
 	allowUnauthenticatedOperatorAPIFlag := flags.Bool("allow-unauthenticated-operator-api", false, "DEVELOPMENT ONLY: allow mutating operator API requests without an operator token; can also be set with SIDEPLANE_ALLOW_UNAUTHENTICATED_OPERATOR_API=true")
 	signingKeyPath := flags.String("signing-key", "", "path to server config-plan signing key; can also be set with SIDEPLANE_SIGNING_KEY")
+	secretKeyValue := flags.String("secret-key", "", "server secret key for encrypted provider API key storage; can also be set with SIDEPLANE_SECRET_KEY")
 	showVersion := flags.Bool("version", false, "print version and exit")
 	if err := flags.Parse(args); err != nil {
 		return 2
@@ -223,6 +224,14 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 			logger.Warn("operator token not configured; mutating operator endpoints will reject requests")
 		}
 	}
+	secretKeyInput := strings.TrimSpace(*secretKeyValue)
+	if secretKeyInput == "" {
+		secretKeyInput = strings.TrimSpace(os.Getenv("SIDEPLANE_SECRET_KEY"))
+	}
+	secretKey := spcrypto.DeriveSecretKey(secretKeyInput)
+	if len(secretKey) == 0 {
+		logger.Warn("secret key not configured; encrypted provider API key storage is disabled until SIDEPLANE_SECRET_KEY or --secret-key is set")
+	}
 	keyPath := strings.TrimSpace(*signingKeyPath)
 	if keyPath == "" {
 		keyPath = strings.TrimSpace(os.Getenv("SIDEPLANE_SIGNING_KEY"))
@@ -261,6 +270,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		OperatorToken:                   operatorToken,
 		AllowUnauthenticatedOperatorAPI: allowUnauthenticatedOperatorAPI,
 		SigningKeyPair:                  signingKey,
+		SecretKey:                       secretKey,
 		RateLimits: server.RateLimitConfig{
 			EnrollmentLimit:     *enrollmentRateLimit,
 			OperatorAuthLimit:   *operatorAuthRateLimit,

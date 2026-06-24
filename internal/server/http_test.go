@@ -2130,14 +2130,20 @@ func TestProviderCatalogPutUpsertsPersistsAndAudits(t *testing.T) {
 	if len(events) != 2 {
 		t.Fatalf("audit event count = %d, want 2: %#v", len(events), events)
 	}
-	seen := map[string]bool{"provider=OpenAI scope=global": false, "provider=local scope=node=node-a": false}
+	seen := map[string]bool{"provider=OpenAI": false, "provider=local": false}
 	for _, event := range events {
 		for fragment := range seen {
-			if strings.Contains(event.Detail, fragment) && strings.Contains(event.Detail, "desiredHash=sha256:") {
+			if strings.Contains(event.Detail, fragment) && strings.Contains(event.Detail, "managed=false") && strings.Contains(event.Detail, "desiredHash=sha256:") {
+				if fragment == "provider=OpenAI" && !strings.Contains(event.Detail, "scope=global") {
+					continue
+				}
+				if fragment == "provider=local" && !strings.Contains(event.Detail, "scope=node=node-a") {
+					continue
+				}
 				seen[fragment] = true
 			}
 		}
-		if strings.Contains(event.Detail, "OPENAI_API_KEY") || strings.Contains(event.Detail, "http://127.0.0.1") {
+		if strings.Contains(event.Detail, "http://127.0.0.1") {
 			t.Fatalf("provider audit detail leaked provider body: %s", event.Detail)
 		}
 	}
@@ -2145,6 +2151,178 @@ func TestProviderCatalogPutUpsertsPersistsAndAudits(t *testing.T) {
 		if !ok {
 			t.Fatalf("audit events missing %q: %#v", fragment, events)
 		}
+	}
+}
+
+func TestProviderCatalogPutWithAPIKeyStoresEncryptedAndDoesNotLeakPlaintext(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	secretKey := spcrypto.DeriveSecretKey("server master key")
+	handler, err := NewHandlerWithConfig(HandlerConfig{
+		Store:                           nodeStore,
+		Freshness:                       DefaultFreshnessPolicy(),
+		AllowUnauthenticatedOperatorAPI: true,
+		SecretKey:                       secretKey,
+	})
+	if err != nil {
+		t.Fatalf("build handler: %v", err)
+	}
+
+	plaintext := "sk-wave6-provider-key"
+	body, err := json.Marshal(protocol.UpsertProviderRequest{
+		Provider: protocol.ProviderDefinition{
+			Name:      "openai",
+			BaseURL:   "https://api.openai.example/v1",
+			Models:    []string{"gpt-5"},
+			APIKeyEnv: "OPENAI_API_KEY",
+		},
+		APIKey: plaintext,
+	})
+	if err != nil {
+		t.Fatalf("marshal upsert request: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/config/providers", bytes.NewReader(body))
+	handler.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusOK)
+	if bytes.Contains(rec.Body.Bytes(), []byte(plaintext)) {
+		t.Fatalf("PUT response leaked plaintext API key: %s", rec.Body.String())
+	}
+	var putResp protocol.ProviderCatalogResponse
+	if err := json.NewDecoder(rec.Body).Decode(&putResp); err != nil {
+		t.Fatalf("decode upsert response: %v", err)
+	}
+	if len(putResp.Global) != 1 || !putResp.Global[0].APIKeyManaged {
+		t.Fatalf("put response global providers = %#v, want apiKeyManaged true", putResp.Global)
+	}
+
+	ciphertext, ok, err := nodeStore.GetProviderSecret(context.Background(), "OPENAI_API_KEY")
+	if err != nil {
+		t.Fatalf("get provider secret: %v", err)
+	}
+	if !ok {
+		t.Fatal("provider secret was not stored")
+	}
+	if bytes.Contains(ciphertext, []byte(plaintext)) {
+		t.Fatal("stored ciphertext contains plaintext API key")
+	}
+	decrypted, err := spcrypto.Decrypt(secretKey, ciphertext)
+	if err != nil {
+		t.Fatalf("decrypt stored provider secret: %v", err)
+	}
+	if string(decrypted) != plaintext {
+		t.Fatalf("decrypted provider secret = %q, want plaintext", decrypted)
+	}
+
+	getRec := httptest.NewRecorder()
+	getReq := httptest.NewRequest(http.MethodGet, "/api/config/providers", nil)
+	handler.ServeHTTP(getRec, getReq)
+	assertStatus(t, getRec, http.StatusOK)
+	if bytes.Contains(getRec.Body.Bytes(), []byte(plaintext)) {
+		t.Fatalf("GET response leaked plaintext API key: %s", getRec.Body.String())
+	}
+	var getResp protocol.ProviderCatalogResponse
+	if err := json.NewDecoder(getRec.Body).Decode(&getResp); err != nil {
+		t.Fatalf("decode get response: %v", err)
+	}
+	if len(getResp.Global) != 1 || !getResp.Global[0].APIKeyManaged {
+		t.Fatalf("get response global providers = %#v, want apiKeyManaged true", getResp.Global)
+	}
+
+	desired, err := nodeStore.GetDesiredConfig(context.Background())
+	if err != nil {
+		t.Fatalf("get desired config: %v", err)
+	}
+	desiredJSON, err := json.Marshal(desired)
+	if err != nil {
+		t.Fatalf("marshal desired config: %v", err)
+	}
+	if bytes.Contains(desiredJSON, []byte(plaintext)) {
+		t.Fatalf("desired config JSON leaked plaintext API key: %s", desiredJSON)
+	}
+	history, err := nodeStore.ListDesiredConfigHistory(context.Background(), store.DesiredConfigHistoryFilter{Limit: 10})
+	if err != nil {
+		t.Fatalf("list desired config history: %v", err)
+	}
+	historyJSON, err := json.Marshal(history.History)
+	if err != nil {
+		t.Fatalf("marshal desired config history: %v", err)
+	}
+	if bytes.Contains(historyJSON, []byte(plaintext)) {
+		t.Fatalf("desired config history leaked plaintext API key: %s", historyJSON)
+	}
+	events, err := nodeStore.ListAuditEventsFiltered(context.Background(), store.AuditFilter{Action: audit.ActionDesiredConfigUpdate, Limit: 10})
+	if err != nil {
+		t.Fatalf("list audit events: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("audit event count = %d, want 1: %#v", len(events), events)
+	}
+	if strings.Contains(events[0].Detail, plaintext) {
+		t.Fatalf("audit event leaked plaintext API key: %s", events[0].Detail)
+	}
+	if !strings.Contains(events[0].Detail, "provider=openai") || !strings.Contains(events[0].Detail, "env=OPENAI_API_KEY") || !strings.Contains(events[0].Detail, "managed=true") {
+		t.Fatalf("audit event detail = %q, want provider, env, managed", events[0].Detail)
+	}
+}
+
+func TestProviderCatalogPutWithAPIKeyRequiresSecretKeyAndEnvName(t *testing.T) {
+	tests := []struct {
+		name    string
+		handler http.Handler
+		body    protocol.UpsertProviderRequest
+		status  int
+		message string
+	}{
+		{
+			name:    "missing server secret key",
+			handler: newDevHandler(t),
+			body: protocol.UpsertProviderRequest{
+				Provider: protocol.ProviderDefinition{Name: "openai", APIKeyEnv: "OPENAI_API_KEY"},
+				APIKey:   "sk-wave6-provider-key",
+			},
+			status:  http.StatusConflict,
+			message: "server secret key not configured",
+		},
+		{
+			name: "missing api key env",
+			handler: func() http.Handler {
+				handler, err := NewHandlerWithConfig(HandlerConfig{
+					Store:                           store.NewMemoryNodeStore(),
+					Freshness:                       DefaultFreshnessPolicy(),
+					AllowUnauthenticatedOperatorAPI: true,
+					SecretKey:                       spcrypto.DeriveSecretKey("server master key"),
+				})
+				if err != nil {
+					t.Fatalf("build handler: %v", err)
+				}
+				return handler
+			}(),
+			body: protocol.UpsertProviderRequest{
+				Provider: protocol.ProviderDefinition{Name: "openai"},
+				APIKey:   "sk-wave6-provider-key",
+			},
+			status:  http.StatusBadRequest,
+			message: "apiKeyEnv is required",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body, err := json.Marshal(tt.body)
+			if err != nil {
+				t.Fatalf("marshal upsert request: %v", err)
+			}
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPut, "/api/config/providers", bytes.NewReader(body))
+			tt.handler.ServeHTTP(rec, req)
+			assertStatus(t, rec, tt.status)
+			if !strings.Contains(rec.Body.String(), tt.message) {
+				t.Fatalf("response = %q, want %q", rec.Body.String(), tt.message)
+			}
+			if strings.Contains(rec.Body.String(), tt.body.APIKey) {
+				t.Fatalf("error response leaked plaintext API key: %s", rec.Body.String())
+			}
+		})
 	}
 }
 
@@ -5864,4 +6042,20 @@ func (s staticNodeStore) ListDesiredConfigHistory(context.Context, store.Desired
 
 func (s staticNodeStore) RevertDesiredConfig(context.Context, string) (protocol.DesiredConfigHistoryEntry, error) {
 	return protocol.DesiredConfigHistoryEntry{}, nil
+}
+
+func (s staticNodeStore) SetProviderSecret(context.Context, string, []byte, time.Time) error {
+	return nil
+}
+
+func (s staticNodeStore) GetProviderSecret(context.Context, string) ([]byte, bool, error) {
+	return nil, false, nil
+}
+
+func (s staticNodeStore) DeleteProviderSecret(context.Context, string) error {
+	return nil
+}
+
+func (s staticNodeStore) HasProviderSecret(context.Context, string) (bool, error) {
+	return false, nil
 }

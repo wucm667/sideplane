@@ -1005,6 +1005,8 @@ paths:
           $ref: "#/components/responses/APIError"
         "403":
           $ref: "#/components/responses/APIError"
+        "409":
+          $ref: "#/components/responses/APIError"
         "429":
           $ref: "#/components/responses/RateLimited"
     delete:
@@ -1015,6 +1017,8 @@ paths:
         deleting the last provider for a target leaves a stale custom_providers
         block in the runtime config until a later apply path can explicitly
         clear the block; deleting one provider while others remain works.
+        Encrypted provider API key storage is keyed by apiKeyEnv and is retained
+        when a provider definition is deleted because it may be shared.
       operationId: deleteProviderDefinition
       security:
         - operatorBearer: []
@@ -2394,6 +2398,10 @@ components:
         apiKeyEnv:
           type: string
           description: Environment variable name only; never plaintext secret material.
+        apiKeyManaged:
+          type: boolean
+          readOnly: true
+          description: True when Sideplane has an encrypted stored API key for apiKeyEnv.
     ProviderScope:
       type: object
       properties:
@@ -2411,6 +2419,10 @@ components:
           $ref: "#/components/schemas/ProviderScope"
         provider:
           $ref: "#/components/schemas/ProviderDefinition"
+        apiKey:
+          type: string
+          writeOnly: true
+          description: Stored encrypted at rest and never returned.
     ProviderCatalogEntry:
       type: object
       required: [name]

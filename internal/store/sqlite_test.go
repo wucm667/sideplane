@@ -54,11 +54,13 @@ func TestSQLiteNodeStoreMigratesAndPersistsHeartbeat(t *testing.T) {
 	assertSQLiteTableExists(t, ctx, first.db, "alert_webhooks")
 	assertSQLiteTableExists(t, ctx, first.db, "server_settings")
 	assertSQLiteTableExists(t, ctx, first.db, "rollout_templates")
+	assertSQLiteTableExists(t, ctx, first.db, "provider_secrets")
 	assertSQLiteMigrationApplied(t, ctx, first.db, 12)
 	assertSQLiteMigrationApplied(t, ctx, first.db, 13)
 	assertSQLiteMigrationApplied(t, ctx, first.db, 14)
 	assertSQLiteMigrationApplied(t, ctx, first.db, 15)
 	assertSQLiteMigrationApplied(t, ctx, first.db, 16)
+	assertSQLiteMigrationApplied(t, ctx, first.db, 21)
 
 	observedAt := time.Date(2026, 6, 16, 1, 2, 3, 0, time.UTC)
 	sentAt := observedAt.Add(-time.Second)

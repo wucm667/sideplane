@@ -1,2 +1,2 @@
-// Package crypto contains signing and verification helpers for safe plans.
+// Package crypto contains signing, verification, and secret encryption helpers.
 package crypto
