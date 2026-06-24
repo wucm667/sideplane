@@ -480,6 +480,7 @@ export interface RuntimeConfigSnapshot {
   profile?: string;
   provider?: string;
   model?: string;
+  providers?: ProviderCatalogEntry[];
   configHash?: string;
   warnings?: string[];
   health?: RuntimeHealth;
@@ -490,11 +491,50 @@ export interface ProviderModelConfig {
   model?: string;
 }
 
+export interface ProviderDefinition {
+  name: string;
+  baseURL?: string;
+  models?: string[];
+  apiKeyEnv?: string;
+}
+
+export interface ProviderScope {
+  nodeId?: string;
+  runtimeType?: string;
+  profile?: string;
+}
+
+export interface UpsertProviderRequest {
+  scope?: ProviderScope;
+  provider: ProviderDefinition;
+}
+
+export interface ProviderCatalogEntry {
+  name: string;
+  baseURL?: string;
+  models?: string[];
+  apiKeyEnv?: string;
+  active?: boolean;
+}
+
+export interface ProviderCatalogResponse {
+  global?: ProviderDefinition[];
+  nodeProviders?: { [key: string]: ProviderDefinition[] };
+  runtimeProfileProviders?: { [key: string]: ProviderDefinition[] };
+  nodeRuntimeProfileProviders?: { [key: string]: ProviderDefinition[] };
+  effective?: ProviderDefinition[];
+  actual?: ProviderCatalogEntry[];
+}
+
 export interface DesiredConfig {
   global?: ProviderModelConfig;
   nodeOverrides?: { [key: string]: ProviderModelConfig };
   runtimeProfileOverrides?: { [key: string]: ProviderModelConfig };
   nodeRuntimeProfileOverrides?: { [key: string]: ProviderModelConfig };
+  globalProviders?: ProviderDefinition[];
+  nodeProviders?: { [key: string]: ProviderDefinition[] };
+  runtimeProfileProviders?: { [key: string]: ProviderDefinition[] };
+  nodeRuntimeProfileProviders?: { [key: string]: ProviderDefinition[] };
 }
 
 export interface DesiredConfigHistoryEntry {

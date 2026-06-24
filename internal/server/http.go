@@ -172,6 +172,7 @@ func NewHandlerWithConfig(cfg HandlerConfig) (http.Handler, error) {
 	mux.HandleFunc("/api/config/desired/history", handler.desiredConfigHistory)
 	mux.HandleFunc("/api/config/desired/revert", handler.revertDesiredConfig)
 	mux.HandleFunc("/api/config/desired", handler.desiredConfig)
+	mux.HandleFunc("/api/config/providers", handler.configProviders)
 	mux.HandleFunc("/api/config/effective", handler.effectiveConfig)
 	mux.HandleFunc("/api/config/effective/preview", handler.previewEffectiveConfig)
 	mux.HandleFunc("/api/enrollment-tokens", handler.createEnrollmentToken)
@@ -3074,6 +3075,97 @@ func (h *handler) desiredConfig(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (h *handler) configProviders(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		if !h.authorizeOperatorRead(w, r) {
+			return
+		}
+		scope := providerScopeFromQuery(r)
+		desired, err := h.store.GetDesiredConfig(r.Context())
+		if err != nil {
+			writeAPIError(w, http.StatusInternalServerError, "get desired config")
+			return
+		}
+		h.writeProviderCatalogResponse(w, r, desired, scope)
+	case http.MethodPut:
+		if !h.authorizeOperator(w, r) {
+			return
+		}
+		var req protocol.UpsertProviderRequest
+		if err := decodeJSONRequest(w, r, defaultJSONBodyLimit, &req); err != nil {
+			writeJSONDecodeError(w, err, "invalid provider catalog JSON")
+			return
+		}
+		if err := validateProviderDefinitionForUpsert(req.Provider); err != nil {
+			writeAPIError(w, http.StatusBadRequest, "invalid provider: "+err.Error())
+			return
+		}
+		scope := providerScopeFromProtocol(req.Scope)
+		desired, err := h.store.GetDesiredConfig(r.Context())
+		if err != nil {
+			writeAPIError(w, http.StatusInternalServerError, "get desired config")
+			return
+		}
+		updated := spconfig.UpsertProviderDefinition(desired, scope, req.Provider)
+		if err := spconfig.ValidateDesiredConfigValues(updated); err != nil {
+			writeAPIError(w, http.StatusBadRequest, "invalid desired config: "+err.Error())
+			return
+		}
+		now := time.Now().UTC()
+		if err := h.store.SetDesiredConfig(r.Context(), updated, now); err != nil {
+			writeAPIError(w, http.StatusInternalServerError, "set desired config")
+			return
+		}
+		h.audit(r.Context(), protocol.AuditEvent{
+			Actor:     audit.ActorOperator,
+			Action:    audit.ActionDesiredConfigUpdate,
+			Detail:    fmt.Sprintf("provider=%s scope=%s desiredHash=%s", strings.TrimSpace(req.Provider.Name), formatProviderScope(scope), hashDesiredConfig(updated)),
+			CreatedAt: now,
+		})
+		h.writeProviderCatalogResponse(w, r, updated, scope)
+	case http.MethodDelete:
+		if !h.authorizeOperator(w, r) {
+			return
+		}
+		name := strings.TrimSpace(r.URL.Query().Get("name"))
+		if name == "" {
+			writeAPIError(w, http.StatusBadRequest, "name query parameter is required")
+			return
+		}
+		scope := providerScopeFromQuery(r)
+		desired, err := h.store.GetDesiredConfig(r.Context())
+		if err != nil {
+			writeAPIError(w, http.StatusInternalServerError, "get desired config")
+			return
+		}
+		updated, removed := spconfig.RemoveProviderDefinition(desired, scope, name)
+		if !removed {
+			writeAPIError(w, http.StatusNotFound, "provider not found")
+			return
+		}
+		if err := spconfig.ValidateDesiredConfigValues(updated); err != nil {
+			writeAPIError(w, http.StatusBadRequest, "invalid desired config: "+err.Error())
+			return
+		}
+		now := time.Now().UTC()
+		if err := h.store.SetDesiredConfig(r.Context(), updated, now); err != nil {
+			writeAPIError(w, http.StatusInternalServerError, "set desired config")
+			return
+		}
+		h.audit(r.Context(), protocol.AuditEvent{
+			Actor:     audit.ActorOperator,
+			Action:    audit.ActionDesiredConfigUpdate,
+			Detail:    fmt.Sprintf("provider=%s scope=%s desiredHash=%s", name, formatProviderScope(scope), hashDesiredConfig(updated)),
+			CreatedAt: now,
+		})
+		h.writeProviderCatalogResponse(w, r, updated, scope)
+	default:
+		w.Header().Set("Allow", http.MethodGet+", "+http.MethodPut+", "+http.MethodDelete)
+		writeAPIError(w, http.StatusMethodNotAllowed, http.StatusText(http.StatusMethodNotAllowed))
+	}
+}
+
 func (h *handler) desiredConfigHistory(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", http.MethodGet)
@@ -3219,6 +3311,90 @@ func (h *handler) previewEffectiveConfig(w http.ResponseWriter, r *http.Request)
 	}
 	previewDesired := spconfig.DesiredConfigWithTargetOverride(desired, target, req.Desired)
 	h.writeEffectiveConfig(w, r, nodeID, runtimeType, profile, previewDesired)
+}
+
+func (h *handler) writeProviderCatalogResponse(w http.ResponseWriter, r *http.Request, desired protocol.DesiredConfig, scope spconfig.ProviderScope) {
+	response, err := h.providerCatalogResponse(r.Context(), desired, scope)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "get actual provider catalog")
+		return
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (h *handler) providerCatalogResponse(ctx context.Context, desired protocol.DesiredConfig, scope spconfig.ProviderScope) (protocol.ProviderCatalogResponse, error) {
+	scope = normalizeHTTPProviderScope(scope)
+	response := protocol.ProviderCatalogResponse{
+		Global:             desired.GlobalProviders,
+		NodeProviders:      desired.NodeProviders,
+		RuntimeProfile:     desired.RuntimeProfileProviders,
+		NodeRuntimeProfile: desired.NodeRuntimeProfileProviders,
+		Effective: spconfig.EffectiveProviderCatalog(desired, spconfig.EffectiveConfigTarget{
+			NodeID:      scope.NodeID,
+			RuntimeType: scope.RuntimeType,
+			Profile:     scope.Profile,
+		}),
+	}
+	if scope.NodeID == "" {
+		return response, nil
+	}
+	snapshots, err := h.latestActualSnapshots(ctx, scope.NodeID)
+	if err != nil {
+		return protocol.ProviderCatalogResponse{}, err
+	}
+	for _, snapshot := range snapshots {
+		if !runtimeConfigSnapshotMatchesTarget(snapshot, scope.RuntimeType, scope.Profile) {
+			continue
+		}
+		response.Actual = snapshot.Providers
+		break
+	}
+	return response, nil
+}
+
+func validateProviderDefinitionForUpsert(provider protocol.ProviderDefinition) error {
+	return spconfig.ValidateDesiredConfigValues(protocol.DesiredConfig{
+		GlobalProviders: []protocol.ProviderDefinition{provider},
+	})
+}
+
+func providerScopeFromQuery(r *http.Request) spconfig.ProviderScope {
+	query := r.URL.Query()
+	return normalizeHTTPProviderScope(spconfig.ProviderScope{
+		NodeID:      query.Get("nodeId"),
+		RuntimeType: query.Get("runtimeType"),
+		Profile:     query.Get("profile"),
+	})
+}
+
+func providerScopeFromProtocol(scope protocol.ProviderScope) spconfig.ProviderScope {
+	return normalizeHTTPProviderScope(spconfig.ProviderScope{
+		NodeID:      scope.NodeID,
+		RuntimeType: scope.RuntimeType,
+		Profile:     scope.Profile,
+	})
+}
+
+func normalizeHTTPProviderScope(scope spconfig.ProviderScope) spconfig.ProviderScope {
+	return spconfig.ProviderScope{
+		NodeID:      strings.TrimSpace(scope.NodeID),
+		RuntimeType: strings.TrimSpace(scope.RuntimeType),
+		Profile:     strings.TrimSpace(scope.Profile),
+	}
+}
+
+func formatProviderScope(scope spconfig.ProviderScope) string {
+	scope = normalizeHTTPProviderScope(scope)
+	if scope.NodeID == "" && scope.RuntimeType == "" {
+		return "global"
+	}
+	if scope.RuntimeType == "" {
+		return "node=" + scope.NodeID
+	}
+	if scope.NodeID == "" {
+		return "runtimeProfile=" + spconfig.RuntimeProfileKey(scope.RuntimeType, scope.Profile)
+	}
+	return "nodeRuntimeProfile=" + spconfig.NodeRuntimeProfileKey(scope.NodeID, scope.RuntimeType, scope.Profile)
 }
 
 func (h *handler) writeEffectiveConfig(w http.ResponseWriter, r *http.Request, nodeID string, runtimeType string, profile string, desired protocol.DesiredConfig) {

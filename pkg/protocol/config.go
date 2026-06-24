@@ -59,6 +59,32 @@ type ProviderDefinition struct {
 	APIKeyEnv string   `json:"apiKeyEnv,omitempty"`
 }
 
+// ProviderScope selects the desired provider catalog layer to read or mutate.
+type ProviderScope struct {
+	NodeID      string `json:"nodeId,omitempty"`
+	RuntimeType string `json:"runtimeType,omitempty"`
+	Profile     string `json:"profile,omitempty"`
+}
+
+// UpsertProviderRequest adds or replaces one provider definition in a scoped
+// desired provider catalog layer.
+type UpsertProviderRequest struct {
+	Scope    ProviderScope      `json:"scope,omitzero"`
+	Provider ProviderDefinition `json:"provider"`
+}
+
+// ProviderCatalogResponse is the operator read view for desired provider
+// catalog layers, the effective catalog for the requested scope, and the
+// latest actual catalog reported by the sidecar.
+type ProviderCatalogResponse struct {
+	Global             []ProviderDefinition            `json:"global,omitempty"`
+	NodeProviders      map[string][]ProviderDefinition `json:"nodeProviders,omitempty"`
+	RuntimeProfile     map[string][]ProviderDefinition `json:"runtimeProfileProviders,omitempty"`
+	NodeRuntimeProfile map[string][]ProviderDefinition `json:"nodeRuntimeProfileProviders,omitempty"`
+	Effective          []ProviderDefinition            `json:"effective,omitempty"`
+	Actual             []ProviderCatalogEntry          `json:"actual,omitempty"`
+}
+
 // DesiredConfig layers desired provider/model settings.
 type DesiredConfig struct {
 	Global                      ProviderModelConfig            `json:"global,omitempty"`

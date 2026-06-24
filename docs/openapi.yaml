@@ -946,6 +946,116 @@ paths:
           $ref: "#/components/responses/APIError"
         "429":
           $ref: "#/components/responses/RateLimited"
+  /api/config/providers:
+    get:
+      tags: [Operator]
+      summary: Get desired and actual provider catalog entries.
+      operationId: getProviderCatalog
+      security:
+        - operatorBearer: []
+      parameters:
+        - name: nodeId
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: runtimeType
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: profile
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Desired provider catalog layers, effective catalog for the scope, and latest actual catalog when available.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProviderCatalogResponse"
+        "401":
+          $ref: "#/components/responses/APIError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+    put:
+      tags: [Operator]
+      summary: Add or replace one provider definition.
+      operationId: upsertProviderDefinition
+      security:
+        - operatorBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpsertProviderRequest"
+      responses:
+        "200":
+          description: Updated provider catalog.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProviderCatalogResponse"
+        "400":
+          $ref: "#/components/responses/APIError"
+        "401":
+          $ref: "#/components/responses/APIError"
+        "403":
+          $ref: "#/components/responses/APIError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+    delete:
+      tags: [Operator]
+      summary: Delete one provider definition.
+      description: >
+        Deletes a provider from one desired catalog layer. Known v1 limitation:
+        deleting the last provider for a target leaves a stale custom_providers
+        block in the runtime config until a later apply path can explicitly
+        clear the block; deleting one provider while others remain works.
+      operationId: deleteProviderDefinition
+      security:
+        - operatorBearer: []
+      parameters:
+        - name: name
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: nodeId
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: runtimeType
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: profile
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Updated provider catalog.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProviderCatalogResponse"
+        "400":
+          $ref: "#/components/responses/APIError"
+        "401":
+          $ref: "#/components/responses/APIError"
+        "403":
+          $ref: "#/components/responses/APIError"
+        "404":
+          $ref: "#/components/responses/APIError"
+        "429":
+          $ref: "#/components/responses/RateLimited"
   /api/config/effective:
     get:
       tags: [Operator]
@@ -2250,6 +2360,10 @@ components:
           type: string
         model:
           type: string
+        providers:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProviderCatalogEntry"
         configHash:
           type: string
         warnings:
@@ -2265,6 +2379,88 @@ components:
           type: string
         model:
           type: string
+    ProviderDefinition:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        baseURL:
+          type: string
+        models:
+          type: array
+          items:
+            type: string
+        apiKeyEnv:
+          type: string
+          description: Environment variable name only; never plaintext secret material.
+    ProviderScope:
+      type: object
+      properties:
+        nodeId:
+          type: string
+        runtimeType:
+          type: string
+        profile:
+          type: string
+    UpsertProviderRequest:
+      type: object
+      required: [provider]
+      properties:
+        scope:
+          $ref: "#/components/schemas/ProviderScope"
+        provider:
+          $ref: "#/components/schemas/ProviderDefinition"
+    ProviderCatalogEntry:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+        baseURL:
+          type: string
+        models:
+          type: array
+          items:
+            type: string
+        apiKeyEnv:
+          type: string
+          description: Environment variable name reported from an ${ENV} reference; never plaintext secret material.
+        active:
+          type: boolean
+    ProviderCatalogResponse:
+      type: object
+      properties:
+        global:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProviderDefinition"
+        nodeProviders:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              $ref: "#/components/schemas/ProviderDefinition"
+        runtimeProfileProviders:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              $ref: "#/components/schemas/ProviderDefinition"
+        nodeRuntimeProfileProviders:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              $ref: "#/components/schemas/ProviderDefinition"
+        effective:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProviderDefinition"
+        actual:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProviderCatalogEntry"
     DesiredConfig:
       type: object
       properties:
@@ -2282,6 +2478,28 @@ components:
           type: object
           additionalProperties:
             $ref: "#/components/schemas/ProviderModelConfig"
+        globalProviders:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProviderDefinition"
+        nodeProviders:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              $ref: "#/components/schemas/ProviderDefinition"
+        runtimeProfileProviders:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              $ref: "#/components/schemas/ProviderDefinition"
+        nodeRuntimeProfileProviders:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              $ref: "#/components/schemas/ProviderDefinition"
     DesiredConfigHistoryEntry:
       type: object
       required: [id, config, updatedAt, actor]

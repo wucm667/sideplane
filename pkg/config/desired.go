@@ -14,6 +14,13 @@ type EffectiveConfigTarget struct {
 	Profile     string
 }
 
+// ProviderScope identifies the desired provider-catalog layer to mutate.
+type ProviderScope struct {
+	NodeID      string
+	RuntimeType string
+	Profile     string
+}
+
 // RuntimeProfileKey returns the stable map key used for runtime/profile overrides.
 func RuntimeProfileKey(runtimeType string, profile string) string {
 	runtimeType = strings.TrimSpace(runtimeType)
@@ -39,6 +46,58 @@ func NodeRuntimeProfileKey(nodeID string, runtimeType string, profile string) st
 		return nodeID
 	}
 	return nodeID + "/" + target
+}
+
+// UpsertProviderDefinition returns a copy of desired with provider inserted or
+// replaced by case-insensitive name in the layer derived from scope.
+func UpsertProviderDefinition(desired protocol.DesiredConfig, scope ProviderScope, provider protocol.ProviderDefinition) protocol.DesiredConfig {
+	next := cloneDesiredConfig(desired)
+	normalizedProvider := normalizeProviderDefinition(provider)
+	scope = normalizeProviderScope(scope)
+	switch providerScopeLayer(scope) {
+	case providerLayerGlobal:
+		next.GlobalProviders = upsertProviderDefinition(next.GlobalProviders, normalizedProvider)
+	case providerLayerNode:
+		if next.NodeProviders == nil {
+			next.NodeProviders = map[string][]protocol.ProviderDefinition{}
+		}
+		next.NodeProviders[scope.NodeID] = upsertProviderDefinition(next.NodeProviders[scope.NodeID], normalizedProvider)
+	case providerLayerRuntimeProfile:
+		key := RuntimeProfileKey(scope.RuntimeType, scope.Profile)
+		if next.RuntimeProfileProviders == nil {
+			next.RuntimeProfileProviders = map[string][]protocol.ProviderDefinition{}
+		}
+		next.RuntimeProfileProviders[key] = upsertProviderDefinition(next.RuntimeProfileProviders[key], normalizedProvider)
+	case providerLayerNodeRuntimeProfile:
+		key := NodeRuntimeProfileKey(scope.NodeID, scope.RuntimeType, scope.Profile)
+		if next.NodeRuntimeProfileProviders == nil {
+			next.NodeRuntimeProfileProviders = map[string][]protocol.ProviderDefinition{}
+		}
+		next.NodeRuntimeProfileProviders[key] = upsertProviderDefinition(next.NodeRuntimeProfileProviders[key], normalizedProvider)
+	}
+	return next
+}
+
+// RemoveProviderDefinition returns a copy of desired with the named provider
+// removed from the layer derived from scope. The bool reports whether an entry
+// was removed.
+func RemoveProviderDefinition(desired protocol.DesiredConfig, scope ProviderScope, name string) (protocol.DesiredConfig, bool) {
+	next := cloneDesiredConfig(desired)
+	scope = normalizeProviderScope(scope)
+	switch providerScopeLayer(scope) {
+	case providerLayerGlobal:
+		var removed bool
+		next.GlobalProviders, removed = removeProviderDefinition(next.GlobalProviders, name)
+		return next, removed
+	case providerLayerNode:
+		return removeProviderDefinitionFromMap(next, providerLayerNode, scope.NodeID, name)
+	case providerLayerRuntimeProfile:
+		return removeProviderDefinitionFromMap(next, providerLayerRuntimeProfile, RuntimeProfileKey(scope.RuntimeType, scope.Profile), name)
+	case providerLayerNodeRuntimeProfile:
+		return removeProviderDefinitionFromMap(next, providerLayerNodeRuntimeProfile, NodeRuntimeProfileKey(scope.NodeID, scope.RuntimeType, scope.Profile), name)
+	default:
+		return next, false
+	}
 }
 
 // DesiredConfigWithTargetOverride returns a copy of desired with a
@@ -137,6 +196,114 @@ func mergeProviderDefinitions(merged *[]protocol.ProviderDefinition, positions m
 		positions[key] = len(*merged)
 		*merged = append(*merged, normalized)
 	}
+}
+
+type providerLayer int
+
+const (
+	providerLayerGlobal providerLayer = iota
+	providerLayerNode
+	providerLayerRuntimeProfile
+	providerLayerNodeRuntimeProfile
+)
+
+func normalizeProviderScope(scope ProviderScope) ProviderScope {
+	return ProviderScope{
+		NodeID:      strings.TrimSpace(scope.NodeID),
+		RuntimeType: strings.TrimSpace(scope.RuntimeType),
+		Profile:     strings.TrimSpace(scope.Profile),
+	}
+}
+
+func providerScopeLayer(scope ProviderScope) providerLayer {
+	if scope.NodeID == "" && scope.RuntimeType == "" {
+		return providerLayerGlobal
+	}
+	if scope.RuntimeType == "" {
+		return providerLayerNode
+	}
+	if scope.NodeID == "" {
+		return providerLayerRuntimeProfile
+	}
+	return providerLayerNodeRuntimeProfile
+}
+
+func upsertProviderDefinition(providers []protocol.ProviderDefinition, provider protocol.ProviderDefinition) []protocol.ProviderDefinition {
+	next := cloneProviderDefinitions(providers)
+	name := strings.ToLower(strings.TrimSpace(provider.Name))
+	for i := range next {
+		if strings.ToLower(strings.TrimSpace(next[i].Name)) == name {
+			next[i] = provider
+			return next
+		}
+	}
+	return append(next, provider)
+}
+
+func removeProviderDefinitionFromMap(desired protocol.DesiredConfig, layer providerLayer, key string, name string) (protocol.DesiredConfig, bool) {
+	var providers []protocol.ProviderDefinition
+	switch layer {
+	case providerLayerNode:
+		if desired.NodeProviders == nil {
+			return desired, false
+		}
+		providers = desired.NodeProviders[key]
+	case providerLayerRuntimeProfile:
+		if desired.RuntimeProfileProviders == nil {
+			return desired, false
+		}
+		providers = desired.RuntimeProfileProviders[key]
+	case providerLayerNodeRuntimeProfile:
+		if desired.NodeRuntimeProfileProviders == nil {
+			return desired, false
+		}
+		providers = desired.NodeRuntimeProfileProviders[key]
+	default:
+		return desired, false
+	}
+
+	nextProviders, removed := removeProviderDefinition(providers, name)
+	if !removed {
+		return desired, false
+	}
+	switch layer {
+	case providerLayerNode:
+		if len(nextProviders) == 0 {
+			delete(desired.NodeProviders, key)
+		} else {
+			desired.NodeProviders[key] = nextProviders
+		}
+	case providerLayerRuntimeProfile:
+		if len(nextProviders) == 0 {
+			delete(desired.RuntimeProfileProviders, key)
+		} else {
+			desired.RuntimeProfileProviders[key] = nextProviders
+		}
+	case providerLayerNodeRuntimeProfile:
+		if len(nextProviders) == 0 {
+			delete(desired.NodeRuntimeProfileProviders, key)
+		} else {
+			desired.NodeRuntimeProfileProviders[key] = nextProviders
+		}
+	}
+	return desired, true
+}
+
+func removeProviderDefinition(providers []protocol.ProviderDefinition, name string) ([]protocol.ProviderDefinition, bool) {
+	normalizedName := strings.ToLower(strings.TrimSpace(name))
+	next := make([]protocol.ProviderDefinition, 0, len(providers))
+	removed := false
+	for _, provider := range providers {
+		if strings.ToLower(strings.TrimSpace(provider.Name)) == normalizedName {
+			removed = true
+			continue
+		}
+		next = append(next, normalizeProviderDefinition(provider))
+	}
+	if !removed {
+		return cloneProviderDefinitions(providers), false
+	}
+	return next, true
 }
 
 func normalizeProviderDefinition(provider protocol.ProviderDefinition) protocol.ProviderDefinition {

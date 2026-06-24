@@ -137,6 +137,153 @@ func TestEffectiveProviderCatalogAppliesPrecedenceAndSorts(t *testing.T) {
 	}
 }
 
+func TestProviderCatalogUpsertRemoveAcrossScopes(t *testing.T) {
+	type scopeCase struct {
+		name       string
+		scope      ProviderScope
+		key        string
+		withLayer  func([]protocol.ProviderDefinition) protocol.DesiredConfig
+		layer      func(protocol.DesiredConfig) []protocol.ProviderDefinition
+		keyDropped func(protocol.DesiredConfig) bool
+	}
+	cases := []scopeCase{
+		{
+			name:  "global",
+			scope: ProviderScope{},
+			withLayer: func(providers []protocol.ProviderDefinition) protocol.DesiredConfig {
+				return protocol.DesiredConfig{GlobalProviders: providers}
+			},
+			layer: func(desired protocol.DesiredConfig) []protocol.ProviderDefinition {
+				return desired.GlobalProviders
+			},
+			keyDropped: func(desired protocol.DesiredConfig) bool {
+				return len(desired.GlobalProviders) == 0
+			},
+		},
+		{
+			name:  "node",
+			scope: ProviderScope{NodeID: " node-a "},
+			key:   "node-a",
+			withLayer: func(providers []protocol.ProviderDefinition) protocol.DesiredConfig {
+				return protocol.DesiredConfig{NodeProviders: map[string][]protocol.ProviderDefinition{"node-a": providers}}
+			},
+			layer: func(desired protocol.DesiredConfig) []protocol.ProviderDefinition {
+				return desired.NodeProviders["node-a"]
+			},
+			keyDropped: func(desired protocol.DesiredConfig) bool {
+				_, ok := desired.NodeProviders["node-a"]
+				return !ok
+			},
+		},
+		{
+			name:  "runtime profile",
+			scope: ProviderScope{RuntimeType: " hermes ", Profile: " default "},
+			key:   RuntimeProfileKey("hermes", "default"),
+			withLayer: func(providers []protocol.ProviderDefinition) protocol.DesiredConfig {
+				return protocol.DesiredConfig{RuntimeProfileProviders: map[string][]protocol.ProviderDefinition{RuntimeProfileKey("hermes", "default"): providers}}
+			},
+			layer: func(desired protocol.DesiredConfig) []protocol.ProviderDefinition {
+				return desired.RuntimeProfileProviders[RuntimeProfileKey("hermes", "default")]
+			},
+			keyDropped: func(desired protocol.DesiredConfig) bool {
+				_, ok := desired.RuntimeProfileProviders[RuntimeProfileKey("hermes", "default")]
+				return !ok
+			},
+		},
+		{
+			name:  "node runtime profile",
+			scope: ProviderScope{NodeID: " node-a ", RuntimeType: " hermes ", Profile: " default "},
+			key:   NodeRuntimeProfileKey("node-a", "hermes", "default"),
+			withLayer: func(providers []protocol.ProviderDefinition) protocol.DesiredConfig {
+				return protocol.DesiredConfig{NodeRuntimeProfileProviders: map[string][]protocol.ProviderDefinition{NodeRuntimeProfileKey("node-a", "hermes", "default"): providers}}
+			},
+			layer: func(desired protocol.DesiredConfig) []protocol.ProviderDefinition {
+				return desired.NodeRuntimeProfileProviders[NodeRuntimeProfileKey("node-a", "hermes", "default")]
+			},
+			keyDropped: func(desired protocol.DesiredConfig) bool {
+				_, ok := desired.NodeRuntimeProfileProviders[NodeRuntimeProfileKey("node-a", "hermes", "default")]
+				return !ok
+			},
+		},
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			original := tt.withLayer([]protocol.ProviderDefinition{
+				{Name: "existing", Models: []string{"old-model"}, APIKeyEnv: "EXISTING_KEY"},
+			})
+			originalSnapshot := cloneDesiredConfig(original)
+
+			inserted := UpsertProviderDefinition(original, tt.scope, protocol.ProviderDefinition{
+				Name:      " NewProvider ",
+				BaseURL:   " https://providers.example.com/v1 ",
+				Models:    []string{" gpt-5 ", " gpt-5-mini "},
+				APIKeyEnv: " NEW_PROVIDER_KEY ",
+			})
+			if !reflect.DeepEqual(original, originalSnapshot) {
+				t.Fatalf("upsert mutated input: got %#v want %#v", original, originalSnapshot)
+			}
+			wantInserted := []protocol.ProviderDefinition{
+				{Name: "existing", Models: []string{"old-model"}, APIKeyEnv: "EXISTING_KEY"},
+				{Name: "NewProvider", BaseURL: "https://providers.example.com/v1", Models: []string{"gpt-5", "gpt-5-mini"}, APIKeyEnv: "NEW_PROVIDER_KEY"},
+			}
+			if got := tt.layer(inserted); !reflect.DeepEqual(got, wantInserted) {
+				t.Fatalf("inserted layer = %#v, want %#v", got, wantInserted)
+			}
+
+			replaced := UpsertProviderDefinition(inserted, tt.scope, protocol.ProviderDefinition{
+				Name:      "newprovider",
+				Models:    []string{"replacement-model"},
+				APIKeyEnv: "REPLACEMENT_KEY",
+			})
+			wantReplaced := []protocol.ProviderDefinition{
+				{Name: "existing", Models: []string{"old-model"}, APIKeyEnv: "EXISTING_KEY"},
+				{Name: "newprovider", Models: []string{"replacement-model"}, APIKeyEnv: "REPLACEMENT_KEY"},
+			}
+			if got := tt.layer(replaced); !reflect.DeepEqual(got, wantReplaced) {
+				t.Fatalf("replaced layer = %#v, want %#v", got, wantReplaced)
+			}
+
+			appended := UpsertProviderDefinition(replaced, tt.scope, protocol.ProviderDefinition{Name: "another", Models: []string{"append-model"}})
+			if got := tt.layer(appended); len(got) != 3 || got[2].Name != "another" {
+				t.Fatalf("appended layer = %#v, want third provider", got)
+			}
+
+			removed, ok := RemoveProviderDefinition(appended, tt.scope, " NEWPROVIDER ")
+			if !ok {
+				t.Fatal("remove returned false, want true")
+			}
+			wantRemoved := []protocol.ProviderDefinition{
+				{Name: "existing", Models: []string{"old-model"}, APIKeyEnv: "EXISTING_KEY"},
+				{Name: "another", Models: []string{"append-model"}},
+			}
+			if got := tt.layer(removed); !reflect.DeepEqual(got, wantRemoved) {
+				t.Fatalf("removed layer = %#v, want %#v", got, wantRemoved)
+			}
+			removedSnapshot := cloneDesiredConfig(removed)
+			missing, ok := RemoveProviderDefinition(removed, tt.scope, "missing")
+			if ok {
+				t.Fatal("remove missing returned true, want false")
+			}
+			if !reflect.DeepEqual(missing, removedSnapshot) {
+				t.Fatalf("remove missing changed desired: got %#v want %#v", missing, removedSnapshot)
+			}
+
+			single := tt.withLayer([]protocol.ProviderDefinition{{Name: "only", Models: []string{"model"}}})
+			emptied, ok := RemoveProviderDefinition(single, tt.scope, "ONLY")
+			if !ok {
+				t.Fatal("remove only returned false, want true")
+			}
+			if !tt.keyDropped(emptied) {
+				t.Fatalf("empty layer key not dropped for key %q: %#v", tt.key, emptied)
+			}
+			if got := tt.layer(single); len(got) != 1 || got[0].Name != "only" {
+				t.Fatalf("remove mutated single-provider input: %#v", single)
+			}
+		})
+	}
+}
+
 func TestCloneDesiredConfigDeepCopiesProviderCatalog(t *testing.T) {
 	desired := protocol.DesiredConfig{
 		GlobalProviders: []protocol.ProviderDefinition{

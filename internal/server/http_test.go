@@ -157,6 +157,26 @@ func seedRuntimeConfigSnapshot(t *testing.T, nodeStore store.Store, nodeID, prov
 	}
 }
 
+func seedProviderCatalogSnapshot(t *testing.T, nodeStore store.Store, nodeID string, snapshots []protocol.RuntimeConfigSnapshot) {
+	t.Helper()
+	ctx := context.Background()
+	now := time.Now().UTC()
+	probe, err := nodeStore.CreateJob(ctx, protocol.CreateJobRequest{Type: protocol.JobTypeDeepProbe}, nodeID, now)
+	if err != nil {
+		t.Fatalf("create provider catalog probe for %s: %v", nodeID, err)
+	}
+	if _, err := nodeStore.ClaimNextJob(ctx, nodeID, now); err != nil {
+		t.Fatalf("claim provider catalog probe for %s: %v", nodeID, err)
+	}
+	resJSON, _ := json.Marshal(protocol.DeepProbeResult{ConfigSnapshots: snapshots})
+	if err := nodeStore.CompleteJob(ctx, probe.ID, protocol.JobResultRequest{
+		Status:     protocol.JobStatusCompleted,
+		ResultJSON: string(resJSON),
+	}, now); err != nil {
+		t.Fatalf("complete provider catalog probe for %s: %v", nodeID, err)
+	}
+}
+
 func seedRollbackBackup(t *testing.T, nodeStore store.Store, nodeID, planID, configPath, backupPath string) protocol.RollbackBackup {
 	t.Helper()
 	ctx := context.Background()
@@ -1971,6 +1991,289 @@ func TestDesiredConfigPutRejectsUnsafeProviderModelValues(t *testing.T) {
 				t.Fatalf("response = %q, want invalid desired config", rec.Body.String())
 			}
 		})
+	}
+}
+
+func TestProviderCatalogGetReturnsDesiredEffectiveAndActual(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	enrollTestNode(t, nodeStore, "node-providers")
+	desired := protocol.DesiredConfig{
+		GlobalProviders: []protocol.ProviderDefinition{
+			{Name: "openai", BaseURL: "https://global.example.com/v1", Models: []string{"gpt-5"}, APIKeyEnv: "OPENAI_KEY"},
+		},
+		NodeProviders: map[string][]protocol.ProviderDefinition{
+			"node-providers": {
+				{Name: "openai", BaseURL: "https://node.example.com/v1", Models: []string{"gpt-5-mini"}, APIKeyEnv: "NODE_OPENAI_KEY"},
+				{Name: "node-only", Models: []string{"qwen3"}},
+			},
+		},
+		RuntimeProfileProviders: map[string][]protocol.ProviderDefinition{
+			spconfig.RuntimeProfileKey("hermes", "default"): {
+				{Name: "anthropic", Models: []string{"claude-sonnet-4"}, APIKeyEnv: "ANTHROPIC_KEY"},
+			},
+		},
+		NodeRuntimeProfileProviders: map[string][]protocol.ProviderDefinition{
+			spconfig.NodeRuntimeProfileKey("node-providers", "hermes", "default"): {
+				{Name: "local", BaseURL: "http://127.0.0.1:11434/v1", Models: []string{"llama3"}},
+			},
+		},
+	}
+	if err := nodeStore.SetDesiredConfig(context.Background(), desired, time.Now().UTC()); err != nil {
+		t.Fatalf("set desired config: %v", err)
+	}
+	actual := []protocol.ProviderCatalogEntry{
+		{Name: "runtime-openai", BaseURL: "https://runtime.example.com/v1", Models: []string{"gpt-4o"}, APIKeyEnv: "RUNTIME_KEY", Active: true},
+	}
+	seedProviderCatalogSnapshot(t, nodeStore, "node-providers", []protocol.RuntimeConfigSnapshot{
+		{
+			RuntimeName: "openclaw",
+			RuntimeType: "openclaw",
+			Profile:     "default",
+			Providers:   []protocol.ProviderCatalogEntry{{Name: "wrong-runtime"}},
+		},
+		{
+			RuntimeName: "hermes",
+			RuntimeType: "hermes",
+			Profile:     "default",
+			Providers:   actual,
+		},
+	})
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/config/providers?nodeId=node-providers&runtimeType=hermes&profile=default", nil)
+	newDevHandlerWithStore(t, nodeStore).ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusOK)
+
+	var resp protocol.ProviderCatalogResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode provider catalog response: %v", err)
+	}
+	if !reflect.DeepEqual(resp.Global, desired.GlobalProviders) {
+		t.Fatalf("global providers = %#v, want %#v", resp.Global, desired.GlobalProviders)
+	}
+	if !reflect.DeepEqual(resp.NodeProviders, desired.NodeProviders) {
+		t.Fatalf("node providers = %#v, want %#v", resp.NodeProviders, desired.NodeProviders)
+	}
+	if !reflect.DeepEqual(resp.RuntimeProfile, desired.RuntimeProfileProviders) {
+		t.Fatalf("runtime profile providers = %#v, want %#v", resp.RuntimeProfile, desired.RuntimeProfileProviders)
+	}
+	if !reflect.DeepEqual(resp.NodeRuntimeProfile, desired.NodeRuntimeProfileProviders) {
+		t.Fatalf("node runtime profile providers = %#v, want %#v", resp.NodeRuntimeProfile, desired.NodeRuntimeProfileProviders)
+	}
+	wantEffective := spconfig.EffectiveProviderCatalog(desired, spconfig.EffectiveConfigTarget{
+		NodeID:      "node-providers",
+		RuntimeType: "hermes",
+		Profile:     "default",
+	})
+	if !reflect.DeepEqual(resp.Effective, wantEffective) {
+		t.Fatalf("effective providers = %#v, want %#v", resp.Effective, wantEffective)
+	}
+	if !reflect.DeepEqual(resp.Actual, actual) {
+		t.Fatalf("actual providers = %#v, want %#v", resp.Actual, actual)
+	}
+}
+
+func TestProviderCatalogPutUpsertsPersistsAndAudits(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	handler, err := NewHandlerWithStoreAndFreshnessPolicyAndOperatorToken(nodeStore, DefaultFreshnessPolicy(), "dev-token")
+	if err != nil {
+		t.Fatalf("build handler: %v", err)
+	}
+
+	upsert := func(reqBody protocol.UpsertProviderRequest) protocol.ProviderCatalogResponse {
+		t.Helper()
+		body, err := json.Marshal(reqBody)
+		if err != nil {
+			t.Fatalf("marshal upsert request: %v", err)
+		}
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPut, "/api/config/providers", bytes.NewReader(body))
+		req.Header.Set("Authorization", "Bearer dev-token")
+		handler.ServeHTTP(rec, req)
+		assertStatus(t, rec, http.StatusOK)
+		var resp protocol.ProviderCatalogResponse
+		if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode upsert response: %v", err)
+		}
+		return resp
+	}
+
+	globalResp := upsert(protocol.UpsertProviderRequest{
+		Provider: protocol.ProviderDefinition{Name: " OpenAI ", BaseURL: " https://api.openai.example/v1 ", Models: []string{" gpt-5 "}, APIKeyEnv: " OPENAI_API_KEY "},
+	})
+	if len(globalResp.Global) != 1 || globalResp.Global[0].Name != "OpenAI" || globalResp.Global[0].APIKeyEnv != "OPENAI_API_KEY" {
+		t.Fatalf("global upsert response = %#v, want trimmed OpenAI provider", globalResp.Global)
+	}
+	nodeResp := upsert(protocol.UpsertProviderRequest{
+		Scope:    protocol.ProviderScope{NodeID: " node-a "},
+		Provider: protocol.ProviderDefinition{Name: "local", BaseURL: "http://127.0.0.1:11434/v1", Models: []string{"qwen3"}},
+	})
+	if got := nodeResp.NodeProviders["node-a"]; len(got) != 1 || got[0].Name != "local" {
+		t.Fatalf("node upsert response = %#v, want node-a local provider", nodeResp.NodeProviders)
+	}
+
+	desired, err := nodeStore.GetDesiredConfig(context.Background())
+	if err != nil {
+		t.Fatalf("get desired config: %v", err)
+	}
+	if len(desired.GlobalProviders) != 1 || desired.GlobalProviders[0].Name != "OpenAI" {
+		t.Fatalf("persisted global providers = %#v, want OpenAI", desired.GlobalProviders)
+	}
+	if got := desired.NodeProviders["node-a"]; len(got) != 1 || got[0].Name != "local" {
+		t.Fatalf("persisted node providers = %#v, want node-a local", desired.NodeProviders)
+	}
+
+	events, err := nodeStore.ListAuditEventsFiltered(context.Background(), store.AuditFilter{Action: audit.ActionDesiredConfigUpdate, Limit: 10})
+	if err != nil {
+		t.Fatalf("list audit events: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("audit event count = %d, want 2: %#v", len(events), events)
+	}
+	seen := map[string]bool{"provider=OpenAI scope=global": false, "provider=local scope=node=node-a": false}
+	for _, event := range events {
+		for fragment := range seen {
+			if strings.Contains(event.Detail, fragment) && strings.Contains(event.Detail, "desiredHash=sha256:") {
+				seen[fragment] = true
+			}
+		}
+		if strings.Contains(event.Detail, "OPENAI_API_KEY") || strings.Contains(event.Detail, "http://127.0.0.1") {
+			t.Fatalf("provider audit detail leaked provider body: %s", event.Detail)
+		}
+	}
+	for fragment, ok := range seen {
+		if !ok {
+			t.Fatalf("audit events missing %q: %#v", fragment, events)
+		}
+	}
+}
+
+func TestProviderCatalogDeleteRemovesAndReturnsNotFoundWhenAbsent(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	if err := nodeStore.SetDesiredConfig(context.Background(), protocol.DesiredConfig{
+		NodeProviders: map[string][]protocol.ProviderDefinition{
+			"node-a": {
+				{Name: "openai", Models: []string{"gpt-5"}},
+				{Name: "local", Models: []string{"qwen3"}},
+			},
+		},
+	}, time.Now().UTC()); err != nil {
+		t.Fatalf("set desired config: %v", err)
+	}
+	handler := newDevHandlerWithStore(t, nodeStore)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/config/providers?nodeId=node-a&name=OPENAI", nil)
+	handler.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusOK)
+	var resp protocol.ProviderCatalogResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode delete response: %v", err)
+	}
+	if got := resp.NodeProviders["node-a"]; len(got) != 1 || got[0].Name != "local" {
+		t.Fatalf("delete response node providers = %#v, want only local", resp.NodeProviders)
+	}
+	desired, err := nodeStore.GetDesiredConfig(context.Background())
+	if err != nil {
+		t.Fatalf("get desired config: %v", err)
+	}
+	if got := desired.NodeProviders["node-a"]; len(got) != 1 || got[0].Name != "local" {
+		t.Fatalf("persisted node providers = %#v, want only local", desired.NodeProviders)
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodDelete, "/api/config/providers?nodeId=node-a&name=missing", nil)
+	handler.ServeHTTP(rec, req)
+	assertAPIError(t, rec, http.StatusNotFound, "not_found", "provider not found")
+}
+
+func TestProviderCatalogPutRejectsInvalidProvider(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	handler := newDevHandlerWithStore(t, nodeStore)
+	body, err := json.Marshal(protocol.UpsertProviderRequest{
+		Provider: protocol.ProviderDefinition{Name: "openai", APIKeyEnv: "sk-plain:text/operator owned"},
+	})
+	if err != nil {
+		t.Fatalf("marshal upsert request: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/config/providers", bytes.NewReader(body))
+	handler.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusBadRequest)
+	if !strings.Contains(rec.Body.String(), "invalid provider") {
+		t.Fatalf("response = %q, want invalid provider", rec.Body.String())
+	}
+	desired, err := nodeStore.GetDesiredConfig(context.Background())
+	if err != nil {
+		t.Fatalf("get desired config: %v", err)
+	}
+	if len(desired.GlobalProviders) != 0 {
+		t.Fatalf("invalid upsert persisted providers: %#v", desired.GlobalProviders)
+	}
+}
+
+func TestProviderCatalogAuthGating(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	handler, err := NewHandlerWithConfig(HandlerConfig{
+		Store:         nodeStore,
+		Freshness:     DefaultFreshnessPolicy(),
+		OperatorToken: "bootstrap-token",
+	})
+	if err != nil {
+		t.Fatalf("build handler: %v", err)
+	}
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	client := server.Client()
+
+	readonly := doJSONRequest[protocol.CreateOperatorTokenResponse](t, client, http.MethodPost, server.URL+"/api/operator-tokens", "bootstrap-token", protocol.CreateOperatorTokenRequest{Name: "viewer", Scope: protocol.OperatorTokenScopeReadonly})
+	admin := doJSONRequest[protocol.CreateOperatorTokenResponse](t, client, http.MethodPost, server.URL+"/api/operator-tokens", "bootstrap-token", protocol.CreateOperatorTokenRequest{Name: "ops", Scope: protocol.OperatorTokenScopeAdmin})
+
+	status := func(method, path, token string, body any) int {
+		t.Helper()
+		var payload bytes.Buffer
+		if body != nil {
+			if err := json.NewEncoder(&payload).Encode(body); err != nil {
+				t.Fatalf("encode body: %v", err)
+			}
+		}
+		req, err := http.NewRequest(method, server.URL+path, &payload)
+		if err != nil {
+			t.Fatalf("build request: %v", err)
+		}
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		if body != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		res, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("%s %s: %v", method, path, err)
+		}
+		defer res.Body.Close()
+		return res.StatusCode
+	}
+
+	providerBody := protocol.UpsertProviderRequest{Provider: protocol.ProviderDefinition{Name: "openai", Models: []string{"gpt-5"}}}
+	if code := status(http.MethodGet, "/api/config/providers", "", nil); code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated GET status = %d, want 401", code)
+	}
+	if code := status(http.MethodGet, "/api/config/providers", readonly.Token, nil); code != http.StatusOK {
+		t.Fatalf("readonly GET status = %d, want 200", code)
+	}
+	if code := status(http.MethodPut, "/api/config/providers", "", providerBody); code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated PUT status = %d, want 401", code)
+	}
+	if code := status(http.MethodPut, "/api/config/providers", readonly.Token, providerBody); code != http.StatusForbidden {
+		t.Fatalf("readonly PUT status = %d, want 403", code)
+	}
+	if code := status(http.MethodPut, "/api/config/providers", admin.Token, providerBody); code != http.StatusOK {
+		t.Fatalf("admin PUT status = %d, want 200", code)
+	}
+	if code := status(http.MethodDelete, "/api/config/providers?name=openai", readonly.Token, nil); code != http.StatusForbidden {
+		t.Fatalf("readonly DELETE status = %d, want 403", code)
 	}
 }
 
