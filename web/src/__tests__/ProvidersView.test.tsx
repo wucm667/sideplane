@@ -38,6 +38,7 @@ describe('ProvidersView', () => {
           baseURL: 'https://api.openai.com/v1',
           models: ['gpt-4o', 'gpt-4o-mini'],
           apiKeyEnv: 'OPENAI_API_KEY',
+          apiKeyManaged: true,
         },
       ],
       loading: false,
@@ -54,32 +55,63 @@ describe('ProvidersView', () => {
     expect(text).toContain('https://api.openai.com/v1')
     expect(text).toContain('gpt-4o, gpt-4o-mini')
     expect(text).toContain('OPENAI_API_KEY')
+    expect(text).toContain('Key stored')
   })
 
-  it('calls onUpsert from the add form with parsed provider fields', async () => {
-    const onSubmit = vi.fn()
+  it('calls onUpsert from the add form with parsed provider fields and api key', async () => {
+    const onUpsert = vi.fn().mockResolvedValue(true)
+    const setAPIKey = vi.fn()
     useStateMock
       .mockImplementationOnce(() => ['openai', vi.fn()])
       .mockImplementationOnce(() => [' https://api.openai.com/v1 ', vi.fn()])
       .mockImplementationOnce(() => ['gpt-4o, gpt-4o-mini', vi.fn()])
       .mockImplementationOnce(() => [' OPENAI_API_KEY ', vi.fn()])
+      .mockImplementationOnce(() => [' sk-test ', setAPIKey])
 
     const element = ProviderForm({
       provider: null,
       saving: false,
       onCancel: vi.fn(),
-      onSubmit,
+      onSubmit: onUpsert,
     })
     const form = findOne(element, (item) => item.type === 'form')
 
     await (form.props.onSubmit as (event: { preventDefault: () => void }) => void | Promise<void>)({ preventDefault: vi.fn() })
 
-    expect(onSubmit).toHaveBeenCalledWith({
+    expect(onUpsert).toHaveBeenCalledWith({
       name: 'openai',
       baseURL: 'https://api.openai.com/v1',
       models: ['gpt-4o', 'gpt-4o-mini'],
       apiKeyEnv: 'OPENAI_API_KEY',
+    }, ' sk-test ')
+    expect(setAPIKey).toHaveBeenCalledWith('')
+  })
+
+  it('omits apiKey from onUpsert when the add form key field is blank', async () => {
+    const onUpsert = vi.fn().mockResolvedValue(true)
+    useStateMock
+      .mockImplementationOnce(() => ['openai', vi.fn()])
+      .mockImplementationOnce(() => [' https://api.openai.com/v1 ', vi.fn()])
+      .mockImplementationOnce(() => ['gpt-4o, gpt-4o-mini', vi.fn()])
+      .mockImplementationOnce(() => [' OPENAI_API_KEY ', vi.fn()])
+      .mockImplementationOnce(() => ['', vi.fn()])
+
+    const element = ProviderForm({
+      provider: null,
+      saving: false,
+      onCancel: vi.fn(),
+      onSubmit: onUpsert,
     })
+    const form = findOne(element, (item) => item.type === 'form')
+
+    await (form.props.onSubmit as (event: { preventDefault: () => void }) => void | Promise<void>)({ preventDefault: vi.fn() })
+
+    expect(onUpsert.mock.calls[0]).toEqual([{
+      name: 'openai',
+      baseURL: 'https://api.openai.com/v1',
+      models: ['gpt-4o', 'gpt-4o-mini'],
+      apiKeyEnv: 'OPENAI_API_KEY',
+    }])
   })
 
   it('asks for delete confirmation before calling onDelete', async () => {
@@ -120,8 +152,13 @@ function translateForTest(key: string, params?: Record<string, string | number |
   const translations: Record<string, string> = {
     'common.saving': 'Saving...',
     'providers.add': 'Add provider',
+    'providers.apiKey': 'API key',
     'providers.apiKeyEnv': 'API key env var',
     'providers.apiKeyEnvHint': 'Environment variable name only — set the real key in the node\'s ~/.hermes/.env. Sideplane never stores plaintext keys.',
+    'providers.apiKeyEnvOnly': 'Env reference',
+    'providers.apiKeyHint': 'Optional; stored encrypted and pushed to nodes on apply. Leave blank to reference an existing env var above.',
+    'providers.apiKeyKeepHint': 'A key is already stored. Leave blank to keep it, or enter a new key to replace it.',
+    'providers.apiKeyManagedBadge': 'Key stored',
     'providers.baseURL': 'Base URL',
     'providers.cancel': 'Cancel',
     'providers.confirmDelete': 'Delete provider {name}?',

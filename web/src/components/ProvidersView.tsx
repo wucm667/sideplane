@@ -9,7 +9,7 @@ interface ProvidersViewProps {
   error: string | null
   saving: boolean
   onRefresh: () => void
-  onUpsert: (provider: ProviderDefinition) => boolean | void | Promise<boolean | void>
+  onUpsert: (provider: ProviderDefinition, apiKey?: string) => boolean | void | Promise<boolean | void>
   onDelete: (name: string) => boolean | void | Promise<boolean | void>
 }
 
@@ -118,11 +118,12 @@ export function ProvidersView({
           provider={editingProvider}
           saving={saving}
           onCancel={closeForm}
-          onSubmit={async (provider) => {
-            const result = await onUpsert(provider)
+          onSubmit={async (provider, apiKey) => {
+            const result = apiKey === undefined ? await onUpsert(provider) : await onUpsert(provider, apiKey)
             if (result !== false) {
               closeForm()
             }
+            return result
           }}
         />
       )}
@@ -149,7 +150,16 @@ export function ProvidersView({
               <span className="break-words font-mono text-xs text-[var(--sp-muted)]">{provider.models?.join(', ') || '-'}</span>
             </ProviderCell>
             <ProviderCell label={t('providers.apiKeyEnv')}>
-              <span className="break-all font-mono text-xs text-[var(--sp-muted)]">{provider.apiKeyEnv || '-'}</span>
+              <div className="flex min-w-0 flex-wrap items-center gap-2">
+                <span className="break-all font-mono text-xs text-[var(--sp-muted)]">{provider.apiKeyEnv || '-'}</span>
+                {provider.apiKeyManaged ? (
+                  <span className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-emerald-700">
+                    {t('providers.apiKeyManagedBadge')}
+                  </span>
+                ) : provider.apiKeyEnv ? (
+                  <span className="text-xs text-[var(--sp-faint)]">{t('providers.apiKeyEnvOnly')}</span>
+                ) : null}
+              </div>
             </ProviderCell>
             <div className="flex flex-wrap items-center gap-2 md:justify-end">
               <button
@@ -207,7 +217,7 @@ export function ProviderForm({
   provider: ProviderDefinition | null
   saving: boolean
   onCancel: () => void
-  onSubmit: (provider: ProviderDefinition) => void | Promise<void>
+  onSubmit: (provider: ProviderDefinition, apiKey?: string) => boolean | void | Promise<boolean | void>
 }) {
   const { t } = useT()
   const initialValues = providerFormValues(provider)
@@ -215,13 +225,17 @@ export function ProviderForm({
   const [baseURL, setBaseURL] = useState(initialValues.baseURL)
   const [models, setModels] = useState(initialValues.models)
   const [apiKeyEnv, setAPIKeyEnv] = useState(initialValues.apiKeyEnv)
+  const [apiKey, setAPIKey] = useState('')
 
   const submit = async (event: FormEvent) => {
     event.preventDefault()
     const values = { name, baseURL, models, apiKeyEnv }
     const nextProvider = providerFromFormValues(values)
     if (!nextProvider.name) return
-    await onSubmit(nextProvider)
+    const result = apiKey.trim() === '' ? await onSubmit(nextProvider) : await onSubmit(nextProvider, apiKey)
+    if (result !== false) {
+      setAPIKey('')
+    }
   }
 
   return (
@@ -276,6 +290,18 @@ export function ProviderForm({
             onChange={(event) => setAPIKeyEnv(event.target.value)}
           />
           <p className="mt-1.5 text-xs leading-5 text-[var(--sp-faint)]">{t('providers.apiKeyEnvHint')}</p>
+        </ProviderField>
+        <ProviderField label={t('providers.apiKey')}>
+          <input
+            autoComplete="off"
+            className={inputClassName}
+            type="password"
+            value={apiKey}
+            onChange={(event) => setAPIKey(event.target.value)}
+          />
+          <p className="mt-1.5 text-xs leading-5 text-[var(--sp-faint)]">
+            {provider?.apiKeyManaged ? t('providers.apiKeyKeepHint') : t('providers.apiKeyHint')}
+          </p>
         </ProviderField>
       </div>
     </form>

@@ -1136,7 +1136,7 @@ export function useFleetPageController() {
     }
   }, [operatorToken])
 
-  const upsertProvider = useCallback(async (provider: ProviderDefinition): Promise<boolean> => {
+  const upsertProvider = useCallback(async (provider: ProviderDefinition, apiKey?: string): Promise<boolean> => {
     if (!mountedRef.current) return false
     const token = operatorToken.trim()
     if (!token) {
@@ -1145,7 +1145,8 @@ export function useFleetPageController() {
     }
     setSavingProvider(true)
     try {
-      const request: UpsertProviderRequest = { provider }
+      const trimmedAPIKey = apiKey?.trim()
+      const request: UpsertProviderRequest = trimmedAPIKey ? { provider, apiKey: trimmedAPIKey } : { provider }
       const res = await fetch(apiURL('/api/config/providers'), {
         method: 'PUT',
         headers: {
