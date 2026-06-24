@@ -456,6 +456,11 @@ func defaultConfigPaths() []string {
 	}
 }
 
+// DefaultConfigPaths returns the Hermes config search path defaults.
+func DefaultConfigPaths() []string {
+	return defaultConfigPaths()
+}
+
 func splitPathList(raw string) []string {
 	if strings.TrimSpace(raw) == "" {
 		return nil

@@ -46,6 +46,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	heartbeatInterval := flags.Duration("heartbeat-interval", 30*time.Second, "heartbeat interval")
 	jobPollInterval := flags.Duration("job-poll-interval", 30*time.Second, "job poll interval")
 	hermesConfigPaths := flags.String("hermes-config-paths", "", "path-list of read-only Hermes config files to inspect; can also be set with SIDEPLANE_HERMES_CONFIG_PATHS")
+	hermesEnvPath := flags.String("hermes-env-path", "", "Hermes .env path for Sideplane-managed provider keys; can also be set with SIDEPLANE_HERMES_ENV_PATH")
 	openclawConfigPaths := flags.String("openclaw-config-paths", "", "path-list of read-only OpenClaw config files to inspect; can also be set with SIDEPLANE_OPENCLAW_CONFIG_PATHS")
 	hermesDockerContainer := flags.String("hermes-docker-container", "", "optional read-only Docker container name for Hermes status/log inspection; can also be set with SIDEPLANE_HERMES_DOCKER_CONTAINER")
 	hermesVersionCommand := flags.String("hermes-version-command", "", "optional single read-only command for non-container Hermes version discovery; can also be set with SIDEPLANE_HERMES_VERSION_COMMAND")
@@ -75,6 +76,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		heartbeatInterval:       heartbeatInterval,
 		jobPollInterval:         jobPollInterval,
 		hermesConfigPaths:       hermesConfigPaths,
+		hermesEnvPath:           hermesEnvPath,
 		openclawConfigPaths:     openclawConfigPaths,
 		hermesDockerContainer:   hermesDockerContainer,
 		hermesVersionCommand:    hermesVersionCommand,
@@ -97,6 +99,11 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 	if runtimeConfig.NodeCredential == "" {
 		fmt.Fprintln(stderr, "node credential is required; run sideplane-sidecar enroll first")
+		return 1
+	}
+	resolvedHermesEnvPath, err := resolveHermesEnvPath(*hermesEnvPath, *hermesConfigPaths)
+	if err != nil {
+		fmt.Fprintf(stderr, "resolve Hermes env path: %v\n", err)
 		return 1
 	}
 
@@ -158,6 +165,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		NodeCredential: runtimeConfig.NodeCredential,
 		PublicKey:      *serverPublicKey,
 		ApplyWorkDir:   *applyWorkDir,
+		EnvPath:        resolvedHermesEnvPath,
 		AllowLiveApply: *allowLiveApply,
 		Controller:     hermesAdapter,
 		Collector:      reg,
@@ -207,6 +215,7 @@ type doctorReport struct {
 	StateFound              bool                 `json:"stateFound"`
 	NodeID                  string               `json:"nodeId,omitempty"`
 	HermesConfigPaths       []sidecar.PathStatus `json:"hermesConfigPaths"`
+	HermesEnvPath           string               `json:"hermesEnvPath"`
 	OpenClawConfigPaths     []sidecar.PathStatus `json:"openclawConfigPaths"`
 	ApplyWorkDir            string               `json:"applyWorkDir"`
 	LiveApplyEnabled        bool                 `json:"liveApplyEnabled"`
@@ -230,6 +239,7 @@ func runDoctor(args []string, stdout io.Writer, stderr io.Writer) int {
 	heartbeatInterval := flags.Duration("heartbeat-interval", 30*time.Second, "heartbeat interval")
 	jobPollInterval := flags.Duration("job-poll-interval", 30*time.Second, "job poll interval")
 	hermesConfigPaths := flags.String("hermes-config-paths", "", "path-list of read-only Hermes config files to inspect; can also be set with SIDEPLANE_HERMES_CONFIG_PATHS")
+	hermesEnvPath := flags.String("hermes-env-path", "", "Hermes .env path for Sideplane-managed provider keys; can also be set with SIDEPLANE_HERMES_ENV_PATH")
 	openclawConfigPaths := flags.String("openclaw-config-paths", "", "path-list of read-only OpenClaw config files to inspect; can also be set with SIDEPLANE_OPENCLAW_CONFIG_PATHS")
 	hermesDockerContainer := flags.String("hermes-docker-container", "", "optional read-only Docker container name for Hermes status/log inspection; can also be set with SIDEPLANE_HERMES_DOCKER_CONTAINER")
 	hermesVersionCommand := flags.String("hermes-version-command", "", "optional single read-only command for non-container Hermes version discovery; can also be set with SIDEPLANE_HERMES_VERSION_COMMAND")
@@ -258,6 +268,7 @@ func runDoctor(args []string, stdout io.Writer, stderr io.Writer) int {
 		heartbeatInterval:       heartbeatInterval,
 		jobPollInterval:         jobPollInterval,
 		hermesConfigPaths:       hermesConfigPaths,
+		hermesEnvPath:           hermesEnvPath,
 		openclawConfigPaths:     openclawConfigPaths,
 		hermesDockerContainer:   hermesDockerContainer,
 		hermesVersionCommand:    hermesVersionCommand,
@@ -290,12 +301,18 @@ func runDoctor(args []string, stdout io.Writer, stderr io.Writer) int {
 	if workDir == "" {
 		workDir = filepath.Join(os.TempDir(), "sideplane-apply")
 	}
+	resolvedHermesEnvPath, err := resolveHermesEnvPath(*hermesEnvPath, *hermesConfigPaths)
+	if err != nil {
+		fmt.Fprintf(stderr, "resolve Hermes env path: %v\n", err)
+		return 1
+	}
 	report := doctorReport{
 		ServerURL:               cfg.ServerURL,
 		StatePath:               cfg.StatePath,
 		StateFound:              stateFound,
 		NodeID:                  cfg.NodeID,
 		HermesConfigPaths:       sidecar.CheckReadablePaths(splitPathList(*hermesConfigPaths)),
+		HermesEnvPath:           resolvedHermesEnvPath,
 		OpenClawConfigPaths:     sidecar.CheckReadablePaths(splitPathList(*openclawConfigPaths)),
 		ApplyWorkDir:            workDir,
 		LiveApplyEnabled:        *allowLiveApply,
@@ -345,6 +362,7 @@ func printDoctorReport(w io.Writer, report doctorReport) {
 	fmt.Fprintf(w, "Hermes docker container: %s\n", valueOrDash(report.HermesDockerContainer))
 	fmt.Fprintf(w, "Hermes version command: %s\n", valueOrDash(report.HermesVersionCommand))
 	fmt.Fprintf(w, "Hermes service unit: %s\n", valueOrDash(report.HermesServiceUnit))
+	fmt.Fprintf(w, "Hermes env path: %s\n", valueOrDash(report.HermesEnvPath))
 	fmt.Fprintf(w, "OpenClaw docker container: %s\n", valueOrDash(report.OpenClawDockerContainer))
 	fmt.Fprintf(w, "OpenClaw version command: %s\n", valueOrDash(report.OpenClawVersionCommand))
 	fmt.Fprintf(w, "OpenClaw service unit: %s\n", valueOrDash(report.OpenClawServiceUnit))
@@ -392,6 +410,7 @@ type sidecarFlagValues struct {
 	heartbeatInterval       *time.Duration
 	jobPollInterval         *time.Duration
 	hermesConfigPaths       *string
+	hermesEnvPath           *string
 	openclawConfigPaths     *string
 	hermesDockerContainer   *string
 	hermesVersionCommand    *string
@@ -417,6 +436,7 @@ func applySidecarEnvFallbacks(setFlags map[string]bool, values sidecarFlagValues
 	applyStringEnvFallback(setFlags, "node-id", "SIDEPLANE_NODE_ID", values.nodeID)
 	applyStringEnvFallback(setFlags, "state", "SIDEPLANE_SIDECAR_STATE", values.statePath)
 	applyStringEnvFallback(setFlags, "hermes-config-paths", "SIDEPLANE_HERMES_CONFIG_PATHS", values.hermesConfigPaths)
+	applyStringEnvFallback(setFlags, "hermes-env-path", "SIDEPLANE_HERMES_ENV_PATH", values.hermesEnvPath)
 	applyStringEnvFallback(setFlags, "openclaw-config-paths", "SIDEPLANE_OPENCLAW_CONFIG_PATHS", values.openclawConfigPaths)
 	applyStringEnvFallback(setFlags, "hermes-docker-container", "SIDEPLANE_HERMES_DOCKER_CONTAINER", values.hermesDockerContainer)
 	applyStringEnvFallback(setFlags, "hermes-version-command", "SIDEPLANE_HERMES_VERSION_COMMAND", values.hermesVersionCommand)
@@ -489,6 +509,42 @@ func splitPathList(raw string) []string {
 		}
 	}
 	return paths
+}
+
+func resolveHermesEnvPath(rawEnvPath string, rawConfigPaths string) (string, error) {
+	if value := strings.TrimSpace(rawEnvPath); value != "" {
+		return expandHomePath(value)
+	}
+	paths := splitPathList(rawConfigPaths)
+	if len(paths) == 0 {
+		paths = hermes.DefaultConfigPaths()
+	}
+	if len(paths) == 0 {
+		return "", nil
+	}
+	first, err := expandHomePath(paths[0])
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(first) == "" {
+		return "", nil
+	}
+	return filepath.Join(filepath.Dir(first), ".env"), nil
+}
+
+func expandHomePath(path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "~" || strings.HasPrefix(path, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("resolve home directory: %w", err)
+		}
+		if path == "~" {
+			return home, nil
+		}
+		return filepath.Join(home, strings.TrimPrefix(path, "~/")), nil
+	}
+	return path, nil
 }
 
 type runtimeConfig struct {

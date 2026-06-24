@@ -188,6 +188,7 @@ func NewHandlerWithConfig(cfg HandlerConfig) (http.Handler, error) {
 	mux.HandleFunc("/api/nodes/labels", handler.bulkNodeLabels)
 	mux.HandleFunc("/api/nodes", handler.nodes)
 	mux.HandleFunc("/api/nodes/", handler.nodeJobsRouter)
+	mux.HandleFunc("/api/sidecar/config-apply/secrets", handler.configApplySecrets)
 	mux.HandleFunc("/api/sidecar/jobs/next", handler.claimNextJob)
 	mux.HandleFunc("/api/sidecar/jobs/", handler.submitJobResult)
 	return requestLogger(handler.logger, securityHeaders(mux)), nil
@@ -2622,6 +2623,11 @@ func (h *handler) createConfigApplyJob(w http.ResponseWriter, r *http.Request, n
 	if !dryRun {
 		mode = protocol.ConfigPlanModeLive
 	}
+	providers, err := h.providerDefinitionsWithSecretState(r.Context(), spconfig.EffectiveProviderCatalog(desired, target))
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "get provider secret state")
+		return
+	}
 	plan := protocol.ConfigPlan{
 		ID:           planID,
 		Schema:       protocol.ConfigPlanSchema,
@@ -2634,7 +2640,7 @@ func (h *handler) createConfigApplyJob(w http.ResponseWriter, r *http.Request, n
 			// Profile carries the read-only config path the sidecar reads/backs up.
 			Profile:   actual.ConfigPath,
 			Desired:   effective,
-			Providers: spconfig.EffectiveProviderCatalog(desired, target),
+			Providers: providers,
 			DryRun:    dryRun,
 		},
 	}
@@ -2673,6 +2679,98 @@ func (h *handler) createConfigApplyJob(w http.ResponseWriter, r *http.Request, n
 	publishJobEvent(h.events, job)
 
 	writeJSON(w, http.StatusCreated, job)
+}
+
+// configApplySecrets handles POST /api/sidecar/config-apply/secrets.
+func (h *handler) configApplySecrets(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		writeAPIError(w, http.StatusMethodNotAllowed, http.StatusText(http.StatusMethodNotAllowed))
+		return
+	}
+
+	credential, ok := auth.BearerToken(r.Header.Get("Authorization"))
+	if !ok {
+		writeAPIError(w, http.StatusUnauthorized, http.StatusText(http.StatusUnauthorized))
+		return
+	}
+
+	var signedPlan protocol.SignedConfigPlan
+	if err := decodeJSONRequest(w, r, largeJSONBodyLimit, &signedPlan); err != nil {
+		writeJSONDecodeError(w, err, "invalid config apply secrets JSON")
+		return
+	}
+	nodeID := strings.TrimSpace(signedPlan.Plan.TargetNodeID)
+	if nodeID == "" {
+		writeAPIError(w, http.StatusBadRequest, "plan targetNodeId is required")
+		return
+	}
+	ok, err := h.store.VerifyNodeCredential(r.Context(), nodeID, credential)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "verify node credential")
+		return
+	}
+	if !ok {
+		writeAPIError(w, http.StatusUnauthorized, http.StatusText(http.StatusUnauthorized))
+		return
+	}
+	if len(h.signingKey.PublicKey) == 0 {
+		writeAPIError(w, http.StatusServiceUnavailable, "server signing key unavailable")
+		return
+	}
+	if err := protocol.VerifySignedConfigPlan(signedPlan, h.signingKey.PublicKey); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "plan signature rejected")
+		return
+	}
+
+	envNames := managedProviderEnvNames(signedPlan.Plan.Body.Providers)
+	if len(envNames) == 0 {
+		writeJSON(w, http.StatusOK, protocol.ConfigApplySecretsResponse{Secrets: map[string]string{}})
+		return
+	}
+	if len(h.secretKey) == 0 {
+		writeAPIError(w, http.StatusConflict, "secret key not configured")
+		return
+	}
+
+	secrets := make(map[string]string, len(envNames))
+	for _, envName := range envNames {
+		ciphertext, found, err := h.store.GetProviderSecret(r.Context(), envName)
+		if err != nil {
+			writeAPIError(w, http.StatusInternalServerError, "get provider secret")
+			return
+		}
+		if !found {
+			continue
+		}
+		plaintext, err := spcrypto.Decrypt(h.secretKey, ciphertext)
+		if err != nil {
+			writeAPIError(w, http.StatusInternalServerError, "decrypt provider secret")
+			return
+		}
+		secrets[envName] = string(plaintext)
+	}
+	writeJSON(w, http.StatusOK, protocol.ConfigApplySecretsResponse{Secrets: secrets})
+}
+
+func managedProviderEnvNames(providers []protocol.ProviderDefinition) []string {
+	seen := map[string]struct{}{}
+	for _, provider := range providers {
+		if !provider.APIKeyManaged {
+			continue
+		}
+		envName := strings.TrimSpace(provider.APIKeyEnv)
+		if envName == "" {
+			continue
+		}
+		seen[envName] = struct{}{}
+	}
+	names := make([]string, 0, len(seen))
+	for name := range seen {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 func newPlanID() (string, error) {

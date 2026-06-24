@@ -38,17 +38,19 @@ type ConfigApplyExecutor struct {
 	NodeID            string
 	PublicKey         string
 	WorkDir           string
+	EnvPath           string
 	AllowedConfigDirs []string
 	AllowLiveApply    bool
 	// Controller restarts the runtime and verifies its health after a live
 	// replace. Live apply requires a controller so replacement is followed by
 	// restart and health-check; a failure in either step triggers rollback.
-	Controller  adapters.ServiceController
-	ReadFile    func(string) ([]byte, error)
-	WriteFile   func(string, []byte, os.FileMode) error
-	MkdirAll    func(string, os.FileMode) error
-	Now         func() time.Time
-	replaceFile func(string, []byte, os.FileInfo) error
+	Controller      adapters.ServiceController
+	ReadFile        func(string) ([]byte, error)
+	WriteFile       func(string, []byte, os.FileMode) error
+	MkdirAll        func(string, os.FileMode) error
+	Now             func() time.Time
+	FetchEnvSecrets func(context.Context, protocol.SignedConfigPlan) (map[string]string, error)
+	replaceFile     func(string, []byte, os.FileInfo) error
 }
 
 // Execute verifies a signed config apply plan and runs it in dry-run mode, or
@@ -96,6 +98,7 @@ func (e ConfigApplyExecutor) Execute(ctx context.Context, signedPlan protocol.Si
 		addStep("validated", "failed", err.Error())
 		return result, err
 	}
+	managedEnvNames := managedProviderEnvNames(signedPlan.Plan.Body.Providers)
 
 	configPath := strings.TrimSpace(signedPlan.Plan.Body.Profile)
 	if configPath == "" {
@@ -110,6 +113,23 @@ func (e ConfigApplyExecutor) Execute(ctx context.Context, signedPlan protocol.Si
 		if err := validateLiveConfigPath(configPath, e.AllowedConfigDirs); err != nil {
 			addStep("validated", "failed", err.Error())
 			return result, err
+		}
+		if len(managedEnvNames) > 0 {
+			envPath := strings.TrimSpace(e.EnvPath)
+			if envPath == "" {
+				err := errors.New("managed provider secrets require a Hermes env path")
+				addStep("validated", "failed", err.Error())
+				return result, err
+			}
+			if sameCleanAbsPath(envPath, configPath) {
+				err := errors.New("Hermes env path must not be the same file as the config path")
+				addStep("validated", "failed", err.Error())
+				return result, err
+			}
+			if err := validateLiveEnvPath(envPath, e.AllowedConfigDirs); err != nil {
+				addStep("validated", "failed", err.Error())
+				return result, err
+			}
 		}
 	}
 	workDir := strings.TrimSpace(e.WorkDir)
@@ -188,6 +208,9 @@ func (e ConfigApplyExecutor) Execute(ctx context.Context, signedPlan protocol.Si
 	addStep("validated", "completed", validateDetail)
 
 	if !live {
+		if len(managedEnvNames) > 0 {
+			addStep("managed_env", "skipped", "dry-run would write managed envs: "+strings.Join(managedEnvNames, ", "))
+		}
 		addStep("replaced", "skipped", "dry-run")
 		addStep("restarted", "skipped", "dry-run")
 		addStep("health_checked", "skipped", "dry-run")
@@ -205,6 +228,41 @@ func (e ConfigApplyExecutor) Execute(ctx context.Context, signedPlan protocol.Si
 		addStep("replaced", "failed", err.Error())
 		return result, fmt.Errorf("stat current config: %w", err)
 	}
+	var envState *managedEnvApply
+	if len(managedEnvNames) > 0 {
+		fetch := e.FetchEnvSecrets
+		if fetch == nil {
+			err := errors.New("managed provider secrets require a sidecar secret fetcher")
+			addStep("managed_env_fetched", "failed", err.Error())
+			return result, err
+		}
+		secrets, err := fetch(ctx, signedPlan)
+		if err != nil {
+			addStep("managed_env_fetched", "failed", err.Error())
+			return result, err
+		}
+		if missing := missingManagedEnvNames(managedEnvNames, secrets); len(missing) > 0 {
+			err := fmt.Errorf("managed provider secret not set for env %s", strings.Join(missing, ", "))
+			addStep("managed_env_fetched", "failed", err.Error())
+			return result, err
+		}
+		addStep("managed_env_fetched", "completed", "received managed envs: "+strings.Join(managedEnvNames, ", "))
+		envState, err = e.prepareManagedEnv(strings.TrimSpace(e.EnvPath), runDir, secrets, writeFile)
+		if err != nil {
+			if errors.Is(err, errManagedEnvBackup) {
+				addStep("managed_env_backup_created", "failed", err.Error())
+			} else {
+				addStep("managed_env_temp_written", "failed", err.Error())
+			}
+			return result, err
+		}
+		if envState.existed {
+			addStep("managed_env_backup_created", "completed", "read-only copy")
+		} else {
+			addStep("managed_env_backup_created", "completed", "absent")
+		}
+		addStep("managed_env_temp_written", "completed", "sidecar temp path")
+	}
 	replaceFile := e.replaceFile
 	if replaceFile == nil {
 		replaceFile = atomicReplaceFile
@@ -212,31 +270,38 @@ func (e ConfigApplyExecutor) Execute(ctx context.Context, signedPlan protocol.Si
 	if err := replaceFile(configPath, rendered, origInfo); err != nil {
 		addStep("replaced", "failed", err.Error())
 		if configWasMutated(err) {
-			return result, e.rollback(addStep, configPath, contents, origInfo, err)
+			return result, e.rollbackBoth(addStep, configPath, contents, origInfo, envState, err)
 		}
 		return result, fmt.Errorf("atomic replace: %w", err)
 	}
 	if err := verifyWritten(readFile, configPath, rendered); err != nil {
 		addStep("replaced", "failed", err.Error())
-		return result, e.rollback(addStep, configPath, contents, origInfo, err)
+		return result, e.rollbackBoth(addStep, configPath, contents, origInfo, envState, err)
 	}
 	addStep("replaced", "completed", "atomic rename")
+	if envState != nil {
+		if err := replaceManagedEnv(envState, origInfo); err != nil {
+			addStep("managed_env_replaced", "failed", err.Error())
+			return result, e.rollbackBoth(addStep, configPath, contents, origInfo, envState, err)
+		}
+		addStep("managed_env_replaced", "completed", "atomic rename")
+	}
 
 	if e.Controller == nil {
 		err := errors.New("live config apply requires a restart/health controller")
 		addStep("restarted", "failed", err.Error())
-		return result, e.rollback(addStep, configPath, contents, origInfo, err)
+		return result, e.rollbackBoth(addStep, configPath, contents, origInfo, envState, err)
 	}
 
 	if err := e.Controller.Restart(ctx); err != nil {
 		addStep("restarted", "failed", err.Error())
-		return result, e.rollback(addStep, configPath, contents, origInfo, err)
+		return result, e.rollbackBoth(addStep, configPath, contents, origInfo, envState, err)
 	}
 	addStep("restarted", "completed", "")
 
 	if err := e.Controller.HealthCheck(ctx); err != nil {
 		addStep("health_checked", "failed", err.Error())
-		return result, e.rollback(addStep, configPath, contents, origInfo, err)
+		return result, e.rollbackBoth(addStep, configPath, contents, origInfo, envState, err)
 	}
 	addStep("health_checked", "completed", "")
 
@@ -253,6 +318,144 @@ func (e ConfigApplyExecutor) rollback(addStep func(string, string, string), conf
 	}
 	addStep("rolled_back", "completed", "restored backup")
 	return fmt.Errorf("apply failed, rolled back: %w", cause)
+}
+
+func (e ConfigApplyExecutor) rollbackBoth(addStep func(string, string, string), configPath string, backup []byte, orig os.FileInfo, envState *managedEnvApply, cause error) error {
+	if envState == nil {
+		return e.rollback(addStep, configPath, backup, orig, cause)
+	}
+	failures := []string{}
+	if rbErr := atomicReplaceFile(configPath, backup, orig); rbErr != nil {
+		failures = append(failures, "config: "+rbErr.Error())
+	}
+	if rbErr := restoreManagedEnvBackup(envState); rbErr != nil {
+		failures = append(failures, "env: "+rbErr.Error())
+	}
+	if len(failures) > 0 {
+		detail := strings.Join(failures, "; ")
+		addStep("rolled_back", "failed", detail)
+		return fmt.Errorf("apply failed (%v) and rollback failed: %s", cause, detail)
+	}
+	addStep("rolled_back", "completed", "restored config and managed env backups")
+	return fmt.Errorf("apply failed, rolled back: %w", cause)
+}
+
+var errManagedEnvBackup = errors.New("managed env backup failed")
+
+type managedEnvApply struct {
+	path     string
+	backup   []byte
+	info     os.FileInfo
+	existed  bool
+	rendered []byte
+	tempPath string
+}
+
+func (e ConfigApplyExecutor) prepareManagedEnv(envPath string, runDir string, secrets map[string]string, writeFile func(string, []byte, os.FileMode) error) (*managedEnvApply, error) {
+	state := &managedEnvApply{path: envPath}
+	info, err := os.Lstat(envPath)
+	switch {
+	case err == nil:
+		if !info.Mode().IsRegular() {
+			return nil, fmt.Errorf("%w: env path %q is not a regular file", errManagedEnvBackup, envPath)
+		}
+		contents, err := os.ReadFile(envPath)
+		if err != nil {
+			return nil, fmt.Errorf("%w: read env file: %v", errManagedEnvBackup, err)
+		}
+		state.backup = contents
+		state.info = info
+		state.existed = true
+		backupPath := filepath.Join(runDir, "current.env.backup")
+		if err := writeFile(backupPath, contents, 0o600); err != nil {
+			return nil, fmt.Errorf("%w: write env backup: %v", errManagedEnvBackup, err)
+		}
+	case errors.Is(err, os.ErrNotExist):
+		state.backup = nil
+		state.info = nil
+		state.existed = false
+	default:
+		return nil, fmt.Errorf("%w: inspect env path: %v", errManagedEnvBackup, err)
+	}
+
+	rendered, err := hermes.RenderManagedEnv(state.backup, secrets)
+	if err != nil {
+		return nil, err
+	}
+	tempPath := filepath.Join(runDir, "desired.env")
+	if err := writeFile(tempPath, rendered, 0o600); err != nil {
+		return nil, fmt.Errorf("write temp env: %w", err)
+	}
+	state.rendered = rendered
+	state.tempPath = tempPath
+	return state, nil
+}
+
+func replaceManagedEnv(state *managedEnvApply, configInfo os.FileInfo) error {
+	if state == nil {
+		return nil
+	}
+	if err := atomicReplaceFileWithModeOwner(state.path, state.rendered, 0o600, configInfo); err != nil {
+		return fmt.Errorf("atomic replace env: %w", err)
+	}
+	if err := verifyManagedEnvWritten(state.path, state.rendered); err != nil {
+		return err
+	}
+	return nil
+}
+
+func restoreManagedEnvBackup(state *managedEnvApply) error {
+	if state == nil {
+		return nil
+	}
+	if state.existed {
+		return atomicReplaceFile(state.path, state.backup, state.info)
+	}
+	if err := os.Remove(state.path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("delete env file created during failed apply: %w", err)
+	}
+	return nil
+}
+
+func verifyManagedEnvWritten(path string, want []byte) error {
+	got, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read back env: %w", err)
+	}
+	if sha256.Sum256(got) != sha256.Sum256(want) {
+		return errors.New("written env hash mismatch")
+	}
+	return nil
+}
+
+func missingManagedEnvNames(names []string, secrets map[string]string) []string {
+	missing := []string{}
+	for _, name := range names {
+		if _, ok := secrets[name]; !ok {
+			missing = append(missing, name)
+		}
+	}
+	return missing
+}
+
+func managedProviderEnvNames(providers []protocol.ProviderDefinition) []string {
+	seen := map[string]struct{}{}
+	for _, provider := range providers {
+		if !provider.APIKeyManaged {
+			continue
+		}
+		envName := strings.TrimSpace(provider.APIKeyEnv)
+		if envName == "" {
+			continue
+		}
+		seen[envName] = struct{}{}
+	}
+	names := make([]string, 0, len(seen))
+	for name := range seen {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 type mutatedConfigError struct {
@@ -292,6 +495,55 @@ func validateLiveConfigPath(path string, allowedDirs []string) error {
 		return fmt.Errorf("config path %q is not a regular file", path)
 	}
 	return nil
+}
+
+func validateLiveEnvPath(path string, allowedDirs []string) error {
+	if err := rejectPathOutsideAllowedDirs(path, allowedDirs, "Hermes env path"); err != nil {
+		return err
+	}
+	if len(nonEmptyPaths(allowedDirs)) > 0 {
+		parent := filepath.Dir(filepath.Clean(path))
+		if err := rejectSymlinkComponentsUnderAllowedDirs(parent, allowedDirs, "Hermes env path parent"); err != nil {
+			return err
+		}
+	}
+	info, err := os.Lstat(path)
+	if err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("live apply refuses symlink Hermes env path %q until target resolution is implemented", path)
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("Hermes env path %q is not a regular file", path)
+		}
+		return nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect Hermes env path: %w", err)
+	}
+	parent := filepath.Dir(path)
+	parentInfo, err := os.Lstat(parent)
+	if err != nil {
+		return fmt.Errorf("inspect Hermes env parent: %w", err)
+	}
+	if parentInfo.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("live apply refuses symlink Hermes env parent %q until target resolution is implemented", parent)
+	}
+	if !parentInfo.Mode().IsDir() {
+		return fmt.Errorf("Hermes env parent %q is not a directory", parent)
+	}
+	return nil
+}
+
+func sameCleanAbsPath(left string, right string) bool {
+	cleanLeft, err := cleanAbsPath(left, "Hermes env path")
+	if err != nil {
+		return false
+	}
+	cleanRight, err := cleanAbsPath(right, "config path")
+	if err != nil {
+		return false
+	}
+	return cleanLeft == cleanRight
 }
 
 func rejectDuplicatePlanRun(workDir string, planID string) error {
@@ -371,6 +623,14 @@ func planExecutionMode(plan protocol.ConfigPlan) (live bool, err error) {
 // original file's permission bits and ownership are preserved so that a sidecar
 // running as root does not leave the config owned by root.
 func atomicReplaceFile(path string, contents []byte, orig os.FileInfo) error {
+	mode := os.FileMode(0o600)
+	if orig != nil {
+		mode = orig.Mode().Perm()
+	}
+	return atomicReplaceFileWithModeOwner(path, contents, mode, orig)
+}
+
+func atomicReplaceFileWithModeOwner(path string, contents []byte, mode os.FileMode, owner os.FileInfo) error {
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".sideplane-apply-*.tmp")
 	if err != nil {
 		return fmt.Errorf("create temp file: %w", err)
@@ -393,11 +653,7 @@ func atomicReplaceFile(path string, contents []byte, orig os.FileInfo) error {
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("close temp file: %w", err)
 	}
-	mode := os.FileMode(0o600)
-	if orig != nil {
-		mode = orig.Mode().Perm()
-	}
-	if uid, gid, ok := fileOwner(orig); ok {
+	if uid, gid, ok := fileOwner(owner); ok {
 		if err := os.Chown(tmpName, uid, gid); err != nil {
 			return fmt.Errorf("restore temp ownership: %w", err)
 		}
@@ -599,7 +855,7 @@ func (p *JobPoller) executeConfigApply(ctx context.Context, job *protocol.Job) p
 		return protocol.JobResultRequest{Status: protocol.JobStatusFailed, Error: fmt.Sprintf("parse config_apply payload: %v", err)}
 	}
 	logger.Info("config_apply execution started", "job_id", job.ID, "node_id", p.nodeID, "plan_id", signedPlan.Plan.ID, "mode", signedPlan.Plan.Mode, "dry_run", signedPlan.Plan.Body.DryRun)
-	executor := ConfigApplyExecutor{NodeID: p.nodeID, PublicKey: p.publicKey, WorkDir: p.applyWorkDir, AllowedConfigDirs: p.allowedConfigDirs, AllowLiveApply: p.allowLiveApply, Controller: p.controllerForRuntime(signedPlan.Plan.Body.RuntimeType)}
+	executor := ConfigApplyExecutor{NodeID: p.nodeID, PublicKey: p.publicKey, WorkDir: p.applyWorkDir, EnvPath: p.envPath, AllowedConfigDirs: p.allowedConfigDirs, AllowLiveApply: p.allowLiveApply, Controller: p.controllerForRuntime(signedPlan.Plan.Body.RuntimeType), FetchEnvSecrets: p.fetchConfigApplySecrets}
 	result, err := executor.Execute(ctx, signedPlan)
 	payload, marshalErr := json.Marshal(result)
 	if marshalErr != nil {

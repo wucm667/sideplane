@@ -77,6 +77,7 @@ func TestSidecarEnvFallbacksResolveWhenFlagsEmpty(t *testing.T) {
 	t.Setenv("SIDEPLANE_HEARTBEAT_INTERVAL", "45s")
 	t.Setenv("SIDEPLANE_JOB_POLL_INTERVAL", "15s")
 	t.Setenv("SIDEPLANE_HERMES_CONFIG_PATHS", "/etc/hermes/env.json")
+	t.Setenv("SIDEPLANE_HERMES_ENV_PATH", "/etc/hermes/.env")
 	t.Setenv("SIDEPLANE_OPENCLAW_CONFIG_PATHS", "/etc/openclaw/env.json")
 	t.Setenv("SIDEPLANE_HERMES_DOCKER_CONTAINER", "hermes-env")
 	t.Setenv("SIDEPLANE_HERMES_VERSION_COMMAND", "hermes --version")
@@ -91,7 +92,7 @@ func TestSidecarEnvFallbacksResolveWhenFlagsEmpty(t *testing.T) {
 	var serverURL, nodeID, state string
 	heartbeatInterval := 30 * time.Second
 	jobPollInterval := 30 * time.Second
-	var hermesConfigPaths, openclawConfigPaths, hermesDockerContainer, hermesVersionCommand, hermesServiceUnit, openclawDockerContainer, openclawVersionCommand, openclawServiceUnit, serverPublicKey, applyWorkDir string
+	var hermesConfigPaths, hermesEnvPath, openclawConfigPaths, hermesDockerContainer, hermesVersionCommand, hermesServiceUnit, openclawDockerContainer, openclawVersionCommand, openclawServiceUnit, serverPublicKey, applyWorkDir string
 	serviceRestartUseSudo := false
 
 	if err := applySidecarEnvFallbacks(map[string]bool{}, sidecarFlagValues{
@@ -101,6 +102,7 @@ func TestSidecarEnvFallbacksResolveWhenFlagsEmpty(t *testing.T) {
 		heartbeatInterval:       &heartbeatInterval,
 		jobPollInterval:         &jobPollInterval,
 		hermesConfigPaths:       &hermesConfigPaths,
+		hermesEnvPath:           &hermesEnvPath,
 		openclawConfigPaths:     &openclawConfigPaths,
 		hermesDockerContainer:   &hermesDockerContainer,
 		hermesVersionCommand:    &hermesVersionCommand,
@@ -139,6 +141,9 @@ func TestSidecarEnvFallbacksResolveWhenFlagsEmpty(t *testing.T) {
 	}
 	if hermesConfigPaths != "/etc/hermes/env.json" || openclawConfigPaths != "/etc/openclaw/env.json" {
 		t.Fatalf("config paths = %q/%q, want env paths", hermesConfigPaths, openclawConfigPaths)
+	}
+	if hermesEnvPath != "/etc/hermes/.env" {
+		t.Fatalf("hermes env path = %q, want env path", hermesEnvPath)
 	}
 	if hermesDockerContainer != "hermes-env" || hermesServiceUnit != "hermes-env.service" {
 		t.Fatalf("hermes targets = %q/%q, want env targets", hermesDockerContainer, hermesServiceUnit)
@@ -287,5 +292,34 @@ func TestSplitPathListAcceptsPathListCommasAndNewlines(t *testing.T) {
 		if paths[i] != want[i] {
 			t.Fatalf("paths[%d] = %q, want %q", i, paths[i], want[i])
 		}
+	}
+}
+
+func TestResolveHermesEnvPath(t *testing.T) {
+	dir := t.TempDir()
+	explicit := filepath.Join(dir, "explicit.env")
+	got, err := resolveHermesEnvPath(explicit, filepath.Join(dir, "config.yaml"))
+	if err != nil {
+		t.Fatalf("resolve explicit env path: %v", err)
+	}
+	if got != explicit {
+		t.Fatalf("explicit env path = %q, want %q", got, explicit)
+	}
+
+	configPath := filepath.Join(dir, "hermes", "config.yaml")
+	got, err = resolveHermesEnvPath("", configPath)
+	if err != nil {
+		t.Fatalf("resolve derived env path: %v", err)
+	}
+	if want := filepath.Join(dir, "hermes", ".env"); got != want {
+		t.Fatalf("derived env path = %q, want %q", got, want)
+	}
+
+	got, err = resolveHermesEnvPath("", "")
+	if err != nil {
+		t.Fatalf("resolve default env path: %v", err)
+	}
+	if !strings.HasSuffix(got, filepath.Join(".hermes", ".env")) {
+		t.Fatalf("default env path = %q, want ~/.hermes/.env-derived path", got)
 	}
 }

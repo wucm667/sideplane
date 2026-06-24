@@ -321,6 +321,178 @@ func TestCreateConfigApplyJobUsesNodeRuntimeProfileOverride(t *testing.T) {
 	}
 }
 
+func TestConfigApplySecretsEndpointDecryptsAndDoesNotLeakJobPayload(t *testing.T) {
+	ctx := context.Background()
+	nodeStore := store.NewMemoryNodeStore()
+	credential := enrollTestNode(t, nodeStore, "node-secrets")
+	otherCredential := enrollTestNode(t, nodeStore, "node-other")
+	seedDesiredAndProbe(t, nodeStore, "node-secrets", "/etc/hermes/config.yaml")
+
+	plaintext := "sk-wave7-provider-key"
+	secretKey := spcrypto.DeriveSecretKey("server master key")
+	ciphertext, err := spcrypto.Encrypt(secretKey, []byte(plaintext))
+	if err != nil {
+		t.Fatalf("encrypt provider secret: %v", err)
+	}
+	if err := nodeStore.SetProviderSecret(ctx, "OPENAI_API_KEY", ciphertext, time.Now().UTC()); err != nil {
+		t.Fatalf("set provider secret: %v", err)
+	}
+	if err := nodeStore.SetDesiredConfig(ctx, protocol.DesiredConfig{
+		Global: protocol.ProviderModelConfig{Provider: "openai", Model: "gpt-4o"},
+		GlobalProviders: []protocol.ProviderDefinition{
+			{Name: "openai", BaseURL: "https://api.openai.example/v1", APIKeyEnv: "OPENAI_API_KEY"},
+		},
+	}, time.Now().UTC()); err != nil {
+		t.Fatalf("set desired config: %v", err)
+	}
+
+	keyPair, err := spcrypto.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("generate signing key: %v", err)
+	}
+	handler, err := NewHandlerWithConfig(HandlerConfig{
+		Store:                           nodeStore,
+		Freshness:                       DefaultFreshnessPolicy(),
+		AllowUnauthenticatedOperatorAPI: true,
+		SigningKeyPair:                  keyPair,
+		SecretKey:                       secretKey,
+	})
+	if err != nil {
+		t.Fatalf("build handler: %v", err)
+	}
+
+	createRec := httptest.NewRecorder()
+	handler.ServeHTTP(createRec, httptest.NewRequest(http.MethodPost, "/api/nodes/node-secrets/config-apply", strings.NewReader(`{"dryRun":false}`)))
+	assertStatus(t, createRec, http.StatusCreated)
+	if strings.Contains(createRec.Body.String(), plaintext) {
+		t.Fatalf("config apply create response leaked plaintext: %s", createRec.Body.String())
+	}
+	var job protocol.Job
+	if err := json.NewDecoder(createRec.Body).Decode(&job); err != nil {
+		t.Fatalf("decode job: %v", err)
+	}
+	if strings.Contains(job.PayloadJSON, plaintext) {
+		t.Fatalf("stored job payload leaked plaintext: %s", job.PayloadJSON)
+	}
+	if !strings.Contains(job.PayloadJSON, "OPENAI_API_KEY") || !strings.Contains(job.PayloadJSON, `"apiKeyManaged":true`) {
+		t.Fatalf("job payload = %s, want managed env name metadata only", job.PayloadJSON)
+	}
+
+	unauthRec := httptest.NewRecorder()
+	unauthReq := httptest.NewRequest(http.MethodPost, "/api/sidecar/config-apply/secrets", strings.NewReader(job.PayloadJSON))
+	handler.ServeHTTP(unauthRec, unauthReq)
+	assertStatus(t, unauthRec, http.StatusUnauthorized)
+
+	wrongNodeRec := httptest.NewRecorder()
+	wrongNodeReq := httptest.NewRequest(http.MethodPost, "/api/sidecar/config-apply/secrets", strings.NewReader(job.PayloadJSON))
+	wrongNodeReq.Header.Set("Authorization", "Bearer "+otherCredential)
+	handler.ServeHTTP(wrongNodeRec, wrongNodeReq)
+	assertStatus(t, wrongNodeRec, http.StatusUnauthorized)
+
+	var tampered protocol.SignedConfigPlan
+	if err := json.Unmarshal([]byte(job.PayloadJSON), &tampered); err != nil {
+		t.Fatalf("decode signed plan: %v", err)
+	}
+	tampered.Plan.Body.Desired.Model = "tampered-model"
+	tamperedBody, err := json.Marshal(tampered)
+	if err != nil {
+		t.Fatalf("marshal tampered plan: %v", err)
+	}
+	tamperedRec := httptest.NewRecorder()
+	tamperedReq := httptest.NewRequest(http.MethodPost, "/api/sidecar/config-apply/secrets", bytes.NewReader(tamperedBody))
+	tamperedReq.Header.Set("Authorization", "Bearer "+credential)
+	handler.ServeHTTP(tamperedRec, tamperedReq)
+	assertStatus(t, tamperedRec, http.StatusBadRequest)
+
+	fetchRec := httptest.NewRecorder()
+	fetchReq := httptest.NewRequest(http.MethodPost, "/api/sidecar/config-apply/secrets", strings.NewReader(job.PayloadJSON))
+	fetchReq.Header.Set("Authorization", "Bearer "+credential)
+	handler.ServeHTTP(fetchRec, fetchReq)
+	assertStatus(t, fetchRec, http.StatusOK)
+	var secretsResp protocol.ConfigApplySecretsResponse
+	if err := json.NewDecoder(fetchRec.Body).Decode(&secretsResp); err != nil {
+		t.Fatalf("decode secrets response: %v", err)
+	}
+	if got := secretsResp.Secrets["OPENAI_API_KEY"]; got != plaintext {
+		t.Fatalf("fetched secret = %q, want plaintext", got)
+	}
+
+	stored, err := nodeStore.GetJob(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("get stored job: %v", err)
+	}
+	if stored == nil {
+		t.Fatal("stored job not found")
+	}
+	if strings.Contains(stored.PayloadJSON, plaintext) || strings.Contains(stored.ResultJSON, plaintext) || strings.Contains(stored.Error, plaintext) {
+		t.Fatalf("stored job leaked plaintext: %#v", stored)
+	}
+
+	listRec := httptest.NewRecorder()
+	handler.ServeHTTP(listRec, httptest.NewRequest(http.MethodGet, "/api/nodes/node-secrets/jobs", nil))
+	assertStatus(t, listRec, http.StatusOK)
+	if strings.Contains(listRec.Body.String(), plaintext) {
+		t.Fatalf("operator jobs listing leaked plaintext: %s", listRec.Body.String())
+	}
+
+	events, err := nodeStore.ListAuditEventsFiltered(ctx, store.AuditFilter{Limit: 20})
+	if err != nil {
+		t.Fatalf("list audit events: %v", err)
+	}
+	for _, event := range events {
+		if strings.Contains(event.Detail, plaintext) {
+			t.Fatalf("audit event leaked plaintext: %#v", event)
+		}
+	}
+}
+
+func TestConfigApplySecretsEndpointRequiresSecretKeyForManagedProvider(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	credential := enrollTestNode(t, nodeStore, "node-secrets")
+	seedDesiredAndProbe(t, nodeStore, "node-secrets", "/etc/hermes/config.yaml")
+	if err := nodeStore.SetProviderSecret(context.Background(), "OPENAI_API_KEY", []byte("opaque-ciphertext"), time.Now().UTC()); err != nil {
+		t.Fatalf("set provider secret marker: %v", err)
+	}
+	if err := nodeStore.SetDesiredConfig(context.Background(), protocol.DesiredConfig{
+		Global: protocol.ProviderModelConfig{Provider: "openai", Model: "gpt-4o"},
+		GlobalProviders: []protocol.ProviderDefinition{
+			{Name: "openai", BaseURL: "https://api.openai.example/v1", APIKeyEnv: "OPENAI_API_KEY"},
+		},
+	}, time.Now().UTC()); err != nil {
+		t.Fatalf("set desired config: %v", err)
+	}
+
+	keyPair, err := spcrypto.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("generate signing key: %v", err)
+	}
+	handler, err := NewHandlerWithConfig(HandlerConfig{
+		Store:                           nodeStore,
+		Freshness:                       DefaultFreshnessPolicy(),
+		AllowUnauthenticatedOperatorAPI: true,
+		SigningKeyPair:                  keyPair,
+	})
+	if err != nil {
+		t.Fatalf("build handler: %v", err)
+	}
+	createRec := httptest.NewRecorder()
+	handler.ServeHTTP(createRec, httptest.NewRequest(http.MethodPost, "/api/nodes/node-secrets/config-apply", strings.NewReader(`{"dryRun":false}`)))
+	assertStatus(t, createRec, http.StatusCreated)
+	var job protocol.Job
+	if err := json.NewDecoder(createRec.Body).Decode(&job); err != nil {
+		t.Fatalf("decode job: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/sidecar/config-apply/secrets", strings.NewReader(job.PayloadJSON))
+	req.Header.Set("Authorization", "Bearer "+credential)
+	handler.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusConflict)
+	if !strings.Contains(rec.Body.String(), "secret key not configured") {
+		t.Fatalf("response = %q, want secret key not configured", rec.Body.String())
+	}
+}
+
 func TestCreateConfigApplyJobMatchesEmptyProfileSnapshotForDefaultProfile(t *testing.T) {
 	nodeStore := store.NewMemoryNodeStore()
 	enrollTestNode(t, nodeStore, "node-apply")

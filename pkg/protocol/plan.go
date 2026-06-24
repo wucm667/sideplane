@@ -45,6 +45,12 @@ type SignedConfigPlan struct {
 	Signature string     `json:"signature"`
 }
 
+// ConfigApplySecretsResponse returns provider secret values to an authenticated
+// sidecar just-in-time for a verified config apply plan.
+type ConfigApplySecretsResponse struct {
+	Secrets map[string]string `json:"secrets"`
+}
+
 // PublicSigningKeyResponse exposes the server public signing key to sidecars.
 type PublicSigningKeyResponse struct {
 	Algorithm string `json:"algorithm"`

@@ -31,6 +31,13 @@ func withProviderCatalog(plan protocol.ConfigPlan) protocol.ConfigPlan {
 	return plan
 }
 
+func withManagedProviderCatalog(plan protocol.ConfigPlan) protocol.ConfigPlan {
+	plan.Body.Providers = []protocol.ProviderDefinition{
+		{Name: "openai", BaseURL: "https://api.openai.example/v1", APIKeyEnv: "OPENAI_API_KEY", APIKeyManaged: true},
+	}
+	return plan
+}
+
 type stubController struct {
 	restartErr error
 	healthErr  error
@@ -218,6 +225,55 @@ func TestConfigApplyDryRunRendersProviderCatalog(t *testing.T) {
 	}
 	if string(after) != string(original) {
 		t.Fatal("live config was modified during dry-run catalog apply")
+	}
+}
+
+func TestConfigApplyDryRunManagedProviderDoesNotFetchOrWriteEnv(t *testing.T) {
+	pub, priv := newTestSigningKey(t)
+	srcDir := t.TempDir()
+	workDir := t.TempDir()
+	cfgPath, original := writeHermesConfig(t, srcDir)
+	envPath := filepath.Join(srcDir, ".env")
+
+	signed, err := protocol.SignConfigPlan(withManagedProviderCatalog(dryRunPlan("node-1", cfgPath, "openai", "gpt-4o")), priv)
+	if err != nil {
+		t.Fatalf("sign plan: %v", err)
+	}
+
+	fetched := false
+	exec := ConfigApplyExecutor{
+		NodeID:    "node-1",
+		PublicKey: pub,
+		WorkDir:   workDir,
+		EnvPath:   envPath,
+		FetchEnvSecrets: func(context.Context, protocol.SignedConfigPlan) (map[string]string, error) {
+			fetched = true
+			return map[string]string{"OPENAI_API_KEY": "sk-should-not-fetch"}, nil
+		},
+	}
+	result, err := exec.Execute(context.Background(), signed)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if fetched {
+		t.Fatal("dry-run fetched managed provider secrets")
+	}
+	step, ok := findStep(t, result.Steps, "managed_env")
+	if !ok || step.Status != "skipped" || !strings.Contains(step.Detail, "OPENAI_API_KEY") {
+		t.Fatalf("managed_env step = %+v, want skipped names-only detail", step)
+	}
+	if strings.Contains(step.Detail, "sk-should-not-fetch") {
+		t.Fatalf("dry-run managed env step leaked secret: %+v", step)
+	}
+	if _, err := os.Stat(envPath); !os.IsNotExist(err) {
+		t.Fatalf("env path stat err = %v, want absent", err)
+	}
+	after, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read config after: %v", err)
+	}
+	if string(after) != string(original) {
+		t.Fatal("live config was modified during dry-run managed env apply")
 	}
 }
 
@@ -870,6 +926,80 @@ func TestConfigApplyLiveReplacesConfigWithProviderCatalog(t *testing.T) {
 	}
 }
 
+func TestConfigApplyLiveWritesManagedProviderEnv(t *testing.T) {
+	pub, priv := newTestSigningKey(t)
+	srcDir := t.TempDir()
+	workDir := t.TempDir()
+	cfgPath, _ := writeHermesConfig(t, srcDir)
+	envPath := filepath.Join(srcDir, ".env")
+
+	signed, err := protocol.SignConfigPlan(withManagedProviderCatalog(livePlan("node-1", cfgPath, "openai", "gpt-4o")), priv)
+	if err != nil {
+		t.Fatalf("sign plan: %v", err)
+	}
+
+	fetches := 0
+	controller := &stubController{}
+	exec := ConfigApplyExecutor{
+		NodeID:         "node-1",
+		PublicKey:      pub,
+		WorkDir:        workDir,
+		EnvPath:        envPath,
+		AllowLiveApply: true,
+		Controller:     controller,
+		FetchEnvSecrets: func(_ context.Context, got protocol.SignedConfigPlan) (map[string]string, error) {
+			fetches++
+			if got.Plan.ID != signed.Plan.ID {
+				t.Fatalf("fetch plan ID = %q, want %q", got.Plan.ID, signed.Plan.ID)
+			}
+			return map[string]string{"OPENAI_API_KEY": "sk-live-managed"}, nil
+		},
+	}
+	result, err := exec.Execute(context.Background(), signed)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if fetches != 1 {
+		t.Fatalf("fetches = %d, want 1", fetches)
+	}
+	for _, name := range []string{"managed_env_fetched", "managed_env_backup_created", "managed_env_temp_written", "managed_env_replaced", "restarted", "health_checked"} {
+		if s, ok := findStep(t, result.Steps, name); !ok || s.Status != "completed" {
+			t.Fatalf("%s step = %+v, want completed", name, s)
+		}
+	}
+	if controller.restarts != 1 || controller.healths != 1 {
+		t.Fatalf("controller calls: restarts=%d healths=%d, want 1/1", controller.restarts, controller.healths)
+	}
+	config, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	if !strings.Contains(string(config), "api_key: ${OPENAI_API_KEY}") || strings.Contains(string(config), "sk-live-managed") {
+		t.Fatalf("config did not keep env-only api_key or leaked secret:\n%s", config)
+	}
+	env, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatalf("read env: %v", err)
+	}
+	if !strings.Contains(string(env), "OPENAI_API_KEY=sk-live-managed\n") {
+		t.Fatalf("env file missing managed key:\n%s", env)
+	}
+	info, err := os.Stat(envPath)
+	if err != nil {
+		t.Fatalf("stat env: %v", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("env mode = %v, want 0600", info.Mode().Perm())
+	}
+	resultJSON, err := json.Marshal(result)
+	if err != nil {
+		t.Fatalf("marshal result: %v", err)
+	}
+	if strings.Contains(string(resultJSON), "sk-live-managed") {
+		t.Fatalf("config apply result leaked secret: %s", resultJSON)
+	}
+}
+
 func TestConfigApplyLiveRollsBackOnRestartFailure(t *testing.T) {
 	pub, priv := newTestSigningKey(t)
 	srcDir := t.TempDir()
@@ -905,6 +1035,110 @@ func TestConfigApplyLiveRollsBackOnRestartFailure(t *testing.T) {
 	}
 	if string(after) != string(original) {
 		t.Errorf("config after rollback = %q, want original %q (byte-for-byte restore)", after, original)
+	}
+}
+
+func TestConfigApplyLiveManagedEnvRollsBackConfigAndExistingEnvOnHealthFailure(t *testing.T) {
+	pub, priv := newTestSigningKey(t)
+	srcDir := t.TempDir()
+	workDir := t.TempDir()
+	cfgPath, originalConfig := writeHermesConfig(t, srcDir)
+	envPath := filepath.Join(srcDir, ".env")
+	originalEnv := []byte("OPERATOR=value\n")
+	if err := os.WriteFile(envPath, originalEnv, 0o640); err != nil {
+		t.Fatalf("write env: %v", err)
+	}
+
+	signed, err := protocol.SignConfigPlan(withManagedProviderCatalog(livePlan("node-1", cfgPath, "openai", "gpt-4o")), priv)
+	if err != nil {
+		t.Fatalf("sign plan: %v", err)
+	}
+
+	controller := &stubController{healthErr: errors.New("unhealthy after managed env apply")}
+	exec := ConfigApplyExecutor{
+		NodeID:         "node-1",
+		PublicKey:      pub,
+		WorkDir:        workDir,
+		EnvPath:        envPath,
+		AllowLiveApply: true,
+		Controller:     controller,
+		FetchEnvSecrets: func(context.Context, protocol.SignedConfigPlan) (map[string]string, error) {
+			return map[string]string{"OPENAI_API_KEY": "sk-rollback-existing"}, nil
+		},
+	}
+	result, err := exec.Execute(context.Background(), signed)
+	if err == nil {
+		t.Fatal("expected health failure, got nil")
+	}
+	if s, ok := findStep(t, result.Steps, "managed_env_replaced"); !ok || s.Status != "completed" {
+		t.Fatalf("managed_env_replaced step = %+v, want completed before health failure", s)
+	}
+	if s, ok := findStep(t, result.Steps, "rolled_back"); !ok || s.Status != "completed" {
+		t.Fatalf("rolled_back step = %+v, want completed", s)
+	}
+	configAfter, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read config after rollback: %v", err)
+	}
+	if string(configAfter) != string(originalConfig) {
+		t.Fatalf("config after rollback = %q, want original %q", configAfter, originalConfig)
+	}
+	envAfter, err := os.ReadFile(envPath)
+	if err != nil {
+		t.Fatalf("read env after rollback: %v", err)
+	}
+	if string(envAfter) != string(originalEnv) {
+		t.Fatalf("env after rollback = %q, want original %q", envAfter, originalEnv)
+	}
+	info, err := os.Stat(envPath)
+	if err != nil {
+		t.Fatalf("stat env after rollback: %v", err)
+	}
+	if info.Mode().Perm() != 0o640 {
+		t.Fatalf("env mode after rollback = %v, want 0640", info.Mode().Perm())
+	}
+}
+
+func TestConfigApplyLiveManagedEnvRollbackDeletesAbsentEnv(t *testing.T) {
+	pub, priv := newTestSigningKey(t)
+	srcDir := t.TempDir()
+	workDir := t.TempDir()
+	cfgPath, originalConfig := writeHermesConfig(t, srcDir)
+	envPath := filepath.Join(srcDir, ".env")
+
+	signed, err := protocol.SignConfigPlan(withManagedProviderCatalog(livePlan("node-1", cfgPath, "openai", "gpt-4o")), priv)
+	if err != nil {
+		t.Fatalf("sign plan: %v", err)
+	}
+
+	controller := &stubController{restartErr: errors.New("restart failed after env create")}
+	exec := ConfigApplyExecutor{
+		NodeID:         "node-1",
+		PublicKey:      pub,
+		WorkDir:        workDir,
+		EnvPath:        envPath,
+		AllowLiveApply: true,
+		Controller:     controller,
+		FetchEnvSecrets: func(context.Context, protocol.SignedConfigPlan) (map[string]string, error) {
+			return map[string]string{"OPENAI_API_KEY": "sk-rollback-absent"}, nil
+		},
+	}
+	result, err := exec.Execute(context.Background(), signed)
+	if err == nil {
+		t.Fatal("expected restart failure, got nil")
+	}
+	if s, ok := findStep(t, result.Steps, "rolled_back"); !ok || s.Status != "completed" {
+		t.Fatalf("rolled_back step = %+v, want completed", s)
+	}
+	configAfter, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read config after rollback: %v", err)
+	}
+	if string(configAfter) != string(originalConfig) {
+		t.Fatalf("config after rollback = %q, want original %q", configAfter, originalConfig)
+	}
+	if _, err := os.Stat(envPath); !os.IsNotExist(err) {
+		t.Fatalf("env path stat err = %v, want absent after rollback", err)
 	}
 }
 

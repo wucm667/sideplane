@@ -29,6 +29,7 @@ type JobPollerConfig struct {
 	NodeCredential     string
 	PublicKey          string
 	ApplyWorkDir       string
+	EnvPath            string
 	AllowedConfigDirs  []string
 	AllowLiveApply     bool
 	Controller         adapters.ServiceController
@@ -55,6 +56,7 @@ type JobPoller struct {
 	nodeCredential     string
 	publicKey          string
 	applyWorkDir       string
+	envPath            string
 	allowedConfigDirs  []string
 	allowLiveApply     bool
 	controller         adapters.ServiceController
@@ -127,6 +129,7 @@ func NewJobPoller(cfg JobPollerConfig) (*JobPoller, error) {
 		nodeCredential:     cfg.NodeCredential,
 		publicKey:          strings.TrimSpace(cfg.PublicKey),
 		applyWorkDir:       strings.TrimSpace(cfg.ApplyWorkDir),
+		envPath:            strings.TrimSpace(cfg.EnvPath),
 		allowedConfigDirs:  append([]string(nil), cfg.AllowedConfigDirs...),
 		allowLiveApply:     cfg.AllowLiveApply,
 		controller:         cfg.Controller,
@@ -456,6 +459,42 @@ func marshalRestartResult(status protocol.JobStatus, result protocol.RestartJobR
 		ResultJSON: string(resultJSON),
 		Error:      errText,
 	}
+}
+
+func (p *JobPoller) fetchConfigApplySecrets(ctx context.Context, signedPlan protocol.SignedConfigPlan) (map[string]string, error) {
+	endpoint, err := url.JoinPath(p.serverURL, "/api/sidecar/config-apply/secrets")
+	if err != nil {
+		return nil, fmt.Errorf("build config apply secrets endpoint: %w", err)
+	}
+	body, err := json.Marshal(signedPlan)
+	if err != nil {
+		return nil, fmt.Errorf("marshal signed config plan: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("create config apply secrets request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+p.nodeCredential)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := p.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("send config apply secrets request: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return nil, fmt.Errorf("server returned %d: %s", resp.StatusCode, string(body))
+	}
+	var decoded protocol.ConfigApplySecretsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&decoded); err != nil {
+		return nil, fmt.Errorf("decode config apply secrets response: %w", err)
+	}
+	if decoded.Secrets == nil {
+		return map[string]string{}, nil
+	}
+	return decoded.Secrets, nil
 }
 
 func restartControllerLabel(controller adapters.ServiceController) string {

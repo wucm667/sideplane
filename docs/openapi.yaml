@@ -785,6 +785,36 @@ paths:
           $ref: "#/components/responses/APIError"
         "429":
           $ref: "#/components/responses/RateLimited"
+  /api/sidecar/config-apply/secrets:
+    post:
+      tags: [Sidecar]
+      summary: Fetch managed provider secrets for a signed config apply plan.
+      operationId: fetchConfigApplySecrets
+      description: >
+        Authenticated sidecars call this just before live config apply. The signed
+        plan carries only provider env names; plaintext values are returned only
+        over the node-credential channel and are never stored in job payloads.
+      security:
+        - nodeBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SignedConfigPlan"
+      responses:
+        "200":
+          description: Managed provider secret values keyed by environment variable name.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConfigApplySecretsResponse"
+        "400":
+          $ref: "#/components/responses/APIError"
+        "401":
+          $ref: "#/components/responses/APIError"
+        "409":
+          $ref: "#/components/responses/APIError"
   /api/sidecar/jobs/next:
     get:
       tags: [Sidecar]
@@ -2620,6 +2650,10 @@ components:
           type: string
         desired:
           $ref: "#/components/schemas/ProviderModelConfig"
+        providers:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProviderDefinition"
         dryRun:
           type: boolean
     ConfigPlan:
@@ -2652,6 +2686,15 @@ components:
           $ref: "#/components/schemas/ConfigPlan"
         signature:
           type: string
+    ConfigApplySecretsResponse:
+      type: object
+      required: [secrets]
+      properties:
+        secrets:
+          type: object
+          additionalProperties:
+            type: string
+          description: Plaintext values keyed by env var name; returned only to authenticated sidecars.
     PublicSigningKeyResponse:
       type: object
       required: [algorithm, publicKey]
