@@ -2583,11 +2583,12 @@ func (h *handler) createConfigApplyJob(w http.ResponseWriter, r *http.Request, n
 		writeAPIError(w, http.StatusInternalServerError, "get desired config")
 		return
 	}
-	effective := spconfig.EffectiveProviderModelConfig(desired, spconfig.EffectiveConfigTarget{
+	target := spconfig.EffectiveConfigTarget{
 		NodeID:      nodeID,
 		RuntimeType: runtimeType,
 		Profile:     profile,
-	})
+	}
+	effective := spconfig.EffectiveProviderModelConfig(desired, target)
 	if strings.TrimSpace(effective.Provider) == "" || strings.TrimSpace(effective.Model) == "" {
 		writeAPIError(w, http.StatusBadRequest, "desired provider and model must be set before applying config")
 		return
@@ -2627,9 +2628,10 @@ func (h *handler) createConfigApplyJob(w http.ResponseWriter, r *http.Request, n
 		Body: protocol.ConfigPlanBody{
 			RuntimeType: runtimeType,
 			// Profile carries the read-only config path the sidecar reads/backs up.
-			Profile: actual.ConfigPath,
-			Desired: effective,
-			DryRun:  dryRun,
+			Profile:   actual.ConfigPath,
+			Desired:   effective,
+			Providers: spconfig.EffectiveProviderCatalog(desired, target),
+			DryRun:    dryRun,
 		},
 	}
 	signed, err := protocol.SignConfigPlan(plan, h.signingKey.PrivateKey)

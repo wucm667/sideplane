@@ -23,6 +23,14 @@ func livePlan(nodeID, configPath, provider, model string) protocol.ConfigPlan {
 	return p
 }
 
+func withProviderCatalog(plan protocol.ConfigPlan) protocol.ConfigPlan {
+	plan.Body.Providers = []protocol.ProviderDefinition{
+		{Name: "anthropic", BaseURL: "https://api.anthropic.example/v1", APIKeyEnv: "ANTHROPIC_API_KEY"},
+		{Name: "openai", BaseURL: "https://api.openai.example/v1", APIKeyEnv: "OPENAI_API_KEY"},
+	}
+	return plan
+}
+
 type stubController struct {
 	restartErr error
 	healthErr  error
@@ -160,6 +168,56 @@ func TestConfigApplyDryRunHappyPath(t *testing.T) {
 	}
 	if n := dirEntryCount(t, srcDir); n != 1 {
 		t.Errorf("source dir entry count = %d, want 1 (no writes beside live config)", n)
+	}
+}
+
+func TestConfigApplyDryRunRendersProviderCatalog(t *testing.T) {
+	pub, priv := newTestSigningKey(t)
+	srcDir := t.TempDir()
+	workDir := t.TempDir()
+	cfgPath, original := writeHermesConfig(t, srcDir)
+
+	signed, err := protocol.SignConfigPlan(withProviderCatalog(dryRunPlan("node-1", cfgPath, "openai", "gpt-4o")), priv)
+	if err != nil {
+		t.Fatalf("sign plan: %v", err)
+	}
+
+	exec := ConfigApplyExecutor{NodeID: "node-1", PublicKey: pub, WorkDir: workDir}
+	result, err := exec.Execute(context.Background(), signed)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if s, ok := findStep(t, result.Steps, "validated"); !ok || s.Status != "completed" || !strings.Contains(s.Detail, "provider catalog") {
+		t.Fatalf("validated step = %+v, want completed provider catalog validation", s)
+	}
+	rendered, err := os.ReadFile(result.TempPath)
+	if err != nil {
+		t.Fatalf("read temp config: %v", err)
+	}
+	provider, model, ok := hermes.ModelFields(rendered)
+	if !ok || provider != "openai" || model != "gpt-4o" {
+		t.Fatalf("temp model fields = (%q, %q, %t), want openai/gpt-4o", provider, model, ok)
+	}
+	if err := hermes.ValidateCustomProviders(rendered, signed.Plan.Body.Providers); err != nil {
+		t.Fatalf("validate temp provider catalog: %v", err)
+	}
+	out := string(rendered)
+	for _, want := range []string{"custom_providers:", "api_key: ${OPENAI_API_KEY}", "api_key: ${ANTHROPIC_API_KEY}"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("temp config missing %q:\n%s", want, out)
+		}
+	}
+	for _, forbidden := range []string{"sk-", "api_key: OPENAI_API_KEY", "api_key: ANTHROPIC_API_KEY"} {
+		if strings.Contains(out, forbidden) {
+			t.Fatalf("temp config leaked plaintext api_key material %q:\n%s", forbidden, out)
+		}
+	}
+	after, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read live config after dry-run: %v", err)
+	}
+	if string(after) != string(original) {
+		t.Fatal("live config was modified during dry-run catalog apply")
 	}
 }
 
@@ -772,6 +830,46 @@ func TestConfigApplyLiveReplacesConfig(t *testing.T) {
 	}
 }
 
+func TestConfigApplyLiveReplacesConfigWithProviderCatalog(t *testing.T) {
+	pub, priv := newTestSigningKey(t)
+	srcDir := t.TempDir()
+	workDir := t.TempDir()
+	cfgPath, _ := writeHermesConfig(t, srcDir)
+
+	signed, err := protocol.SignConfigPlan(withProviderCatalog(livePlan("node-1", cfgPath, "openai", "gpt-4o")), priv)
+	if err != nil {
+		t.Fatalf("sign plan: %v", err)
+	}
+
+	controller := &stubController{}
+	exec := ConfigApplyExecutor{NodeID: "node-1", PublicKey: pub, WorkDir: workDir, AllowLiveApply: true, Controller: controller}
+	result, err := exec.Execute(context.Background(), signed)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if controller.restarts != 1 || controller.healths != 1 {
+		t.Fatalf("controller calls: restarts=%d healths=%d, want 1/1", controller.restarts, controller.healths)
+	}
+	if s, ok := findStep(t, result.Steps, "validated"); !ok || s.Status != "completed" || !strings.Contains(s.Detail, "provider catalog") {
+		t.Fatalf("validated step = %+v, want provider catalog validation", s)
+	}
+	after, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read config after: %v", err)
+	}
+	provider, model, ok := hermes.ModelFields(after)
+	if !ok || provider != "openai" || model != "gpt-4o" {
+		t.Fatalf("live config model fields = (%q, %q, %t), want openai/gpt-4o", provider, model, ok)
+	}
+	if err := hermes.ValidateCustomProviders(after, signed.Plan.Body.Providers); err != nil {
+		t.Fatalf("validate live provider catalog: %v", err)
+	}
+	out := string(after)
+	if !strings.Contains(out, "api_key: ${OPENAI_API_KEY}") || strings.Contains(out, "api_key: OPENAI_API_KEY") {
+		t.Fatalf("live config did not render env-only provider catalog:\n%s", out)
+	}
+}
+
 func TestConfigApplyLiveRollsBackOnRestartFailure(t *testing.T) {
 	pub, priv := newTestSigningKey(t)
 	srcDir := t.TempDir()
@@ -878,6 +976,45 @@ func TestConfigApplyLiveRollsBackOnHealthFailure(t *testing.T) {
 	after, _ := os.ReadFile(cfgPath)
 	if string(after) != string(original) {
 		t.Errorf("config after rollback = %q, want original %q", after, original)
+	}
+}
+
+func TestConfigApplyLiveProviderCatalogRollsBackOnHealthFailure(t *testing.T) {
+	pub, priv := newTestSigningKey(t)
+	srcDir := t.TempDir()
+	workDir := t.TempDir()
+	cfgPath, original := writeHermesConfig(t, srcDir)
+
+	signed, err := protocol.SignConfigPlan(withProviderCatalog(livePlan("node-1", cfgPath, "openai", "gpt-4o")), priv)
+	if err != nil {
+		t.Fatalf("sign plan: %v", err)
+	}
+
+	controller := &stubController{healthErr: errors.New("unhealthy after catalog apply")}
+	exec := ConfigApplyExecutor{NodeID: "node-1", PublicKey: pub, WorkDir: workDir, AllowLiveApply: true, Controller: controller}
+	result, err := exec.Execute(context.Background(), signed)
+	if err == nil {
+		t.Fatal("expected health-check failure, got nil")
+	}
+	if s, ok := findStep(t, result.Steps, "replaced"); !ok || s.Status != "completed" {
+		t.Fatalf("replaced step = %+v, want completed before health failure", s)
+	}
+	if s, ok := findStep(t, result.Steps, "rolled_back"); !ok || s.Status != "completed" {
+		t.Fatalf("rolled_back step = %+v, want completed", s)
+	}
+	temp, err := os.ReadFile(result.TempPath)
+	if err != nil {
+		t.Fatalf("read temp config: %v", err)
+	}
+	if err := hermes.ValidateCustomProviders(temp, signed.Plan.Body.Providers); err != nil {
+		t.Fatalf("temp provider catalog was not rendered before live failure: %v", err)
+	}
+	after, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read config after rollback: %v", err)
+	}
+	if string(after) != string(original) {
+		t.Fatalf("config after rollback = %q, want original %q", after, original)
 	}
 }
 

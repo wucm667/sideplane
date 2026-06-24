@@ -21,10 +21,11 @@ const (
 
 // ConfigPlanBody is the MVP signed plan body for provider/model changes.
 type ConfigPlanBody struct {
-	RuntimeType string              `json:"runtimeType"`
-	Profile     string              `json:"profile,omitempty"`
-	Desired     ProviderModelConfig `json:"desired"`
-	DryRun      bool                `json:"dryRun"`
+	RuntimeType string               `json:"runtimeType"`
+	Profile     string               `json:"profile,omitempty"`
+	Desired     ProviderModelConfig  `json:"desired"`
+	Providers   []ProviderDefinition `json:"providers,omitempty"`
+	DryRun      bool                 `json:"dryRun"`
 }
 
 // ConfigPlan is the canonical payload that is signed by the server.

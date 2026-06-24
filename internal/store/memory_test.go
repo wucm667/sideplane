@@ -1125,7 +1125,7 @@ func TestMemoryDesiredConfigPersistsCopy(t *testing.T) {
 	}
 }
 
-func TestMemoryDesiredConfigProviderCatalogRoundTripsPlaintextAPIKey(t *testing.T) {
+func TestMemoryDesiredConfigProviderCatalogRoundTripsAPIKeyEnv(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemoryNodeStore()
 	if err := store.SetDesiredConfig(ctx, desiredConfigWithProviderCatalogForStoreTest(), time.Now().UTC()); err != nil {
@@ -1147,19 +1147,19 @@ func desiredConfigWithProviderCatalogForStoreTest() protocol.DesiredConfig {
 	return protocol.DesiredConfig{
 		GlobalProviders: []protocol.ProviderDefinition{
 			{
-				Name:    "openai",
-				BaseURL: "https://api.openai.example/v1",
-				Models:  []string{"gpt-5", "gpt-5-mini"},
-				APIKey:  "sk-global-plaintext",
+				Name:      "openai",
+				BaseURL:   "https://api.openai.example/v1",
+				Models:    []string{"gpt-5", "gpt-5-mini"},
+				APIKeyEnv: "OPENAI_API_KEY",
 			},
 		},
 		NodeProviders: map[string][]protocol.ProviderDefinition{
 			"node-a": {
 				{
-					Name:    "local",
-					BaseURL: "http://127.0.0.1:11434",
-					Models:  []string{"qwen3"},
-					APIKey:  "node-plaintext-key",
+					Name:      "local",
+					BaseURL:   "http://127.0.0.1:11434",
+					Models:    []string{"qwen3"},
+					APIKeyEnv: "LOCAL_API_KEY",
 				},
 			},
 		},
@@ -1171,10 +1171,10 @@ func assertDesiredConfigProviderCatalogRoundTrip(t *testing.T, got protocol.Desi
 
 	wantGlobal := []protocol.ProviderDefinition{
 		{
-			Name:    "openai",
-			BaseURL: "https://api.openai.example/v1",
-			Models:  []string{"gpt-5", "gpt-5-mini"},
-			APIKey:  "sk-global-plaintext",
+			Name:      "openai",
+			BaseURL:   "https://api.openai.example/v1",
+			Models:    []string{"gpt-5", "gpt-5-mini"},
+			APIKeyEnv: "OPENAI_API_KEY",
 		},
 	}
 	if !reflect.DeepEqual(got.GlobalProviders, wantGlobal) {
@@ -1183,10 +1183,10 @@ func assertDesiredConfigProviderCatalogRoundTrip(t *testing.T, got protocol.Desi
 
 	wantNode := []protocol.ProviderDefinition{
 		{
-			Name:    "local",
-			BaseURL: "http://127.0.0.1:11434",
-			Models:  []string{"qwen3"},
-			APIKey:  "node-plaintext-key",
+			Name:      "local",
+			BaseURL:   "http://127.0.0.1:11434",
+			Models:    []string{"qwen3"},
+			APIKeyEnv: "LOCAL_API_KEY",
 		},
 	}
 	if !reflect.DeepEqual(got.NodeProviders["node-a"], wantNode) {

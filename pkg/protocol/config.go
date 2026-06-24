@@ -50,13 +50,13 @@ type ProviderModelConfig struct {
 }
 
 // ProviderDefinition is a managed provider entry in the desired catalog.
-// APIKey is stored/transmitted in PLAINTEXT by design (operator-owned secret
-// security); read paths must redact it before returning desired config.
+// APIKeyEnv is the environment variable name the runtime should reference for
+// the provider key. It is not secret material.
 type ProviderDefinition struct {
-	Name    string   `json:"name"`
-	BaseURL string   `json:"baseURL,omitempty"`
-	Models  []string `json:"models,omitempty"`
-	APIKey  string   `json:"apiKey,omitempty"`
+	Name      string   `json:"name"`
+	BaseURL   string   `json:"baseURL,omitempty"`
+	Models    []string `json:"models,omitempty"`
+	APIKeyEnv string   `json:"apiKeyEnv,omitempty"`
 }
 
 // DesiredConfig layers desired provider/model settings.

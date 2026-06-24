@@ -103,34 +103,34 @@ func TestDesiredConfigWithTargetOverrideCopiesAndScopesOverride(t *testing.T) {
 func TestEffectiveProviderCatalogAppliesPrecedenceAndSorts(t *testing.T) {
 	desired := protocol.DesiredConfig{
 		GlobalProviders: []protocol.ProviderDefinition{
-			{Name: "OpenAI", BaseURL: " https://global.example.com ", Models: []string{" gpt-5 "}, APIKey: "global-key"},
+			{Name: "OpenAI", BaseURL: " https://global.example.com ", Models: []string{" gpt-5 "}, APIKeyEnv: "GLOBAL_KEY"},
 			{Name: "local", Models: []string{"llama2"}},
 		},
 		NodeProviders: map[string][]protocol.ProviderDefinition{
 			"node-a": {
-				{Name: " openai ", BaseURL: "https://node.example.com", Models: []string{" gpt-5-mini ", "gpt-5-nano "}, APIKey: "node-key"},
+				{Name: " openai ", BaseURL: "https://node.example.com", Models: []string{" gpt-5-mini ", "gpt-5-nano "}, APIKeyEnv: "NODE_KEY"},
 				{Name: "node-only", Models: []string{"qwen3"}},
 			},
 		},
 		RuntimeProfileProviders: map[string][]protocol.ProviderDefinition{
 			RuntimeProfileKey("hermes", "default"): {
 				{Name: "Anthropic", Models: []string{"claude-sonnet-4"}},
-				{Name: "LOCAL", Models: []string{" llama3 "}, APIKey: "runtime-key"},
+				{Name: "LOCAL", Models: []string{" llama3 "}, APIKeyEnv: "RUNTIME_KEY"},
 			},
 		},
 		NodeRuntimeProfileProviders: map[string][]protocol.ProviderDefinition{
 			NodeRuntimeProfileKey("node-a", "hermes", "default"): {
-				{Name: " anthropic ", BaseURL: " https://anthropic.example.com ", APIKey: "node-runtime-key"},
+				{Name: " anthropic ", BaseURL: " https://anthropic.example.com ", APIKeyEnv: "NODE_RUNTIME_KEY"},
 			},
 		},
 	}
 
 	got := EffectiveProviderCatalog(desired, EffectiveConfigTarget{NodeID: " node-a ", RuntimeType: " hermes ", Profile: " default "})
 	want := []protocol.ProviderDefinition{
-		{Name: "anthropic", BaseURL: "https://anthropic.example.com", APIKey: "node-runtime-key"},
-		{Name: "LOCAL", Models: []string{"llama3"}, APIKey: "runtime-key"},
+		{Name: "anthropic", BaseURL: "https://anthropic.example.com", APIKeyEnv: "NODE_RUNTIME_KEY"},
+		{Name: "LOCAL", Models: []string{"llama3"}, APIKeyEnv: "RUNTIME_KEY"},
 		{Name: "node-only", Models: []string{"qwen3"}},
-		{Name: "openai", BaseURL: "https://node.example.com", Models: []string{"gpt-5-mini", "gpt-5-nano"}, APIKey: "node-key"},
+		{Name: "openai", BaseURL: "https://node.example.com", Models: []string{"gpt-5-mini", "gpt-5-nano"}, APIKeyEnv: "NODE_KEY"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("effective provider catalog = %#v, want %#v", got, want)
@@ -140,16 +140,16 @@ func TestEffectiveProviderCatalogAppliesPrecedenceAndSorts(t *testing.T) {
 func TestCloneDesiredConfigDeepCopiesProviderCatalog(t *testing.T) {
 	desired := protocol.DesiredConfig{
 		GlobalProviders: []protocol.ProviderDefinition{
-			{Name: "openai", Models: []string{"gpt-5"}, APIKey: "global-key"},
+			{Name: "openai", Models: []string{"gpt-5"}, APIKeyEnv: "GLOBAL_KEY"},
 		},
 		NodeProviders: map[string][]protocol.ProviderDefinition{
-			"node-a": {{Name: "node-provider", Models: []string{"node-model"}, APIKey: "node-key"}},
+			"node-a": {{Name: "node-provider", Models: []string{"node-model"}, APIKeyEnv: "NODE_KEY"}},
 		},
 		RuntimeProfileProviders: map[string][]protocol.ProviderDefinition{
-			RuntimeProfileKey("hermes", "default"): {{Name: "runtime-provider", Models: []string{"runtime-model"}, APIKey: "runtime-key"}},
+			RuntimeProfileKey("hermes", "default"): {{Name: "runtime-provider", Models: []string{"runtime-model"}, APIKeyEnv: "RUNTIME_KEY"}},
 		},
 		NodeRuntimeProfileProviders: map[string][]protocol.ProviderDefinition{
-			NodeRuntimeProfileKey("node-a", "hermes", "default"): {{Name: "node-runtime-provider", Models: []string{"node-runtime-model"}, APIKey: "node-runtime-key"}},
+			NodeRuntimeProfileKey("node-a", "hermes", "default"): {{Name: "node-runtime-provider", Models: []string{"node-runtime-model"}, APIKeyEnv: "NODE_RUNTIME_KEY"}},
 		},
 	}
 
@@ -157,7 +157,7 @@ func TestCloneDesiredConfigDeepCopiesProviderCatalog(t *testing.T) {
 	clone.GlobalProviders[0].Name = "mutated"
 	clone.GlobalProviders[0].Models[0] = "mutated"
 	nodeProviders := clone.NodeProviders["node-a"]
-	nodeProviders[0].APIKey = "mutated"
+	nodeProviders[0].APIKeyEnv = "MUTATED"
 	nodeProviders[0].Models[0] = "mutated"
 	clone.NodeProviders["node-a"] = nodeProviders
 	runtimeProviders := clone.RuntimeProfileProviders[RuntimeProfileKey("hermes", "default")]
@@ -170,7 +170,7 @@ func TestCloneDesiredConfigDeepCopiesProviderCatalog(t *testing.T) {
 	if desired.GlobalProviders[0].Name != "openai" || desired.GlobalProviders[0].Models[0] != "gpt-5" {
 		t.Fatalf("global provider mutated through clone: %#v", desired.GlobalProviders)
 	}
-	if desired.NodeProviders["node-a"][0].APIKey != "node-key" || desired.NodeProviders["node-a"][0].Models[0] != "node-model" {
+	if desired.NodeProviders["node-a"][0].APIKeyEnv != "NODE_KEY" || desired.NodeProviders["node-a"][0].Models[0] != "node-model" {
 		t.Fatalf("node provider mutated through clone: %#v", desired.NodeProviders)
 	}
 	if desired.RuntimeProfileProviders[RuntimeProfileKey("hermes", "default")][0].Models[0] != "runtime-model" {

@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -233,6 +234,9 @@ func TestCreateConfigApplyJobDryRun(t *testing.T) {
 	if signed.Plan.Body.Desired.Provider != "openai" || signed.Plan.Body.Desired.Model != "gpt-4o" {
 		t.Errorf("plan desired = %+v, want openai/gpt-4o", signed.Plan.Body.Desired)
 	}
+	if len(signed.Plan.Body.Providers) != 0 {
+		t.Fatalf("plan providers = %#v, want empty catalog when desired has none", signed.Plan.Body.Providers)
+	}
 
 	keyRec := httptest.NewRecorder()
 	handler.ServeHTTP(keyRec, httptest.NewRequest(http.MethodGet, "/api/signing-key", nil))
@@ -259,6 +263,14 @@ func TestCreateConfigApplyJobUsesNodeRuntimeProfileOverride(t *testing.T) {
 		NodeRuntimeProfileOverrides: map[string]protocol.ProviderModelConfig{
 			"node-apply/hermes/default": {Provider: "local", Model: "qwen3"},
 		},
+		GlobalProviders: []protocol.ProviderDefinition{
+			{Name: "openai", BaseURL: "https://api.openai.example/v1", APIKeyEnv: "OPENAI_API_KEY"},
+		},
+		NodeRuntimeProfileProviders: map[string][]protocol.ProviderDefinition{
+			"node-apply/hermes/default": {
+				{Name: "local", BaseURL: "http://127.0.0.1:11434/v1", APIKeyEnv: "LOCAL_API_KEY"},
+			},
+		},
 	}, time.Now().UTC()); err != nil {
 		t.Fatalf("set desired config: %v", err)
 	}
@@ -279,6 +291,13 @@ func TestCreateConfigApplyJobUsesNodeRuntimeProfileOverride(t *testing.T) {
 	}
 	if signed.Plan.Body.Desired.Provider != "local" || signed.Plan.Body.Desired.Model != "qwen3" {
 		t.Fatalf("plan desired = %+v, want scoped local/qwen3 override", signed.Plan.Body.Desired)
+	}
+	wantProviders := []protocol.ProviderDefinition{
+		{Name: "local", BaseURL: "http://127.0.0.1:11434/v1", APIKeyEnv: "LOCAL_API_KEY"},
+		{Name: "openai", BaseURL: "https://api.openai.example/v1", APIKeyEnv: "OPENAI_API_KEY"},
+	}
+	if got := signed.Plan.Body.Providers; !reflect.DeepEqual(got, wantProviders) {
+		t.Fatalf("plan providers = %#v, want effective catalog %#v", got, wantProviders)
 	}
 }
 

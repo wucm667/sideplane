@@ -69,23 +69,23 @@ func TestValidateDesiredConfigValuesRejectsNestedInvalidValue(t *testing.T) {
 	}
 }
 
-func TestValidateDesiredConfigValuesAllowsProviderCatalogWithPlaintextAPIKey(t *testing.T) {
+func TestValidateDesiredConfigValuesAllowsProviderCatalogWithAPIKeyEnv(t *testing.T) {
 	err := ValidateDesiredConfigValues(protocol.DesiredConfig{
 		GlobalProviders: []protocol.ProviderDefinition{
-			{Name: "openai", BaseURL: "https://api.openai.example/v1", Models: []string{"gpt-5", "gpt-5-mini"}, APIKey: "sk-plain:text/operator owned"},
+			{Name: "openai", BaseURL: "https://api.openai.example/v1", Models: []string{"gpt-5", "gpt-5-mini"}, APIKeyEnv: "OPENAI_API_KEY"},
 		},
 		NodeProviders: map[string][]protocol.ProviderDefinition{
 			"node-a": {{Name: "local", BaseURL: "http://127.0.0.1:11434", Models: []string{"qwen3"}}},
 		},
 		RuntimeProfileProviders: map[string][]protocol.ProviderDefinition{
-			RuntimeProfileKey("hermes", "default"): {{Name: "anthropic", Models: []string{"claude-sonnet-4"}, APIKey: "plain-runtime-key"}},
+			RuntimeProfileKey("hermes", "default"): {{Name: "anthropic", Models: []string{"claude-sonnet-4"}, APIKeyEnv: "_ANTHROPIC_KEY"}},
 		},
 		NodeRuntimeProfileProviders: map[string][]protocol.ProviderDefinition{
-			NodeRuntimeProfileKey("node-a", "hermes", "default"): {{Name: "node-local", Models: []string{"llama3"}, APIKey: "node profile key"}},
+			NodeRuntimeProfileKey("node-a", "hermes", "default"): {{Name: "node-local", Models: []string{"llama3"}, APIKeyEnv: "NODE_PROFILE_KEY_1"}},
 		},
 	})
 	if err != nil {
-		t.Fatalf("validate provider catalog with plaintext apiKey: %v", err)
+		t.Fatalf("validate provider catalog with apiKeyEnv: %v", err)
 	}
 }
 
@@ -144,18 +144,25 @@ func TestValidateDesiredConfigValuesRejectsInvalidProviderCatalog(t *testing.T) 
 			want: "nodeRuntimeProfileProviders[node-a/hermes/default][0].baseURL must include a host",
 		},
 		{
-			name: "oversized api key",
+			name: "oversized api key env",
 			desired: protocol.DesiredConfig{
-				GlobalProviders: []protocol.ProviderDefinition{{Name: "openai", APIKey: strings.Repeat("x", maxProviderAPIKeyLength+1)}},
+				GlobalProviders: []protocol.ProviderDefinition{{Name: "openai", APIKeyEnv: "A" + strings.Repeat("X", maxProviderAPIKeyEnvLength)}},
 			},
-			want: "globalProviders[0].apiKey is too long",
+			want: "globalProviders[0].apiKeyEnv is too long",
 		},
 		{
-			name: "control char api key",
+			name: "bad api key env name",
 			desired: protocol.DesiredConfig{
-				GlobalProviders: []protocol.ProviderDefinition{{Name: "openai", APIKey: "sk-test\nsecret"}},
+				GlobalProviders: []protocol.ProviderDefinition{{Name: "openai", APIKeyEnv: "1_BAD"}},
 			},
-			want: "globalProviders[0].apiKey contains unsupported control character",
+			want: "globalProviders[0].apiKeyEnv must be an environment variable name",
+		},
+		{
+			name: "plaintext-shaped api key env",
+			desired: protocol.DesiredConfig{
+				GlobalProviders: []protocol.ProviderDefinition{{Name: "openai", APIKeyEnv: "sk-plain:text/operator owned"}},
+			},
+			want: "globalProviders[0].apiKeyEnv must be an environment variable name",
 		},
 	}
 

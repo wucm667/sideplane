@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"net/url"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -11,7 +12,9 @@ import (
 
 const maxProviderModelValueLength = 128
 const maxProviderBaseURLLength = 2048
-const maxProviderAPIKeyLength = 4096
+const maxProviderAPIKeyEnvLength = 128
+
+var providerAPIKeyEnvPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // ValidateProviderModelSelection validates a complete provider/model pair for
 // rendering into runtime configuration.
@@ -98,7 +101,7 @@ func validateProviderDefinitions(path string, providers []protocol.ProviderDefin
 		if err := validateProviderBaseURL(providerPath+".baseURL", provider.BaseURL); err != nil {
 			return err
 		}
-		if err := validateProviderAPIKey(providerPath+".apiKey", provider.APIKey); err != nil {
+		if err := validateProviderAPIKeyEnv(providerPath+".apiKeyEnv", provider.APIKeyEnv); err != nil {
 			return err
 		}
 	}
@@ -126,17 +129,16 @@ func validateProviderBaseURL(field string, raw string) error {
 	return nil
 }
 
-func validateProviderAPIKey(field string, value string) error {
+func validateProviderAPIKeyEnv(field string, raw string) error {
+	value := strings.TrimSpace(raw)
 	if value == "" {
 		return nil
 	}
-	if len(value) > maxProviderAPIKeyLength {
+	if len(value) > maxProviderAPIKeyEnvLength {
 		return fmt.Errorf("%s is too long", field)
 	}
-	for _, r := range value {
-		if r < 0x20 || r == 0x7f {
-			return fmt.Errorf("%s contains unsupported control character %q", field, r)
-		}
+	if !providerAPIKeyEnvPattern.MatchString(value) {
+		return fmt.Errorf("%s must be an environment variable name", field)
 	}
 	return nil
 }

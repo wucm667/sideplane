@@ -158,6 +158,13 @@ func (e ConfigApplyExecutor) Execute(ctx context.Context, signedPlan protocol.Si
 		addStep("temp_written", "failed", err.Error())
 		return result, err
 	}
+	if len(signedPlan.Plan.Body.Providers) > 0 {
+		rendered, err = hermes.RenderCustomProviders(rendered, signedPlan.Plan.Body.Providers)
+		if err != nil {
+			addStep("temp_written", "failed", err.Error())
+			return result, err
+		}
+	}
 	tempPath := filepath.Join(runDir, "desired"+configExt(configPath))
 	if err := writeFile(tempPath, rendered, 0o600); err != nil {
 		addStep("temp_written", "failed", err.Error())
@@ -170,7 +177,15 @@ func (e ConfigApplyExecutor) Execute(ctx context.Context, signedPlan protocol.Si
 		addStep("validated", "failed", err.Error())
 		return result, err
 	}
-	addStep("validated", "completed", "hermes provider/model config")
+	validateDetail := "hermes provider/model config"
+	if len(signedPlan.Plan.Body.Providers) > 0 {
+		if err := hermes.ValidateCustomProviders(rendered, signedPlan.Plan.Body.Providers); err != nil {
+			addStep("validated", "failed", err.Error())
+			return result, err
+		}
+		validateDetail = "hermes provider/model config and provider catalog"
+	}
+	addStep("validated", "completed", validateDetail)
 
 	if !live {
 		addStep("replaced", "skipped", "dry-run")
@@ -329,6 +344,11 @@ func (e ConfigApplyExecutor) validateSignedPlan(plan protocol.ConfigPlan, now ti
 	}
 	if err := spconfig.ValidateProviderModelSelection(plan.Body.Desired); err != nil {
 		return fmt.Errorf("invalid desired provider/model: %w", err)
+	}
+	if len(plan.Body.Providers) > 0 {
+		if err := spconfig.ValidateDesiredConfigValues(protocol.DesiredConfig{GlobalProviders: plan.Body.Providers}); err != nil {
+			return fmt.Errorf("invalid desired provider catalog: %w", err)
+		}
 	}
 	return nil
 }

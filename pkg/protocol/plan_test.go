@@ -76,7 +76,10 @@ func testConfigPlan() ConfigPlan {
 			RuntimeType: "hermes",
 			Profile:     "default",
 			Desired:     ProviderModelConfig{Provider: "openai", Model: "gpt-5.2"},
-			DryRun:      true,
+			Providers: []ProviderDefinition{
+				{Name: "openai", BaseURL: "https://api.openai.example/v1", APIKeyEnv: "OPENAI_API_KEY"},
+			},
+			DryRun: true,
 		},
 	}
 }

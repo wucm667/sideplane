@@ -1765,7 +1765,7 @@ func TestSQLiteDesiredConfigPersistsAcrossReopen(t *testing.T) {
 	}
 }
 
-func TestSQLiteDesiredConfigProviderCatalogRoundTripsPlaintextAPIKey(t *testing.T) {
+func TestSQLiteDesiredConfigProviderCatalogRoundTripsAPIKeyEnv(t *testing.T) {
 	ctx := context.Background()
 	dbPath := filepath.Join(t.TempDir(), "sideplane.db")
 	first, err := OpenSQLiteNodeStore(ctx, dbPath)
@@ -1781,9 +1781,14 @@ func TestSQLiteDesiredConfigProviderCatalogRoundTripsPlaintextAPIKey(t *testing.
 	if err := first.db.QueryRowContext(ctx, `SELECT config_json FROM desired_config WHERE id = 1`).Scan(&rawConfig); err != nil {
 		t.Fatalf("query raw desired config: %v", err)
 	}
-	for _, plaintext := range []string{"sk-global-plaintext", "node-plaintext-key"} {
-		if !strings.Contains(rawConfig, plaintext) {
-			t.Fatalf("raw desired config JSON does not contain plaintext apiKey %q: %s", plaintext, rawConfig)
+	for _, want := range []string{"OPENAI_API_KEY", "LOCAL_API_KEY", "apiKeyEnv"} {
+		if !strings.Contains(rawConfig, want) {
+			t.Fatalf("raw desired config JSON does not contain apiKeyEnv value %q: %s", want, rawConfig)
+		}
+	}
+	for _, forbidden := range []string{"sk-global-plaintext", "node-plaintext-key", `"apiKey"`} {
+		if strings.Contains(rawConfig, forbidden) {
+			t.Fatalf("raw desired config JSON contains deprecated plaintext apiKey material %q: %s", forbidden, rawConfig)
 		}
 	}
 	if err := first.Close(); err != nil {

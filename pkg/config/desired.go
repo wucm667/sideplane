@@ -141,9 +141,9 @@ func mergeProviderDefinitions(merged *[]protocol.ProviderDefinition, positions m
 
 func normalizeProviderDefinition(provider protocol.ProviderDefinition) protocol.ProviderDefinition {
 	normalized := protocol.ProviderDefinition{
-		Name:    strings.TrimSpace(provider.Name),
-		BaseURL: strings.TrimSpace(provider.BaseURL),
-		APIKey:  provider.APIKey,
+		Name:      strings.TrimSpace(provider.Name),
+		BaseURL:   strings.TrimSpace(provider.BaseURL),
+		APIKeyEnv: strings.TrimSpace(provider.APIKeyEnv),
 	}
 	if provider.Models != nil {
 		normalized.Models = make([]string, len(provider.Models))

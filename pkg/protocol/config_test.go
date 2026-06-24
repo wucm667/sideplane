@@ -130,7 +130,7 @@ func TestDesiredConfigJSONShape(t *testing.T) {
 			"node-a/hermes/default": {Model: "claude-sonnet-4"},
 		},
 		GlobalProviders: []ProviderDefinition{
-			{Name: "openai", BaseURL: "https://api.example.com/v1", Models: []string{"gpt-5"}, APIKey: "plain-key"},
+			{Name: "openai", BaseURL: "https://api.example.com/v1", Models: []string{"gpt-5"}, APIKeyEnv: "OPENAI_API_KEY"},
 		},
 		NodeProviders: map[string][]ProviderDefinition{
 			"node-a": {{Name: "local", Models: []string{"qwen3"}}},
