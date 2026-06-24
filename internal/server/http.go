@@ -3205,8 +3205,12 @@ func (h *handler) configProviders(w http.ResponseWriter, r *http.Request) {
 		apiKey := strings.TrimSpace(req.APIKey)
 		envName := strings.TrimSpace(req.Provider.APIKeyEnv)
 		if apiKey != "" && envName == "" {
-			writeAPIError(w, http.StatusBadRequest, "apiKeyEnv is required when apiKey is provided")
-			return
+			envName = deriveProviderAPIKeyEnv(req.Provider.Name)
+			req.Provider.APIKeyEnv = envName
+			if err := validateProviderDefinitionForUpsert(req.Provider); err != nil {
+				writeAPIError(w, http.StatusBadRequest, "derived apiKeyEnv is invalid: "+err.Error())
+				return
+			}
 		}
 		if apiKey != "" && len(h.secretKey) == 0 {
 			writeAPIError(w, http.StatusConflict, "server secret key not configured (set --secret-key)")
@@ -3569,6 +3573,29 @@ func validateProviderDefinitionForUpsert(provider protocol.ProviderDefinition) e
 	return spconfig.ValidateDesiredConfigValues(protocol.DesiredConfig{
 		GlobalProviders: []protocol.ProviderDefinition{provider},
 	})
+}
+
+func deriveProviderAPIKeyEnv(name string) string {
+	upper := strings.ToUpper(strings.TrimSpace(name))
+	var b strings.Builder
+	for _, r := range upper {
+		switch {
+		case r >= 'A' && r <= 'Z':
+			b.WriteRune(r)
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == '_':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	envName := b.String() + "_API_KEY"
+	first := envName[0]
+	if (first < 'A' || first > 'Z') && first != '_' {
+		envName = "_" + envName
+	}
+	return envName
 }
 
 func providerScopeFromQuery(r *http.Request) spconfig.ProviderScope {

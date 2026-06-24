@@ -2438,63 +2438,144 @@ func TestProviderCatalogPutWithAPIKeyStoresEncryptedAndDoesNotLeakPlaintext(t *t
 	}
 }
 
-func TestProviderCatalogPutWithAPIKeyRequiresSecretKeyAndEnvName(t *testing.T) {
-	tests := []struct {
-		name    string
-		handler http.Handler
-		body    protocol.UpsertProviderRequest
-		status  int
-		message string
-	}{
-		{
-			name:    "missing server secret key",
-			handler: newDevHandler(t),
-			body: protocol.UpsertProviderRequest{
-				Provider: protocol.ProviderDefinition{Name: "openai", APIKeyEnv: "OPENAI_API_KEY"},
-				APIKey:   "sk-wave6-provider-key",
-			},
-			status:  http.StatusConflict,
-			message: "server secret key not configured",
-		},
-		{
-			name: "missing api key env",
-			handler: func() http.Handler {
-				handler, err := NewHandlerWithConfig(HandlerConfig{
-					Store:                           store.NewMemoryNodeStore(),
-					Freshness:                       DefaultFreshnessPolicy(),
-					AllowUnauthenticatedOperatorAPI: true,
-					SecretKey:                       spcrypto.DeriveSecretKey("server master key"),
-				})
-				if err != nil {
-					t.Fatalf("build handler: %v", err)
-				}
-				return handler
-			}(),
-			body: protocol.UpsertProviderRequest{
-				Provider: protocol.ProviderDefinition{Name: "openai"},
-				APIKey:   "sk-wave6-provider-key",
-			},
-			status:  http.StatusBadRequest,
-			message: "apiKeyEnv is required",
-		},
+func TestProviderCatalogPutWithAPIKeyRequiresSecretKey(t *testing.T) {
+	body, err := json.Marshal(protocol.UpsertProviderRequest{
+		Provider: protocol.ProviderDefinition{Name: "openai", APIKeyEnv: "OPENAI_API_KEY"},
+		APIKey:   "sk-wave6-provider-key",
+	})
+	if err != nil {
+		t.Fatalf("marshal upsert request: %v", err)
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			body, err := json.Marshal(tt.body)
-			if err != nil {
-				t.Fatalf("marshal upsert request: %v", err)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/config/providers", bytes.NewReader(body))
+	newDevHandler(t).ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusConflict)
+	if !strings.Contains(rec.Body.String(), "server secret key not configured") {
+		t.Fatalf("response = %q, want server secret key error", rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "sk-wave6-provider-key") {
+		t.Fatalf("error response leaked plaintext API key: %s", rec.Body.String())
+	}
+}
+
+func TestProviderCatalogPutWithAPIKeyDerivesEnvName(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	secretKey := spcrypto.DeriveSecretKey("server master key")
+	handler, err := NewHandlerWithConfig(HandlerConfig{
+		Store:                           nodeStore,
+		Freshness:                       DefaultFreshnessPolicy(),
+		AllowUnauthenticatedOperatorAPI: true,
+		SecretKey:                       secretKey,
+	})
+	if err != nil {
+		t.Fatalf("build handler: %v", err)
+	}
+
+	plaintext := "sk-wave6-provider-key"
+	body, err := json.Marshal(protocol.UpsertProviderRequest{
+		Provider: protocol.ProviderDefinition{Name: "openai"},
+		APIKey:   plaintext,
+	})
+	if err != nil {
+		t.Fatalf("marshal upsert request: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/config/providers", bytes.NewReader(body))
+	handler.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusOK)
+	if strings.Contains(rec.Body.String(), plaintext) {
+		t.Fatalf("PUT response leaked plaintext API key: %s", rec.Body.String())
+	}
+	var putResp protocol.ProviderCatalogResponse
+	if err := json.NewDecoder(rec.Body).Decode(&putResp); err != nil {
+		t.Fatalf("decode upsert response: %v", err)
+	}
+	if len(putResp.Global) != 1 {
+		t.Fatalf("put response global providers = %#v, want one provider", putResp.Global)
+	}
+	if putResp.Global[0].APIKeyEnv != "OPENAI_API_KEY" {
+		t.Fatalf("apiKeyEnv = %q, want OPENAI_API_KEY", putResp.Global[0].APIKeyEnv)
+	}
+	if !putResp.Global[0].APIKeyManaged {
+		t.Fatalf("apiKeyManaged = false, want true")
+	}
+
+	desired, err := nodeStore.GetDesiredConfig(context.Background())
+	if err != nil {
+		t.Fatalf("get desired config: %v", err)
+	}
+	if len(desired.GlobalProviders) != 1 || desired.GlobalProviders[0].APIKeyEnv != "OPENAI_API_KEY" {
+		t.Fatalf("persisted global providers = %#v, want derived apiKeyEnv", desired.GlobalProviders)
+	}
+
+	ciphertext, ok, err := nodeStore.GetProviderSecret(context.Background(), "OPENAI_API_KEY")
+	if err != nil {
+		t.Fatalf("get provider secret: %v", err)
+	}
+	if !ok {
+		t.Fatal("provider secret was not stored under derived env name")
+	}
+	decrypted, err := spcrypto.Decrypt(secretKey, ciphertext)
+	if err != nil {
+		t.Fatalf("decrypt stored provider secret: %v", err)
+	}
+	if string(decrypted) != plaintext {
+		t.Fatalf("decrypted provider secret = %q, want plaintext", decrypted)
+	}
+}
+
+func TestDeriveProviderAPIKeyEnv(t *testing.T) {
+	tests := map[string]string{
+		"openai":      "OPENAI_API_KEY",
+		"my-provider": "MY_PROVIDER_API_KEY",
+		"9ai/open.v1": "_9AI_OPEN_V1_API_KEY",
+	}
+	for name, want := range tests {
+		t.Run(name, func(t *testing.T) {
+			if got := deriveProviderAPIKeyEnv(name); got != want {
+				t.Fatalf("deriveProviderAPIKeyEnv(%q) = %q, want %q", name, got, want)
 			}
-			rec := httptest.NewRecorder()
-			req := httptest.NewRequest(http.MethodPut, "/api/config/providers", bytes.NewReader(body))
-			tt.handler.ServeHTTP(rec, req)
-			assertStatus(t, rec, tt.status)
-			if !strings.Contains(rec.Body.String(), tt.message) {
-				t.Fatalf("response = %q, want %q", rec.Body.String(), tt.message)
-			}
-			if strings.Contains(rec.Body.String(), tt.body.APIKey) {
-				t.Fatalf("error response leaked plaintext API key: %s", rec.Body.String())
+			if err := validateProviderDefinitionForUpsert(protocol.ProviderDefinition{Name: "openai", APIKeyEnv: want}); err != nil {
+				t.Fatalf("derived env name %q did not validate: %v", want, err)
 			}
 		})
+	}
+}
+
+func TestProviderCatalogPutRejectsInvalidDerivedEnvName(t *testing.T) {
+	nodeStore := store.NewMemoryNodeStore()
+	handler, err := NewHandlerWithConfig(HandlerConfig{
+		Store:                           nodeStore,
+		Freshness:                       DefaultFreshnessPolicy(),
+		AllowUnauthenticatedOperatorAPI: true,
+		SecretKey:                       spcrypto.DeriveSecretKey("server master key"),
+	})
+	if err != nil {
+		t.Fatalf("build handler: %v", err)
+	}
+	body, err := json.Marshal(protocol.UpsertProviderRequest{
+		Provider: protocol.ProviderDefinition{Name: strings.Repeat("a", 121)},
+		APIKey:   "sk-wave6-provider-key",
+	})
+	if err != nil {
+		t.Fatalf("marshal upsert request: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/config/providers", bytes.NewReader(body))
+	handler.ServeHTTP(rec, req)
+	assertStatus(t, rec, http.StatusBadRequest)
+	if !strings.Contains(rec.Body.String(), "derived apiKeyEnv is invalid") {
+		t.Fatalf("response = %q, want invalid derived apiKeyEnv", rec.Body.String())
+	}
+	desired, err := nodeStore.GetDesiredConfig(context.Background())
+	if err != nil {
+		t.Fatalf("get desired config: %v", err)
+	}
+	if len(desired.GlobalProviders) != 0 {
+		t.Fatalf("invalid derived env upsert persisted providers: %#v", desired.GlobalProviders)
 	}
 }
 
