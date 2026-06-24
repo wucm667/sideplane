@@ -64,7 +64,7 @@ describe('ProvidersView', () => {
     useStateMock
       .mockImplementationOnce(() => ['openai', vi.fn()])
       .mockImplementationOnce(() => [' https://api.openai.com/v1 ', vi.fn()])
-      .mockImplementationOnce(() => ['gpt-4o, gpt-4o-mini', vi.fn()])
+      .mockImplementationOnce(() => ['gpt-4o\ngpt-4o-mini', vi.fn()])
       .mockImplementationOnce(() => [' OPENAI_API_KEY ', vi.fn()])
       .mockImplementationOnce(() => [' sk-test ', setAPIKey])
 
@@ -92,7 +92,7 @@ describe('ProvidersView', () => {
     useStateMock
       .mockImplementationOnce(() => ['openai', vi.fn()])
       .mockImplementationOnce(() => [' https://api.openai.com/v1 ', vi.fn()])
-      .mockImplementationOnce(() => ['gpt-4o, gpt-4o-mini', vi.fn()])
+      .mockImplementationOnce(() => ['gpt-4o\ngpt-4o-mini', vi.fn()])
       .mockImplementationOnce(() => [' OPENAI_API_KEY ', vi.fn()])
       .mockImplementationOnce(() => ['', vi.fn()])
 
@@ -168,6 +168,7 @@ function translateForTest(key: string, params?: Record<string, string | number |
     'providers.error': 'Provider catalog error: {error}',
     'providers.loading': 'Loading providers...',
     'providers.models': 'Models',
+    'providers.modelsHint': 'One model ID per line.',
     'providers.name': 'Name',
     'providers.refresh': 'Refresh',
     'providers.save': 'Save provider',

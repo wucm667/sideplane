@@ -24,14 +24,14 @@ export function providerFormValues(provider: ProviderDefinition | null): Provide
   return {
     name: provider?.name ?? '',
     baseURL: provider?.baseURL ?? '',
-    models: provider?.models?.join(', ') ?? '',
+    models: provider?.models?.join('\n') ?? '',
     apiKeyEnv: provider?.apiKeyEnv ?? '',
   }
 }
 
 export function providerFromFormValues(values: ProviderFormValues): ProviderDefinition {
   const models = values.models
-    .split(',')
+    .split(/[\n,]+/)
     .map((model) => model.trim())
     .filter(Boolean)
 
@@ -277,11 +277,14 @@ export function ProviderForm({
           />
         </ProviderField>
         <ProviderField label={t('providers.models')}>
-          <input
-            className={inputClassName}
+          <textarea
+            className={`${inputClassName} min-h-24 resize-y py-2 leading-5`}
+            placeholder={'gpt-5.2\ngpt-4o'}
+            rows={4}
             value={models}
             onChange={(event) => setModels(event.target.value)}
           />
+          <p className="mt-1.5 text-xs leading-5 text-[var(--sp-faint)]">{t('providers.modelsHint')}</p>
         </ProviderField>
         <ProviderField label={t('providers.apiKeyEnv')}>
           <input
