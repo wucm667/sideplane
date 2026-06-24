@@ -4,6 +4,7 @@ import { CommandPalette, type CommandItem } from './components/CommandPalette.ts
 import { EnrollmentView } from './components/EnrollmentView.tsx'
 import { FleetOverview } from './components/FleetOverview.tsx'
 import { NodeDetailView } from './components/NodeDetailView.tsx'
+import { ProvidersView } from './components/ProvidersView.tsx'
 import { RolloutsView } from './components/RolloutsView.tsx'
 import { Sidebar } from './components/Sidebar.tsx'
 import { useFleetPageController } from './helpers.ts'
@@ -37,6 +38,7 @@ function FleetPageContent({ controller }: { controller: ReturnType<typeof useFle
     createRollout,
     creatingRollout,
     creatingByNode,
+    deleteProvider,
     effectiveByNode,
     effectiveErrorByNode,
     error,
@@ -51,11 +53,15 @@ function FleetPageContent({ controller }: { controller: ReturnType<typeof useFle
     liveConnected,
     loading,
     loadMoreNodeJobs,
+    loadProviders,
     loadRollouts,
     maintenanceErrorByNode,
     nodes,
     operatorToken,
     openNode,
+    providers,
+    providersError,
+    providersLoading,
     refreshFleet,
     refreshSelectedNodeAfterApply,
     refreshing,
@@ -67,6 +73,7 @@ function FleetPageContent({ controller }: { controller: ReturnType<typeof useFle
     saveNodeLabels,
     savingLabelsByNode,
     savingMaintenanceByNode,
+    savingProvider,
     restartingByNode,
     selectedNode,
     selector,
@@ -83,6 +90,7 @@ function FleetPageContent({ controller }: { controller: ReturnType<typeof useFle
     view,
     loadAuditEvents,
     performRolloutAction,
+    upsertProvider,
   } = controller
 
   const [paletteOpen, setPaletteOpen] = useState(false)
@@ -99,6 +107,7 @@ function FleetPageContent({ controller }: { controller: ReturnType<typeof useFle
       { id: 'view:activity', label: t('command.goActivity'), keywords: t('command.activityKeywords'), run: () => changeView('activity') },
       { id: 'view:enrollment', label: t('command.goEnrollment'), keywords: t('command.enrollmentKeywords'), run: () => changeView('enrollment') },
       { id: 'view:rollouts', label: t('command.goRollouts'), keywords: t('command.rolloutsKeywords'), run: () => changeView('rollouts') },
+      { id: 'view:providers', label: t('command.goProviders'), keywords: t('command.providersKeywords'), run: () => changeView('providers') },
       { id: 'action:new-rollout', label: t('command.newRollout'), keywords: t('command.newRolloutKeywords'), run: () => changeView('rollouts') },
     ]
     for (const node of nodes) {
@@ -141,12 +150,19 @@ function FleetPageContent({ controller }: { controller: ReturnType<typeof useFle
         changeView('rollouts')
         return
       }
+      if (key === '5' || key === 'p') {
+        event.preventDefault()
+        changeView('providers')
+        return
+      }
       if (key === 'r') {
         event.preventDefault()
         if (view === 'activity') {
           void loadAuditEvents()
         } else if (view === 'rollouts') {
           void loadRollouts()
+        } else if (view === 'providers') {
+          void loadProviders()
         } else {
           void refreshFleet()
         }
@@ -160,7 +176,7 @@ function FleetPageContent({ controller }: { controller: ReturnType<typeof useFle
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [changeView, loadAuditEvents, loadRollouts, refreshFleet, view])
+  }, [changeView, loadAuditEvents, loadProviders, loadRollouts, refreshFleet, view])
 
   return (
     <div data-sideplane-theme={theme} className="min-h-screen bg-[var(--sp-bg)] text-[var(--sp-text)]">
@@ -244,6 +260,17 @@ function FleetPageContent({ controller }: { controller: ReturnType<typeof useFle
               onCreate={createRollout}
               onOpenNode={openNode}
               onRefresh={loadRollouts}
+            />
+          )}
+          {view === 'providers' && (
+            <ProvidersView
+              error={providersError}
+              loading={providersLoading}
+              providers={providers}
+              saving={savingProvider}
+              onDelete={deleteProvider}
+              onRefresh={loadProviders}
+              onUpsert={upsertProvider}
             />
           )}
           {view === 'activity' && (

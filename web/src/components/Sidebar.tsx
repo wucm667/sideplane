@@ -41,9 +41,10 @@ export function Sidebar({
         </div>
       </div>
 
-      <nav aria-label={t('sidebar.nav.primary')} className="grid grid-cols-4 gap-1 px-3 py-3 md:flex md:flex-col">
+      <nav aria-label={t('sidebar.nav.primary')} className="grid grid-cols-5 gap-1 px-3 py-3 md:flex md:flex-col">
         <NavButton active={currentView === 'fleet'} label={t('sidebar.nav.fleet')} onClick={() => onViewChange('fleet')} />
         <NavButton active={currentView === 'rollouts'} label={t('sidebar.nav.rollouts')} onClick={() => onViewChange('rollouts')} />
+        <NavButton active={currentView === 'providers'} label={t('sidebar.nav.providers')} onClick={() => onViewChange('providers')} />
         <NavButton active={currentView === 'activity'} label={t('sidebar.nav.activity')} onClick={() => onViewChange('activity')} />
         <NavButton active={currentView === 'enrollment'} label={t('sidebar.nav.enrollment')} onClick={() => onViewChange('enrollment')} />
       </nav>
@@ -136,7 +137,7 @@ function NavButton({ active, label, onClick }: { active: boolean; label: string;
     <button
       type="button"
       aria-current={active ? 'page' : undefined}
-      className={`rounded-lg px-3 py-2 text-left text-xs font-semibold transition md:text-[13px] ${active ? 'bg-[var(--sp-surface-2)] text-[var(--sp-text)]' : 'text-[var(--sp-muted)] hover:bg-[var(--sp-surface-2)] hover:text-[var(--sp-text)]'}`}
+      className={`rounded-lg px-2 py-2 text-center text-[11px] font-semibold transition sm:px-3 md:text-left md:text-[13px] ${active ? 'bg-[var(--sp-surface-2)] text-[var(--sp-text)]' : 'text-[var(--sp-muted)] hover:bg-[var(--sp-surface-2)] hover:text-[var(--sp-text)]'}`}
       onClick={onClick}
     >
       {label}

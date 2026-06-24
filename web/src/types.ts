@@ -17,6 +17,8 @@ export type {
   ListAuditEventsResponse,
   ListNodesResponse,
   NodeState,
+  ProviderCatalogResponse,
+  ProviderDefinition,
   ProviderModelConfig,
   RollbackBackup,
   RollbackJobPayload,
@@ -24,6 +26,7 @@ export type {
   RollbackRequest,
   RestartJobResult,
   RestartRequest,
+  UpsertProviderRequest,
 } from './generated/api.ts'
 
 export type NodeLabels = Record<string, string>

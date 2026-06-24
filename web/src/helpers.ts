@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { LANG_STORAGE_KEY, loadStoredLang, type Lang } from './i18n.ts'
-import type { AuditEvent, AuditFilters, ConfigApplyResult, CreateRolloutRequest, DeepProbeResult, EffectiveConfigResponse, Job, JobStatus, ListAuditEventsResponse, ListNodesResponse, ListRollbackBackupsResponse, ListRolloutsResponse, NodeLabels, NodeLabelsResponse, NodeMaintenanceResponse, NodeState, NodeStatus, RestartRequest, RollbackBackupInventoryItem, RollbackRequest, Rollout, RolloutAction, RolloutActionResponse, RolloutState, RuntimeConfigSnapshot, RuntimeStatus } from './types.ts'
+import type { AuditEvent, AuditFilters, ConfigApplyResult, CreateRolloutRequest, DeepProbeResult, EffectiveConfigResponse, Job, JobStatus, ListAuditEventsResponse, ListNodesResponse, ListRollbackBackupsResponse, ListRolloutsResponse, NodeLabels, NodeLabelsResponse, NodeMaintenanceResponse, NodeState, NodeStatus, ProviderCatalogResponse, ProviderDefinition, RestartRequest, RollbackBackupInventoryItem, RollbackRequest, Rollout, RolloutAction, RolloutActionResponse, RolloutState, RuntimeConfigSnapshot, RuntimeStatus, UpsertProviderRequest } from './types.ts'
 
 const NODE_REFRESH_MS = 10_000
 const ACTIVE_JOB_REFRESH_MS = 2_000
@@ -20,7 +20,7 @@ declare global {
   }
 }
 
-export type View = 'fleet' | 'node' | 'rollouts' | 'activity' | 'enrollment'
+export type View = 'fleet' | 'node' | 'rollouts' | 'activity' | 'enrollment' | 'providers'
 export type Theme = 'light' | 'dark'
 
 export function sideplaneBasePath(): string {
@@ -588,6 +588,10 @@ export function useFleetPageController() {
   const [rolloutsError, setRolloutsError] = useState<string | null>(null)
   const [creatingRollout, setCreatingRollout] = useState(false)
   const [rolloutActioningId, setRolloutActioningId] = useState<string | null>(null)
+  const [providers, setProviders] = useState<ProviderDefinition[]>([])
+  const [providersLoading, setProvidersLoading] = useState(false)
+  const [providersError, setProvidersError] = useState<string | null>(null)
+  const [savingProvider, setSavingProvider] = useState(false)
   const [effectiveByNode, setEffectiveByNode] = useState<Record<string, EffectiveConfigResponse>>({})
   const [effectiveErrorByNode, setEffectiveErrorByNode] = useState<Record<string, string>>({})
   const [liveConnected, setLiveConnected] = useState(false)
@@ -1099,6 +1103,110 @@ export function useFleetPageController() {
     }
   }, [operatorToken])
 
+  const loadProviders = useCallback(async () => {
+    if (!mountedRef.current) return
+    const token = operatorToken.trim()
+    if (!token) {
+      setProviders([])
+      setProvidersError('Operator token required')
+      setProvidersLoading(false)
+      return
+    }
+    setProvidersLoading(true)
+    try {
+      const res = await fetch(apiURL('/api/config/providers'), {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) {
+        if (res.status === 401) throw new Error('Operator token required or invalid')
+        if (res.status === 403) throw new Error('Operator token is read-only')
+        throw new Error(await apiErrorMessage(res))
+      }
+      const data = (await res.json()) as ProviderCatalogResponse
+      if (!mountedRef.current) return
+      setProviders(data.global ?? [])
+      setProvidersError(null)
+    } catch (e) {
+      if (!mountedRef.current) return
+      setProvidersError(e instanceof Error ? e.message : 'Unknown error')
+    } finally {
+      if (mountedRef.current) {
+        setProvidersLoading(false)
+      }
+    }
+  }, [operatorToken])
+
+  const upsertProvider = useCallback(async (provider: ProviderDefinition): Promise<boolean> => {
+    if (!mountedRef.current) return false
+    const token = operatorToken.trim()
+    if (!token) {
+      setProvidersError('Operator token required')
+      return false
+    }
+    setSavingProvider(true)
+    try {
+      const request: UpsertProviderRequest = { provider }
+      const res = await fetch(apiURL('/api/config/providers'), {
+        method: 'PUT',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(request),
+      })
+      if (!res.ok) {
+        if (res.status === 401) throw new Error('Operator token required or invalid')
+        if (res.status === 403) throw new Error('Operator token is read-only')
+        throw new Error(await apiErrorMessage(res))
+      }
+      if (!mountedRef.current) return false
+      setProvidersError(null)
+      await loadProviders()
+      return true
+    } catch (e) {
+      if (!mountedRef.current) return false
+      setProvidersError(e instanceof Error ? e.message : 'Unknown error')
+      return false
+    } finally {
+      if (mountedRef.current) {
+        setSavingProvider(false)
+      }
+    }
+  }, [loadProviders, operatorToken])
+
+  const deleteProvider = useCallback(async (name: string): Promise<boolean> => {
+    if (!mountedRef.current) return false
+    const token = operatorToken.trim()
+    if (!token) {
+      setProvidersError('Operator token required')
+      return false
+    }
+    setSavingProvider(true)
+    try {
+      const res = await fetch(apiURL(`/api/config/providers?name=${encodeURIComponent(name)}`), {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      if (!res.ok) {
+        if (res.status === 401) throw new Error('Operator token required or invalid')
+        if (res.status === 403) throw new Error('Operator token is read-only')
+        throw new Error(await apiErrorMessage(res))
+      }
+      if (!mountedRef.current) return false
+      setProvidersError(null)
+      await loadProviders()
+      return true
+    } catch (e) {
+      if (!mountedRef.current) return false
+      setProvidersError(e instanceof Error ? e.message : 'Unknown error')
+      return false
+    } finally {
+      if (mountedRef.current) {
+        setSavingProvider(false)
+      }
+    }
+  }, [loadProviders, operatorToken])
+
   const createRollout = useCallback(async (request: CreateRolloutRequest): Promise<Rollout | null> => {
     if (!mountedRef.current) return null
     const token = operatorToken.trim()
@@ -1345,6 +1453,12 @@ export function useFleetPageController() {
     }
   }, [loadEffectiveConfig, loadNodeBackups, selectedNodeId, view])
 
+  useEffect(() => {
+    if (view === 'providers') {
+      void loadProviders()
+    }
+  }, [loadProviders, view])
+
   const safeNodes = nodes ?? []
   const stats = useMemo(() => {
     const healthy = safeNodes.filter((node) => node.state === 'fresh').length
@@ -1399,6 +1513,7 @@ export function useFleetPageController() {
     createRestart,
     creatingRollout,
     creatingByNode,
+    deleteProvider,
     effectiveByNode,
     effectiveErrorByNode,
     error,
@@ -1412,11 +1527,15 @@ export function useFleetPageController() {
     liveConnected,
     loading,
     loadMoreNodeJobs,
+    loadProviders,
     loadRollouts,
     maintenanceErrorByNode,
     nodes: safeNodes,
     operatorToken,
     openNode,
+    providers,
+    providersError,
+    providersLoading,
     refreshFleet,
     refreshSelectedNodeAfterApply,
     refreshing,
@@ -1425,6 +1544,7 @@ export function useFleetPageController() {
     rollouts,
     rolloutsError,
     rolloutsLoading,
+    savingProvider,
     savingLabelsByNode,
     savingMaintenanceByNode,
     restartingByNode,
@@ -1447,5 +1567,6 @@ export function useFleetPageController() {
     view,
     loadAuditEvents,
     performRolloutAction,
+    upsertProvider,
   }
 }
